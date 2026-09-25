@@ -1,0 +1,21 @@
+{
+  "name": "Fullscreen Reloaded",
+  "description": "A premium Apple TV / visionOS-inspired Spotify fullscreen experience with Liquid Glass design, synced lyrics, dynamic backgrounds, and Picture-in-Picture support.",
+  "preview": "preview.png",
+  "main": "fullscreen-reloaded.js",
+  "readme": "README.md",
+  "authors": [
+    {
+      "name": "Mustafa",
+      "url": "https://github.com/SENIN_KULLANICI_ADIN"
+    }
+  ],
+  "tags": [
+    "fullscreen",
+    "lyrics",
+    "interface",
+    "liquid-glass",
+    "picture-in-picture",
+    "ambient"
+  ]
+}
