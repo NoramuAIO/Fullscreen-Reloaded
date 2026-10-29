@@ -18,6 +18,7 @@ export const LyricsView = {
   resumeBtn: null,
   instrPanel: null,
   providerBadge: null,
+  providerPrefixEl: null,
   providerNameEl: null,
   providerTagEl: null,
 
@@ -49,10 +50,10 @@ export const LyricsView = {
     // "Provided by: <Provider>" floating badge (visible for first 3s)
     this.providerBadge = el("div", "fr-provider-badge");
     const dot = el("span", "fr-provider-dot");
-    const prefix = el("span", "fr-provider-prefix", `${t("providedBy")}:`);
+    this.providerPrefixEl = el("span", "fr-provider-prefix", `${t("providedBy")}:`);
     this.providerNameEl = el("span", "fr-provider-name", "");
     this.providerTagEl = el("span", "fr-provider-tag", "");
-    this.providerBadge.append(dot, prefix, this.providerNameEl, this.providerTagEl);
+    this.providerBadge.append(dot, this.providerPrefixEl, this.providerNameEl, this.providerTagEl);
 
     // Instrumental / no-lyrics state
     this.instrPanel = el("div", "fr-instrumental");
@@ -105,6 +106,9 @@ export const LyricsView = {
 
   showProviderBadge(durationMs = 3000) {
     if (!this.providerBadge || !this.providerSource || !this.hasLyrics) return;
+    if (this.providerPrefixEl) {
+      this.providerPrefixEl.textContent = `${t("providedBy")}:`;
+    }
     this.providerNameEl.textContent = this.providerSource;
 
     const tagText =

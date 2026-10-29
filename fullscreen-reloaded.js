@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (Spotify 1.3.6 compatible)
 // A cinematic, modern fullscreen replacement for Spicetify.
-// Generated on: 2026-10-29T09:17:39.899Z
+// Generated on: 2026-10-29T09:33:50.639Z
 // ==========================================================================
 
 (function FullscreenReloaded() {
@@ -1267,6 +1267,7 @@ const LyricsView = exports.LyricsView = {
   resumeBtn: null,
   instrPanel: null,
   providerBadge: null,
+  providerPrefixEl: null,
   providerNameEl: null,
   providerTagEl: null,
 
@@ -1298,10 +1299,10 @@ const LyricsView = exports.LyricsView = {
     // "Provided by: <Provider>" floating badge (visible for first 3s)
     this.providerBadge = el("div", "fr-provider-badge");
     const dot = el("span", "fr-provider-dot");
-    const prefix = el("span", "fr-provider-prefix", `${t("providedBy")}:`);
+    this.providerPrefixEl = el("span", "fr-provider-prefix", `${t("providedBy")}:`);
     this.providerNameEl = el("span", "fr-provider-name", "");
     this.providerTagEl = el("span", "fr-provider-tag", "");
-    this.providerBadge.append(dot, prefix, this.providerNameEl, this.providerTagEl);
+    this.providerBadge.append(dot, this.providerPrefixEl, this.providerNameEl, this.providerTagEl);
 
     // Instrumental / no-lyrics state
     this.instrPanel = el("div", "fr-instrumental");
@@ -1354,6 +1355,9 @@ const LyricsView = exports.LyricsView = {
 
   showProviderBadge(durationMs = 3000) {
     if (!this.providerBadge || !this.providerSource || !this.hasLyrics) return;
+    if (this.providerPrefixEl) {
+      this.providerPrefixEl.textContent = `${t("providedBy")}:`;
+    }
     this.providerNameEl.textContent = this.providerSource;
 
     const tagText =
@@ -3899,7 +3903,7 @@ const Locales = exports.Locales = {
     badgeSynced: "Senkron",
     badgeUnsynced: "Düz",
     badgeOfficial: "Resmi",
-    providedBy: "Provided by",
+    providedBy: "Sağlayıcı",
     waterfallFlow: "Şelale Akışı",
     waterfallNormal: "Açık (Şelale)",
     waterfallIntense: "Yoğun Şelale",

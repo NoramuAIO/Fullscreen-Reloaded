@@ -132,7 +132,7 @@ export const Locales = {
     badgeSynced: "Senkron",
     badgeUnsynced: "Düz",
     badgeOfficial: "Resmi",
-    providedBy: "Provided by",
+    providedBy: "Sağlayıcı",
     waterfallFlow: "Şelale Akışı",
     waterfallNormal: "Açık (Şelale)",
     waterfallIntense: "Yoğun Şelale",
