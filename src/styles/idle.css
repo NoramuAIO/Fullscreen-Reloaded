@@ -1,0 +1,184 @@
+/* ---------------- Idle Mode & Clock ---------------- */
+#fullscreen-reloaded-root.fr-idle,
+#fullscreen-reloaded-root.fr-idle * {
+  cursor: none !important;
+}
+
+#fullscreen-reloaded-root.fr-idle .fr-controls,
+#fullscreen-reloaded-root.fr-idle .fr-topbar,
+#fullscreen-reloaded-root.fr-idle .fr-side-controls,
+#fullscreen-reloaded-root.fr-idle .fr-settings-panel,
+#fullscreen-reloaded-root.fr-idle .fr-resume-sync {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px);
+}
+
+.fr-controls,
+.fr-topbar,
+.fr-side-controls,
+.fr-settings-panel,
+.fr-resume-sync {
+  transition: opacity 400ms ease, transform 400ms ease;
+}
+
+/* ---------------- Clock & Idle Cinema Mode ---------------- */
+.fr-clock {
+  position: absolute;
+  left: 50%;
+  font-size: clamp(50px, 6vw, 80px);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 10;
+  letter-spacing: 0.02em;
+  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.7);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.fr-clock.fr-pos-top {
+  top: clamp(24px, 4.5vh, 48px);
+  bottom: auto;
+  transform: translateX(-50%) translateY(-20px);
+  transition: opacity 0.8s ease, transform 0.8s ease, top 0.4s;
+}
+
+.fr-clock.fr-pos-bottom {
+  bottom: clamp(28px, 5vh, 56px);
+  top: auto;
+  transform: translateX(-50%) translateY(20px);
+  transition: opacity 0.8s ease, transform 0.8s ease, bottom 0.4s;
+}
+
+#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-top,
+#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-bottom {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics="true"]) .fr-stage {
+  grid-template-columns: 1fr 0px;
+  gap: 0;
+}
+
+#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics="true"]) .fr-lyrics-panel {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease;
+}
+
+/* Gracefully scale artwork in idle mode to prevent clock collision */
+#fullscreen-reloaded-root.fr-idle .fr-art-wrap {
+  width: min(48vh, 38vw, 520px);
+  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Shift artwork cleanly away from clock */
+#fullscreen-reloaded-root.fr-idle[data-clock="top"] .fr-art-panel {
+  transform: translateY(clamp(45px, 7vh, 80px));
+  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+#fullscreen-reloaded-root.fr-idle[data-clock="bottom"] .fr-art-panel {
+  transform: translateY(clamp(-45px, -7vh, -80px));
+  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics="true"]) .fr-meta {
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: clamp(20px, 2.8vh, 36px);
+}
+
+#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics="true"]) .fr-title {
+  font-size: clamp(28px, 3.2vw, 44px);
+}
+
+#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics="true"]) .fr-artist {
+  font-size: clamp(16px, 1.6vw, 22px);
+}
+
+/* ---------------- Responsive Styles ---------------- */
+@media (max-aspect-ratio: 5/4), (max-width: 900px) {
+  .fr-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "art" "lyrics";
+    gap: 16px;
+    padding-top: clamp(24px, 4vh, 40px);
+  }
+
+  .fr-stage.fr-centered {
+    grid-template-rows: 1fr;
+  }
+
+  .fr-lyrics-panel {
+    display: flex;
+  }
+
+  .fr-lyrics-scroll {
+    padding: 4vh 4px 15vh 4px;
+  }
+
+  .fr-art-wrap {
+    width: min(35vh, 65vw, 400px);
+    margin: 0 auto;
+  }
+
+  .fr-meta {
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+    max-width: 80vw;
+  }
+
+  /* Make bottom dock more compact */
+  .fr-bottom-bar {
+    gap: 12px;
+    padding: 12px 16px;
+    width: 94vw;
+  }
+
+  .fr-volume-row {
+    width: 90px;
+  }
+
+  /* Override idle grid for portrait */
+  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics="true"]) .fr-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  #fullscreen-reloaded-root.fr-idle[data-clock="top"] .fr-art-panel {
+    transform: translateY(clamp(30px, 5vh, 60px));
+  }
+
+  #fullscreen-reloaded-root.fr-idle[data-clock="bottom"] .fr-art-panel {
+    transform: translateY(clamp(-30px, -5vh, -60px));
+  }
+}
+
+@media (max-width: 600px) {
+  .fr-controls-center {
+    display: none; /* Hide progress bar on small screens */
+  }
+}
+
+@media (max-height: 500px) {
+  .fr-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    grid-template-areas: "art";
+  }
+
+  .fr-lyrics-panel {
+    display: none !important;
+  }
+
+  .fr-art-wrap {
+    width: min(46vh, 60vw, 420px);
+  }
+}

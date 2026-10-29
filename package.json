@@ -1,0 +1,27 @@
+{
+  "name": "fullscreen-reloaded",
+  "version": "1.3.6",
+  "description": "A premium Apple TV / visionOS-inspired Spotify fullscreen experience with Liquid Glass design, synced lyrics, dynamic backgrounds, and Picture-in-Picture support.",
+  "main": "fullscreen-reloaded.js",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch"
+  },
+  "keywords": [
+    "spicetify",
+    "spicetify-extension",
+    "spotify",
+    "fullscreen",
+    "lyrics",
+    "liquid-glass",
+    "visionos",
+    "picture-in-picture",
+    "ambient"
+  ],
+  "author": "Noramu Studios",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

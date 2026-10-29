@@ -1,0 +1,162 @@
+/* ---------------- Layout & Album Art ---------------- */
+.fr-stage {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  grid-template-rows: 1fr;
+  grid-template-areas: "art lyrics";
+  padding: clamp(24px, 3.2vw, 64px);
+  padding-bottom: clamp(100px, 14vh, 160px);
+  gap: clamp(16px, 2vw, 40px);
+  opacity: 0;
+  transform: translateY(24px) scale(0.98);
+  transition: grid-template-columns 0.8s cubic-bezier(0.2, 0.8, 0.2, 1), gap 0.8s, opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms, transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;
+}
+
+#fullscreen-reloaded-root.fr-open .fr-stage {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.fr-stage.fr-centered {
+  grid-template-columns: 1fr;
+  grid-template-areas: "art";
+}
+
+.fr-stage.fr-centered .fr-lyrics-panel {
+  display: none;
+}
+
+/* ---------------- Album art ---------------- */
+.fr-art-panel {
+  grid-area: art;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  min-width: 0;
+}
+
+.fr-art-wrap {
+  position: relative;
+  width: min(58vh, 44vw, 640px);
+  aspect-ratio: 1 / 1;
+  transition: width 300ms ease;
+}
+
+.fr-stage.fr-size-medium .fr-art-wrap { width: min(48vh, 35vw, 520px); }
+.fr-stage.fr-size-small .fr-art-wrap { width: min(38vh, 28vw, 420px); }
+.fr-stage.fr-centered .fr-art-wrap { width: min(62vh, 40vw, 720px); }
+
+.fr-art-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--fr-radius);
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.65);
+  opacity: 0;
+  transform: scale(0.985);
+  transition: opacity 520ms ease, transform 520ms cubic-bezier(.2, .8, .2, 1), box-shadow 300ms ease;
+}
+
+.fr-art-img.fr-art-active {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.fr-art-wrap.fr-no-shadow .fr-art-img {
+  box-shadow: none;
+}
+
+.fr-art-wrap.fr-glow::after {
+  content: "";
+  position: absolute;
+  inset: -6%;
+  border-radius: calc(var(--fr-radius) + 10px);
+  background: var(--fr-art-glow, transparent);
+  filter: blur(48px);
+  opacity: 0.55;
+  z-index: -1;
+  transition: background 700ms ease;
+}
+
+.fr-art-wrap:hover .fr-art-img {
+  transform: scale(1.012);
+}
+
+.fr-meta {
+  margin-top: clamp(18px, 2vw, 32px);
+  text-align: left;
+  max-width: min(58vh, 44vw, 640px);
+  transition: opacity 300ms ease, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.fr-meta.fr-meta-animating {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.fr-stage.fr-centered .fr-meta {
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.fr-title {
+  font-size: clamp(22px, 2.4vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  margin: 0 0 6px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fr-artist {
+  font-size: clamp(14px, 1.2vw, 18px);
+  color: var(--fr-fg-dim);
+  margin: 0 0 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fr-album {
+  font-size: clamp(12px, 1vw, 15px);
+  color: var(--fr-fg-faint);
+  margin: 0;
+}
+
+/* ---------------- Progress Ring ---------------- */
+.fr-progress-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+  transform: rotate(-90deg);
+  transform-origin: center;
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+
+#fullscreen-reloaded-root.fr-open .fr-progress-ring {
+  opacity: 0.75;
+}
+
+.fr-progress-ring-rect {
+  fill: transparent;
+  stroke: var(--fr-word-accent, #fff);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;
+}

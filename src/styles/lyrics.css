@@ -1,0 +1,473 @@
+/* ---------------- Lyrics Panel (True Per-Line & Per-Word Waterfall Engine) ---------------- */
+.fr-lyrics-panel {
+  grid-area: lyrics;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------------- "Provided by" 3-Second Startup Badge ---------------- */
+.fr-provider-badge {
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(18, 18, 24, 0.74);
+  backdrop-filter: blur(28px) saturate(1.8);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(0, -10px, 0) scale(0.96);
+  transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),
+              transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fr-provider-badge.fr-show {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.fr-provider-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #30d158;
+  box-shadow: 0 0 8px rgba(48, 209, 88, 0.85);
+  flex-shrink: 0;
+}
+
+.fr-provider-prefix {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.fr-provider-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.fr-provider-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+/* ---------------- Scroll & Waterfall Viewport ---------------- */
+.fr-lyrics-scroll {
+  --fr-word-step: 120ms;
+  --fr-word-dur: 1050ms;
+  --fr-line-dur: 1050ms;
+  --fr-word-drop-future: -9px;
+  --fr-word-drop-past: 7px;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  mask-image: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(0, 0, 0, 0.45) 8%,
+    #000 20%,
+    #000 80%,
+    rgba(0, 0, 0, 0.45) 92%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(0, 0, 0, 0.45) 8%,
+    #000 20%,
+    #000 80%,
+    rgba(0, 0, 0, 0.45) 92%,
+    transparent 100%
+  );
+  padding: 6vh 14px 40vh 14px;
+  scrollbar-width: none;
+  opacity: 0;
+  transition: opacity 420ms ease;
+}
+
+.fr-lyrics-scroll[data-waterfall="intense"] {
+  --fr-word-step: 165ms;
+  --fr-word-dur: 1350ms;
+  --fr-line-dur: 1280ms;
+  --fr-word-drop-future: -13px;
+  --fr-word-drop-past: 10px;
+}
+
+.fr-lyrics-scroll[data-waterfall="off"] {
+  --fr-word-step: 0ms;
+  --fr-word-dur: 500ms;
+  --fr-line-dur: 550ms;
+  --fr-word-drop-future: 0px;
+  --fr-word-drop-past: 0px;
+}
+
+.fr-lyrics-scroll.fr-unsynced {
+  overflow-y: auto;
+  padding: 14vh 14px 28vh 14px;
+}
+
+.fr-lyrics-scroll.fr-ready {
+  opacity: 1;
+}
+
+.fr-lyrics-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------------- Per-Line Staggered Waterfall Positioning ---------------- */
+.fr-lyric-line {
+  --fr-scale: 0.94;
+  font-size: clamp(20px, 2.35vw, 31px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.48;
+  color: rgba(255, 255, 255, 0.32);
+  margin: 4px 0;
+  padding: 10px 14px;
+  border-radius: 16px;
+  transform-origin: left center;
+  transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));
+  filter: blur(0px);
+  transition:
+    transform var(--fr-line-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
+    color 650ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
+    opacity 680ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
+    filter 680ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
+    background-color 250ms ease;
+  cursor: default;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  will-change: transform, filter, opacity;
+}
+
+.fr-lyrics-scroll.fr-no-transition .fr-lyric-line,
+.fr-lyrics-scroll.fr-no-transition .fr-lyric-word {
+  transition: none !important;
+}
+
+.fr-lyrics-scroll.fr-user-scrolling .fr-lyric-line {
+  transition:
+    transform 90ms linear 0ms,
+    color 300ms ease 0ms,
+    filter 300ms ease 0ms !important;
+}
+
+/* Depth-of-field distance classes */
+.fr-lyric-line.fr-near-1 {
+  --fr-scale: 0.97;
+  color: rgba(255, 255, 255, 0.42);
+  filter: blur(0.5px);
+}
+
+.fr-lyric-line.fr-near-2 {
+  --fr-scale: 0.945;
+  color: rgba(255, 255, 255, 0.28);
+  filter: blur(1.3px);
+}
+
+.fr-lyric-line.fr-far {
+  --fr-scale: 0.92;
+  color: rgba(255, 255, 255, 0.18);
+  filter: blur(2.2px);
+}
+
+.fr-lyrics-scroll[data-waterfall="off"] .fr-lyric-line {
+  filter: none !important;
+}
+
+.fr-lyric-line.fr-active {
+  --fr-scale: 1.02;
+  color: #ffffff;
+  filter: blur(0px);
+}
+
+/* ---------------- Top-to-Bottom Word Waterfall Flow (Line-Synced Mode) ---------------- */
+.fr-lyric-word {
+  display: inline-block;
+  white-space: pre-wrap;
+  color: inherit;
+}
+
+/* ---------------- Full-Sentence Top-to-Bottom Waterfall Flow (Line-Synced 'synced' Mode) ---------------- */
+/* Flows continuously from the top of the first letter ('b') across the whole sentence
+   down to the bottom of the last letter ('m') over the full bar duration. */
+.fr-lyric-sentence {
+  display: inline-block;
+  white-space: pre-wrap;
+  color: inherit;
+}
+
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence {
+  transform: translate3d(0, var(--fr-word-drop-future), 0);
+  opacity: 0.78;
+  transition:
+    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    opacity 680ms ease;
+}
+
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {
+  color: transparent;
+  background-image: linear-gradient(
+    168deg,
+    #ffffff 0%,
+    #ffffff calc(var(--bar-pct, -14%) - 18%),
+    rgba(255, 255, 255, 0.88) calc(var(--bar-pct, -14%) - 3%),
+    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, -14%) + 16%),
+    rgba(255, 255, 255, 0.32) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);
+  filter: drop-shadow(0 3px 18px rgba(255, 255, 255, 0.28));
+  will-change: transform, background-image;
+}
+
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+  background-image: none;
+  transform: translate3d(0, var(--fr-word-drop-past), 0);
+  opacity: 0.65;
+  filter: none;
+  transition:
+    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    opacity 720ms ease;
+}
+
+/* ---------------- Top-to-Bottom Word Waterfall Flow (Word-Synced / Karaoke Mode) ---------------- */
+/* Uses the exact same silky waterfall drop & glow aesthetic as line-synced mode,
+   triggered at each word's exact studio timestamp (w.startMs -> w.endMs). */
+.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {
+  transform: translate3d(0, var(--fr-word-drop-future), 0);
+  opacity: 0.72;
+  transition:
+    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    opacity 680ms ease,
+    color 680ms ease,
+    text-shadow 680ms ease;
+}
+
+.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active {
+  color: rgba(255, 255, 255, 0.36);
+}
+
+/* Unsung word inside active line: poised above (-9px) in soft muted white, waiting for its timestamp */
+.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {
+  color: rgba(255, 255, 255, 0.36);
+  opacity: 0.78;
+  transform: translate3d(0, var(--fr-word-drop-future), 0);
+  text-shadow: none;
+  transition:
+    transform var(--w-dur, 920ms) cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity var(--w-dur, 760ms) cubic-bezier(0.22, 0.61, 0.36, 1),
+    color var(--w-dur, 760ms) cubic-bezier(0.22, 0.61, 0.36, 1),
+    text-shadow var(--w-dur, 760ms) ease;
+}
+
+/* Word currently being sung: glides down smoothly to 0px and blooms with white light */
+.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {
+  color: #ffffff;
+  opacity: 1;
+  transform: translate3d(0, -1.5px, 0) scale(1.015);
+  text-shadow: 0 0 18px rgba(255, 255, 255, 0.52), 0 3px 22px rgba(255, 255, 255, 0.34);
+}
+
+/* Word finished being sung: rests cleanly at 0px in full bright white */
+.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {
+  color: #ffffff;
+  opacity: 1;
+  transform: translate3d(0, 0px, 0) scale(1);
+  text-shadow: 0 3px 22px rgba(255, 255, 255, 0.32);
+}
+
+/* Past line in word-synced mode: words cascade gently downward (+7px) just like line-synced mode */
+.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {
+  transform: translate3d(0, var(--fr-word-drop-past), 0);
+  opacity: 0.65;
+  text-shadow: none;
+  transition:
+    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94) calc(var(--w-idx, 0) * 75ms),
+    opacity 720ms ease calc(var(--w-idx, 0) * 75ms);
+}
+
+/* Interactive hover for synced lines */
+.fr-lyric-line.fr-synced {
+  cursor: pointer;
+}
+
+.fr-lyric-line.fr-synced:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.85);
+  filter: blur(0px);
+}
+
+/* ---------------- Unsynced Teleprompter Mode ---------------- */
+.fr-lyrics-scroll.fr-unsynced .fr-lyric-line {
+  font-size: clamp(19px, 2.2vw, 28px);
+  font-weight: 500;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.84);
+  transform: none !important;
+  filter: none !important;
+  padding: 8px 14px;
+}
+
+.fr-lyrics-scroll.fr-unsynced .fr-lyric-word {
+  transform: none !important;
+  opacity: 1 !important;
+}
+
+/* ---------------- Instrumental Symbol & Apple Music Interlude Dots (• • •) ---------------- */
+.fr-lyric-line.fr-is-music {
+  padding: 16px 14px;
+}
+
+.fr-interlude-dots {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  margin-bottom: 0;
+  transform: translate3d(0, -6px, 0) scale(0.75);
+  transform-origin: left center;
+  pointer-events: none;
+  transition:
+    height 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-bottom 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 380ms ease,
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fr-interlude-dots.fr-inline-music-dots {
+  height: 28px;
+  opacity: 0.45;
+  overflow: visible;
+  transform: scale(0.9);
+}
+
+.fr-interlude-dots.fr-interlude-active {
+  height: 28px;
+  margin-bottom: 10px;
+  opacity: 1;
+  overflow: visible;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.fr-interlude-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #ffffff;
+  opacity: 0.25;
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.55);
+  transition: opacity 150ms linear;
+  will-change: transform, opacity;
+}
+
+/* ---------------- Resume Sync Pill ---------------- */
+.fr-resume-sync {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(24, 24, 30, 0.78);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease, transform 220ms ease;
+  z-index: 9;
+}
+
+.fr-resume-sync.fr-show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+.fr-resume-sync:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* ---------------- Instrumental / No-Lyrics Panel ---------------- */
+.fr-instrumental {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 3;
+}
+
+.fr-instrumental.fr-show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.fr-instrumental-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 44px;
+}
+
+.fr-instrumental-bar {
+  width: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+  animation: instrBar 1.2s ease-in-out infinite alternate;
+}
+
+.fr-instrumental-bar:nth-child(1) { animation-delay: 0s;    animation-duration: 0.9s; }
+.fr-instrumental-bar:nth-child(2) { animation-delay: 0.15s; animation-duration: 1.1s; }
+.fr-instrumental-bar:nth-child(3) { animation-delay: 0.3s;  animation-duration: 0.8s; }
+.fr-instrumental-bar:nth-child(4) { animation-delay: 0.1s;  animation-duration: 1.3s; }
+.fr-instrumental-bar:nth-child(5) { animation-delay: 0.25s; animation-duration: 1.0s; }
+.fr-instrumental-bar:nth-child(6) { animation-delay: 0.4s;  animation-duration: 0.85s; }
+.fr-instrumental-bar:nth-child(7) { animation-delay: 0.05s; animation-duration: 1.2s; }
+
+@keyframes instrBar {
+  0%   { height: 6px; opacity: 0.35; }
+  100% { height: 40px; opacity: 0.95; }
+}
+
+.fr-instrumental-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.48);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

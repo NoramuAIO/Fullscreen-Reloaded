@@ -1,0 +1,49 @@
+/* ---------------- Top bar ---------------- */
+.fr-topbar {
+  position: absolute;
+  top: clamp(18px, 2.4vw, 36px);
+  right: clamp(18px, 2.4vw, 36px);
+  z-index: 14;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(30, 30, 35, 0.35);
+  backdrop-filter: blur(60px) saturate(2.5);
+  border-radius: 999px;
+  padding: 6px 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);
+  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+#fullscreen-reloaded-root.fr-idle .fr-topbar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-20px) scale(0.95);
+}
+
+.fr-topbar .fr-btn {
+  padding: 8px;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+}
+
+.fr-topbar .fr-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.fr-topbar-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 2px;
+}
+
+.fr-topbar .fr-btn.fr-active {
+  color: var(--fr-word-accent, #1ed760);
+}
+
+.fr-topbar .fr-btn.fr-heart-active {
+  color: #ff4d6a;
+}

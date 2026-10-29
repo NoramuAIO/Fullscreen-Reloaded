@@ -1,0 +1,37 @@
+/* ---------------- Background ---------------- */
+.fr-bg-root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.fr-bg-layer {
+  position: absolute;
+  inset: -5%;
+  width: 110%;
+  height: 110%;
+  background-position: center;
+  background-size: cover;
+  opacity: 0;
+  transition: opacity var(--fr-transition) ease;
+  will-change: opacity;
+}
+
+.fr-bg-layer.fr-bg-active {
+  opacity: 1;
+}
+
+.fr-bg-tint {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 30% 20%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 75%);
+  pointer-events: none;
+}
+
+.fr-bg-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.05) 30%, rgba(0, 0, 0, 0.55) 100%);
+  pointer-events: none;
+}

@@ -1,6 +1,6 @@
 # 🎵 Fullscreen Reloaded — Spicetify Extension
 
-> A premium Apple TV / Vision OS–inspired Spotify fullscreen experience with Liquid Glass design.
+> A premium Apple TV / visionOS–inspired Spotify fullscreen experience with Liquid Glass design. Updated & optimized for **Spotify v1.3.6** & modern Spicetify.
 
 ![Preview](preview.png)
 
@@ -20,7 +20,7 @@
 | Custom Color | Pick any color you want |
 
 ### 🎤 Lyrics
-- Spotify's native lyrics + LRCLIB as fallback provider
+- **Multi-provider fallback chain:** Spotify Native Lyrics (1.3.6 compatible with Session Token fallback) + LRCLIB (open provider) + Apple Music
 - **Word-synced:** Highlights word by word in real time
 - **Line-synced:** Highlights line by line
 - **Unsynced:** All lyrics displayed cleanly, not clickable
@@ -37,12 +37,12 @@
 - Click or drag the progress bar to seek
 - Volume via scroll wheel ±5% on the volume area
 - Volume bar click & drag support
-- Queue button
+- Queue button (supports Spotify 1.3.6 queue navigation)
 
 ### 📺 Picture-in-Picture (PiP)
 - Hit the PiP button in the top bar to float the album art in a mini window
 - PiP image updates automatically when the track changes
-- Press again to close PiP
+- Document Picture-in-Picture API + legacy canvas video fallback
 
 ### 🌐 Multilingual UI (i18n)
 - Full **English** 🇬🇧 and **Turkish** 🇹🇷 support
@@ -50,7 +50,7 @@
 - Manually override from Settings at any time
 
 ### 🌙 Idle (Cinema) Mode
-- Activates after ~3 seconds of no mouse movement
+- Activates after ~2.5 seconds of no mouse movement
 - Album art centers and enlarges
 - Clock appears (Top or Bottom position configurable)
 - Any mouse movement returns to normal mode
@@ -62,7 +62,7 @@
 
 ### 🃏 Up Next Card
 - Appears in the bottom-right corner as the current track nears its end
-- Shows the next track's title, artist, and album art
+- Shows the next track's title, artist, and album art (using Spotify 1.3.6 PlayerAPI)
 - Click to skip to the next track
 
 ### 🖼️ Album Artwork
@@ -81,14 +81,89 @@
 
 ---
 
+## 📁 Project Architecture (Modular Structure)
+
+The extension has been re-architected into modular source files with zero-dependency build support:
+
+```
+Fullscreen-Reloaded/
+├── manifest.json                  # Spicetify extension manifest
+├── package.json                   # NPM package descriptor & build scripts
+├── build.js                       # Zero-dependency Node.js compiler & bundler
+├── fullscreen-reloaded.js         # Production bundle loaded by Spicetify
+├── preview.png
+├── README.md
+└── src/
+    ├── index.js                   # Extension entry point & lifecycle
+    ├── App.js                     # Main application coordinator (DOM, ticker, hotkeys, PiP)
+    ├── styles/                    # Modular Liquid Glass CSS
+    │   ├── variables.css          # Design tokens & CSS variables
+    │   ├── background.css         # Background layers, scrim, tint
+    │   ├── stage.css              # Stage layout, album art, progress ring, metadata
+    │   ├── lyrics.css             # Synced lyrics, active lines, word highlights, equalizer
+    │   ├── controls.css           # Liquid glass bottom dock, seek bar, volume
+    │   ├── topbar.css             # Floating pill topbar
+    │   ├── settings.css           # Settings dialog & controls
+    │   ├── ambient.css            # Ambient glow orbs & particles
+    │   ├── upnext.css             # Up next card
+    │   └── idle.css               # Idle cinema mode, clock, responsive styles
+    ├── components/                # UI Components
+    │   ├── TopBar.js
+    │   ├── BottomDock.js
+    │   ├── LyricsView.js
+    │   ├── BackgroundManager.js
+    │   ├── AmbientManager.js
+    │   ├── Clock.js
+    │   ├── UpNextCard.js
+    │   └── SettingsModal.js
+    ├── services/                  # Business logic & APIs
+    │   ├── SpicetifyBridge.js     # Spotify 1.3.6 API bridge (Player, Platform, Session, Queue)
+    │   ├── LyricsService.js       # Multi-provider lyrics resolver
+    │   ├── AppleMusicAuth.js      # Apple Music token scraper & MusicKit JS
+    │   ├── ColorExtractor.js      # Canvas quantization color palette generator
+    │   └── providers/
+    │       ├── BaseLyricsProvider.js
+    │       ├── SpotifyLyricsProvider.js  # Color-lyrics (CosmosAsync + Session token fetch)
+    │       ├── LrclibLyricsProvider.js   # Open LRCLIB with retries & title cleaning
+    │       └── AppleMusicLyricsProvider.js
+    └── utils/                     # Helpers & utilities
+        ├── dom.js                 # DOM builder helpers
+        ├── formatters.js          # Time formatters & image URL resolver
+        ├── i18n.js                # Multi-language dictionaries (EN, TR)
+        ├── icons.js               # Apple TV-inspired SVG icons
+        ├── parsers.js             # TTML & LRC lyrics parsers
+        └── settings.js            # Settings manager with persistence
+```
+
+---
+
+## 🛠️ Development & Building
+
+You can edit files inside `src/` and compile them into `fullscreen-reloaded.js`:
+
+```bash
+# Build once (zero external dependencies required)
+npm run build
+# or
+node build.js
+
+# Watch mode (automatically rebuilds on file save)
+npm run watch
+# or
+node build.js --watch
+```
+
+---
+
 ## 📦 Installation
 
-1. Make sure [Spicetify](https://spicetify.app/) is installed
-2. Place this file in your `Extensions` folder:
+1. Make sure [Spicetify](https://spicetify.app/) is installed.
+2. Copy `fullscreen-reloaded.js` to your Spicetify Extensions folder:
+   ```powershell
+   # Windows
+   copy fullscreen-reloaded.js "$env:APPDATA\spicetify\Extensions\fullscreen-reloaded.js"
    ```
-   %APPDATA%\spicetify\Extensions\fullscreen-reloaded.js
-   ```
-3. Run in terminal:
+3. Enable and apply the extension:
    ```powershell
    spicetify config extensions fullscreen-reloaded.js
    spicetify apply
@@ -100,7 +175,8 @@
 
 | Action | Description |
 |--------|-------------|
-| Click the fullscreen icon in Spotify | Open fullscreen mode |
+| Click the fullscreen icon in Spotify | Open fullscreen mode (intercepts Spotify 1.3.6 button) |
+| `F` or `F11` | Open / close fullscreen mode |
 | `Esc` | Close fullscreen mode |
 | Scroll wheel (on volume area) | Volume ±5% |
 | Click a lyric line | Seek to that moment (synced tracks only) |
@@ -109,31 +185,8 @@
 
 ---
 
-## 🛠️ Settings
+## 📋 Compatibility
 
-Click the **⚙️ gear** button in the top-right pill to access all settings:
-
-- **Background** — Mode, custom color
-- **Appearance** — Lyrics toggle, ambient glow, shadow, artwork size, clock position, language
-- **Track Info** — Position, which fields are visible
-
----
-
-## 📋 Requirements
-
-- Spicetify 2.x+
-- Spotify Desktop (Windows / macOS / Linux)
-- Chromium-based Spotify engine (required for PiP)
-
----
-
-## 🎨 Design Philosophy
-
-> *"It should feel like staring at an Apple TV screen."*
-
-Every UI element is designed around the **Liquid Glass** aesthetic:
-- `backdrop-filter: blur(60px)` frosted glass effect
-- Subtle `inset box-shadow` for depth and surface feel
-- `border-radius: 999px` pill-shaped containers
-- Dynamic color palette extracted from album artwork
-- 60fps smooth animations via `requestAnimationFrame`
+- **Spotify Desktop:** Tested and optimized for **Spotify v1.3.6+** (also backwards-compatible with 1.2.x)
+- **Spicetify:** v2.x+
+- **Platforms:** Windows, macOS, Linux
