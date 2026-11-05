@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (Spotify 1.3.6 compatible)
 // A cinematic, modern fullscreen replacement for Spicetify.
-// Generated on: 2026-10-29T09:33:50.639Z
+// Generated on: 2026-11-05T19:22:38.152Z
 // ==========================================================================
 
 (function FullscreenReloaded() {
@@ -27,6 +27,7 @@ const {  TopBar  } = require("./components/TopBar.js");
 const {  BottomDock  } = require("./components/BottomDock.js");
 const {  LyricsView  } = require("./components/LyricsView.js");
 const {  LyricsService  } = require("./services/LyricsService.js");
+const {  AudioMoodEngine  } = require("./services/AudioMoodEngine.js");
 
 const App = exports.App = {
   root: null,
@@ -249,8 +250,9 @@ const App = exports.App = {
       UpNextCard.reset();
       TopBar.updatePiPImage(image);
 
-      // Start fetching lyrics immediately without waiting for background color extraction
+      // Start fetching lyrics & audio analysis immediately without waiting for background color extraction
       LyricsView.loadForTrack(track, this);
+      AudioMoodEngine.loadTrack(track);
 
       // Crossfade album art between dual stacked layers
       const showing = this.artActiveIsImg ? this.artImg : this.artImgAlt;
@@ -264,6 +266,7 @@ const App = exports.App = {
 
       const colors = await BackgroundManager.update(image);
       AmbientManager.updateColors(colors);
+      AudioMoodEngine.updateColors(colors);
       this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));
       this.artWrap.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
     } else if (LyricsView._currentTrackUri !== track.uri) {
@@ -279,6 +282,9 @@ const App = exports.App = {
       if (typeof progress === "number") {
         LyricsView.update(progress);
         UpNextCard.update(duration, progress);
+
+        const moodFrame = AudioMoodEngine.sample(progress, SpicetifyBridge.isPlaying(), LyricsView);
+        AmbientManager.updateFrame(moodFrame, this.artWrap);
 
         if (duration && this.ringRect) {
           const pct = Math.max(0, Math.min(1, progress / duration));
@@ -369,6 +375,9 @@ const App = exports.App = {
       LyricsService.clearCache();
       LyricsView.loadForTrack(this.currentTrack, this, true);
     }
+    if (key === "bgVocalsDuet" && this.currentTrack) {
+      LyricsView.loadForTrack(this.currentTrack, this, true);
+    }
     if (key === "waterfallMode") {
       LyricsView.applyWaterfallMode();
     }
@@ -423,58 +432,150 @@ const App = exports.App = {
     "./components/AmbientManager.js": function(require, exports, module) {
 // --- ./components/AmbientManager.js ---
 /**
- * Ambient light orbs and floating particles manager.
+ * Mood-Adaptive & Beat-Reactive Atmosphere Manager.
+ * Renders 4 distinct dynamic scenes ("energetic", "melancholic", "latenight", "dreamy"):
+ * - Beat-reactive light orbs & aurora ribbons
+ * - Mood-morphing particle system (Rising Sparks / Falling Rain / Fireflies / Soft Bokeh)
+ * - Atmospheric mist & Late-Night analog grain
  */
 const {  el  } = require("./utils/dom.js");
-const {  rgb  } = require("./utils/formatters.js");
+const {  rgb, rgba  } = require("./utils/formatters.js");
+const {  Settings  } = require("./utils/settings.js");
 
 const AmbientManager = exports.AmbientManager = {
   root: null,
+  auroraWrap: null,
   orbs: [],
   particles: [],
+  mistEl: null,
+  grainEl: null,
+  _currentMood: "",
+  _isIdle: false,
 
   build() {
     this.root = el("div", "fr-ambient fr-show");
+    this.root.setAttribute("data-mood", "dreamy");
 
-    const orbsCont = el("div", "");
+    // 1. Aurora Wave Ribbons (vivid in Energetic & Dreamy moods)
+    this.auroraWrap = el("div", "fr-mood-aurora");
+    const wave1 = el("div", "fr-aurora-wave fr-aurora-1");
+    const wave2 = el("div", "fr-aurora-wave fr-aurora-2");
+    this.auroraWrap.append(wave1, wave2);
+
+    // 2. Beat-Reactive Light Orbs
+    const orbsCont = el("div", "fr-orbs-wrap");
     this.orbs = [];
-    for (let i = 0; i < 3; i++) {
-      const orb = el("div", "fr-orb");
-      orb.style.width = orb.style.height = 40 + Math.random() * 40 + "vh";
-      orb.style.top = 10 + Math.random() * 50 + "%";
-      orb.style.left = 10 + Math.random() * 50 + "%";
-      orb.style.animationDelay = "-" + Math.random() * 15 + "s";
-      orb.style.animationDuration = 15 + Math.random() * 10 + "s";
+    const orbConfigs = [
+      { size: 52, top: 12, left: 14, dur: 18, delay: -4 },
+      { size: 60, top: 38, left: 52, dur: 22, delay: -11 },
+      { size: 46, top: 58, left: 22, dur: 25, delay: -17 },
+    ];
+    for (let i = 0; i < orbConfigs.length; i++) {
+      const cfg = orbConfigs[i];
+      const orb = el("div", `fr-orb fr-orb-${i + 1}`);
+      orb.style.width = orb.style.height = `${cfg.size}vh`;
+      orb.style.top = `${cfg.top}%`;
+      orb.style.left = `${cfg.left}%`;
+      orb.style.animationDuration = `${cfg.dur}s`;
+      orb.style.animationDelay = `${cfg.delay}s`;
       this.orbs.push(orb);
       orbsCont.appendChild(orb);
     }
 
-    const partsCont = el("div", "");
+    // 3. Mood-Morphing Particles (Sparks / Rain / Fireflies / Bokeh)
+    const partsCont = el("div", "fr-particles-wrap");
     this.particles = [];
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < 32; i++) {
       const p = el("div", "fr-particle");
-      p.style.width = p.style.height = 3 + Math.random() * 4 + "px";
-      p.style.left = Math.random() * 100 + "%";
-      p.style.animationDuration = 12 + Math.random() * 15 + "s";
-      p.style.animationDelay = "-" + Math.random() * 25 + "s";
+      const size = (3 + (i % 5) * 1.3).toFixed(1);
+      const x = ((i * 37) % 100).toFixed(1);
+      const y = ((i * 53) % 100).toFixed(1);
+      const dur = (7 + (i % 9) * 1.6).toFixed(1);
+      const delay = (-((i * 2.7) % 22)).toFixed(1);
+      const drift = (((i % 7) - 3) * 14).toFixed(0);
+
+      p.style.setProperty("--p-size", `${size}px`);
+      p.style.setProperty("--p-x", `${x}%`);
+      p.style.setProperty("--p-y", `${y}%`);
+      p.style.setProperty("--p-dur", `${dur}s`);
+      p.style.setProperty("--p-delay", `${delay}s`);
+      p.style.setProperty("--p-drift", `${drift}px`);
+
       this.particles.push(p);
       partsCont.appendChild(p);
     }
 
-    this.root.append(orbsCont, partsCont);
+    // 4. Atmospheric Mist / Vignette (deepens in Melancholic & Late-Night moods)
+    this.mistEl = el("div", "fr-mood-mist");
+
+    // 5. Late-Night Analog Film Grain Overlay
+    this.grainEl = el("div", "fr-mood-grain");
+
+    this.root.append(this.auroraWrap, orbsCont, partsCont, this.mistEl, this.grainEl);
     return this.root;
   },
 
   updateColors(colors) {
-    if (!this.root || !this.orbs.length) return;
-    this.orbs[0].style.backgroundColor = rgb(colors.dominant);
-    this.orbs[1].style.backgroundColor = rgb(colors.accent);
-    this.orbs[2].style.backgroundColor = rgb(colors.dark);
+    if (!this.root || !colors) return;
+    const dom = colors.dominant || [80, 80, 120];
+    const acc = colors.accent || [140, 100, 220];
+    const dark = colors.dark || [20, 20, 30];
+
+    this.root.style.setProperty("--fr-amb-dominant", rgb(dom));
+    this.root.style.setProperty("--fr-amb-accent", rgb(acc));
+    this.root.style.setProperty("--fr-amb-dark", rgb(dark));
+    this.root.style.setProperty("--fr-amb-accent-soft", rgba(acc, 0.55));
+    this.root.style.setProperty("--fr-amb-dominant-soft", rgba(dom, 0.5));
+
+    if (this.orbs.length >= 3) {
+      this.orbs[0].style.backgroundColor = rgb(dom);
+      this.orbs[1].style.backgroundColor = rgb(acc);
+      this.orbs[2].style.backgroundColor = rgb(dark);
+    }
+  },
+
+  /**
+   * Updates 60fps beat-reactive & mood CSS variables on the ambient root and album artwork.
+   */
+  updateFrame(frame, artWrap) {
+    if (!this.root || !frame) return;
+
+    const mood = frame.mood || "dreamy";
+    if (this._currentMood !== mood) {
+      this._currentMood = mood;
+      this.root.setAttribute("data-mood", mood);
+    }
+
+    const beat = frame.beatPulse || 0;
+    const bar = frame.barPulse || 0;
+    const energy = frame.sectionEnergy ?? 0.5;
+
+    this.root.style.setProperty("--fr-beat", beat.toFixed(3));
+    this.root.style.setProperty("--fr-bar", bar.toFixed(3));
+    this.root.style.setProperty("--fr-energy", energy.toFixed(3));
+
+    if (artWrap) {
+      const beatMode = Settings.get("beatReactive") || "normal";
+      if (beatMode === "off") {
+        artWrap.style.setProperty("--fr-art-beat", "0");
+        artWrap.style.setProperty("--fr-glow-beat", "0.55");
+        artWrap.style.setProperty("--fr-glow-spread", "0%");
+      } else {
+        const artScale = beat * 0.022 + bar * 0.012;
+        const glowOpacity = Math.min(0.95, 0.42 + beat * 0.36 + energy * 0.22);
+        const glowSpread = (beat * 5.5 + bar * 3.0).toFixed(2);
+        artWrap.style.setProperty("--fr-art-beat", artScale.toFixed(4));
+        artWrap.style.setProperty("--fr-glow-beat", glowOpacity.toFixed(3));
+        artWrap.style.setProperty("--fr-glow-spread", `${glowSpread}%`);
+      }
+    }
   },
 
   setIdle(isIdle) {
+    this._isIdle = !!isIdle;
     if (this.root) {
-      this.root.classList.toggle("fr-show", !isIdle);
+      // Keep ambient mood visible even in idle mode (just slightly calmer) unless turned off
+      this.root.classList.toggle("fr-idle-calm", !!isIdle);
     }
   },
 };
@@ -1260,6 +1361,7 @@ const {  t  } = require("./utils/i18n.js");
 const {  Settings  } = require("./utils/settings.js");
 const {  LyricsService  } = require("./services/LyricsService.js");
 const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  AudioMoodEngine  } = require("./services/AudioMoodEngine.js");
 
 const LyricsView = exports.LyricsView = {
   panel: null,
@@ -1465,6 +1567,7 @@ const LyricsView = exports.LyricsView = {
     this.providerSource = data.source || "Spotify";
     this.lines = data.lines;
     this.syncType = data.type;
+    AudioMoodEngine.updateLyricsMetrics(this.lines, this.syncType, this._currentTrackDurationMs);
 
     if (this.instrPanel) this.instrPanel.classList.remove("fr-show");
     if (app?.applyLayoutSettings) app.applyLayoutSettings();
@@ -1480,10 +1583,18 @@ const LyricsView = exports.LyricsView = {
     }
 
     const isSyncedAny = this.syncType === "word-synced" || this.syncType === "synced";
+    const enableBgDuet = Settings.get("bgVocalsDuet") !== false;
     let prevVocalEndMs = 0;
 
     this.lines.forEach((line, lineIdx) => {
-      const lineEl = el("div", "fr-lyric-line fr-future fr-far");
+      let extraCls = "";
+      if (enableBgDuet) {
+        if (line.isDuet) extraCls += " fr-duet-right";
+        if (line.isBgOnly) extraCls += " fr-bg-only-line";
+      }
+      line._extraCls = extraCls;
+
+      const lineEl = el("div", `fr-lyric-line fr-future fr-far${extraCls}`);
 
       let fullText = "";
       if (!Array.isArray(line.words) || !line.words.length) {
@@ -1497,6 +1608,11 @@ const LyricsView = exports.LyricsView = {
         fullText = line.words.map((w) => (typeof w === "string" ? w : w.text || "")).join("");
       }
 
+      // If BgVocals & Duet view is disabled, merge bgVocal inline into fullText / words
+      if (!enableBgDuet && line.bgVocal?.text) {
+        fullText = `${fullText.trim()} ${line.bgVocal.text}`.trim();
+      }
+
       const textClean = fullText.trim().toLowerCase();
       const isMusicSymbol =
         textClean === "♪" ||
@@ -1504,17 +1620,19 @@ const LyricsView = exports.LyricsView = {
         textClean === "🎶" ||
         textClean === "instrumental" ||
         textClean === "[instrumental]";
+      line._isMusic = isMusicSymbol;
 
-      // Compute full-bar duration so the waterfall flows continuously until the end of the bar/sentence
+      // Compute full-bar duration so the waterfall flows continuously right until the end of the bar/sentence
       const lineStart = Number(line.startMs) || 0;
       const nextLine = this.lines[lineIdx + 1];
       const nextStart = nextLine ? Number(nextLine.startMs) : lineStart + 3600;
-      const rawBarMs = Math.max(800, nextStart - lineStart);
+      const rawBarMs = Math.max(600, nextStart - lineStart);
       const wordCount = Math.max(1, line.words.length);
 
-      // Span 95% of the bar (capped only for long instrumental gaps so vocal bars fill 100% of their bar)
-      const maxVocalBarMs = Math.max(1600, wordCount * 1200 + 600);
-      const barSpanMs = Math.min(rawBarMs * 0.95, maxVocalBarMs);
+      // For normal vocal bars (< 5.5s), span 98% of the full bar so the sweep finishes right as the sentence ends.
+      // Only cap when an instrumental interlude (>= 5.5s gap) follows the line.
+      const maxVocalBarMs = Math.max(3400, wordCount * 1250 + 1000);
+      const barSpanMs = rawBarMs >= 5500 ? Math.min(rawBarMs * 0.88, maxVocalBarMs) : rawBarMs * 0.98;
       line._barSpanMs = barSpanMs;
 
       // Check if an Apple Music Interlude (• • •) precedes this line (intro >= 3s or instrumental gap >= 5s)
@@ -1556,40 +1674,70 @@ const LyricsView = exports.LyricsView = {
           isInline: true,
         };
       } else if (this.syncType === "synced") {
-        // Line-synced mode: render the entire sentence as a single unified block so the waterfall
-        // flows continuously from the top of the first letter ('b') down to the bottom of the last letter ('m').
+        // Line-synced mode (NOT word-by-word): render the entire sentence as ONE unified element
         const sentenceEl = el("span", "fr-lyric-sentence", fullText.trim());
         lineEl.appendChild(sentenceEl);
         line._sentenceEl = sentenceEl;
+
+        if (enableBgDuet && line.bgVocal?.text) {
+          const bgWrap = el("div", "fr-bg-vocal-sub");
+          const bgSentenceEl = el("span", "fr-lyric-sentence fr-bg-sentence", line.bgVocal.text);
+          bgWrap.appendChild(bgSentenceEl);
+          lineEl.appendChild(bgWrap);
+          line._bgSentenceEl = bgSentenceEl;
+        }
       } else {
         // Word-synced or unsynced mode: render individual word spans
-        const weights = line.words.map((w) => {
-          const clean = (typeof w === "string" ? w : w.text || "").trim();
-          return Math.pow(Math.max(2, clean.length), 0.72);
-        });
-        const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+        const buildWordSpans = (wordsArr, containerEl, startBaseMs, spanDurMs, isBg = false) => {
+          const weights = wordsArr.map((w) => {
+            const clean = (typeof w === "string" ? w : w.text || "").trim();
+            return Math.pow(Math.max(1.8, clean.length), 0.78);
+          });
+          const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+          let cursorMs = 0;
 
-        let cursorMs = 0;
-        line.words.forEach((w, wIdx) => {
-          const wordText = typeof w === "string" ? w : w.text != null ? String(w.text) : "";
-          const wordEl = el("span", "fr-lyric-word", wordText);
-          wordEl.style.setProperty("--w-idx", String(wIdx));
+          return wordsArr.map((rawW, wIdx) => {
+            const wObj =
+              rawW && typeof rawW === "object"
+                ? rawW
+                : { text: rawW != null ? String(rawW) : "" };
+            const wordText = wObj.text != null ? String(wObj.text) : "";
+            const wordEl = el("span", isBg ? "fr-lyric-word fr-bg-word" : "fr-lyric-word", wordText);
+            wordEl.style.setProperty("--w-idx", String(wIdx));
 
-          const sliceMs = (weights[wIdx] / totalWeight) * barSpanMs;
-          const realWordDur =
-            w && typeof w === "object" && w.startMs != null && w.endMs != null && w.endMs > w.startMs
-              ? (w.endMs - w.startMs) * 1.65
-              : sliceMs * 1.75;
-          const wDurMs = Math.round(Math.max(720, Math.min(1650, realWordDur)));
-          const wDelayMs = Math.round(Math.max(0, Math.min(barSpanMs - wDurMs * 0.35, cursorMs)));
-          cursorMs += sliceMs * 0.88;
+            const sliceMs = (weights[wIdx] / totalWeight) * spanDurMs;
+            const synthStart = startBaseMs + cursorMs;
+            const synthEnd = startBaseMs + cursorMs + sliceMs;
+            cursorMs += sliceMs;
 
-          wordEl.style.setProperty("--w-delay", `${wDelayMs}ms`);
-          wordEl.style.setProperty("--w-dur", `${wDurMs}ms`);
+            if (wObj.startMs == null) {
+              wObj.startMs = synthStart;
+              wObj.endMs = Math.max(synthStart + 80, synthEnd);
+            } else if (wObj.endMs == null || wObj.endMs <= wObj.startMs) {
+              const nextW = wordsArr[wIdx + 1];
+              const fallbackEnd =
+                nextW && typeof nextW === "object" && nextW.startMs > wObj.startMs
+                  ? nextW.startMs
+                  : wObj.startMs + Math.max(180, sliceMs);
+              wObj.endMs = fallbackEnd;
+            }
 
-          lineEl.appendChild(wordEl);
-          if (w && typeof w === "object") w.el = wordEl;
-        });
+            wObj.el = wordEl;
+            containerEl.appendChild(wordEl);
+            return wObj;
+          });
+        };
+
+        line.words = buildWordSpans(line.words, lineEl, lineStart, barSpanMs, false);
+
+        if (enableBgDuet && line.bgVocal && Array.isArray(line.bgVocal.words) && line.bgVocal.words.length) {
+          const bgWrap = el("div", "fr-bg-vocal-sub");
+          const bgStart = line.bgVocal.startMs ?? lineStart + Math.round(barSpanMs * 0.4);
+          const bgEnd = line.bgVocal.endMs ?? lineStart + barSpanMs;
+          const bgSpan = Math.max(400, bgEnd - bgStart);
+          line.bgVocal.words = buildWordSpans(line.bgVocal.words, bgWrap, bgStart, bgSpan, true);
+          lineEl.appendChild(bgWrap);
+        }
       }
 
       if (isSyncedAny) {
@@ -1630,13 +1778,24 @@ const LyricsView = exports.LyricsView = {
       line._sentenceEl.style.removeProperty("--bar-pct");
       line._sentenceEl.style.removeProperty("--bar-flow-y");
     }
-    if (!Array.isArray(line.words)) return;
-    for (let k = 0; k < line.words.length; k++) {
-      const w = line.words[k];
-      if (!w.el) continue;
-      w.el.classList.remove("fr-w-active", "fr-w-done");
-      if (asPast) w.el.classList.add("fr-w-done");
+    if (line._bgSentenceEl) {
+      line._bgSentenceEl.style.removeProperty("--bar-pct");
+      line._bgSentenceEl.style.removeProperty("--bar-flow-y");
     }
+    const clearWords = (arr) => {
+      if (!Array.isArray(arr)) return;
+      for (let k = 0; k < arr.length; k++) {
+        const w = arr[k];
+        if (!w || !w.el) continue;
+        w.el.classList.remove("fr-w-active", "fr-w-done");
+        w.el.style.removeProperty("--w-pct");
+        w.el.style.removeProperty("--w-lift");
+        w.el.style.removeProperty("--w-scale");
+        if (asPast) w.el.classList.add("fr-w-done");
+      }
+    };
+    clearWords(line.words);
+    if (line.bgVocal?.words) clearWords(line.bgVocal.words);
   },
 
   update(progressMs, instant = false) {
@@ -1710,10 +1869,11 @@ const LyricsView = exports.LyricsView = {
 
       for (let i = 0; i < this.lineEls.length; i++) {
         const lineEl = this.lineEls[i];
-        const dist = idx < 0 ? i : i - idx;
+        const dist = idx < 0 ? i + 1 : i - idx;
         const absDist = Math.abs(dist);
+        const extraCls = this.lines[i]?._extraCls || "";
 
-        let cls = "fr-lyric-line fr-synced";
+        let cls = `fr-lyric-line fr-synced${extraCls}`;
         if (i === idx) {
           cls += " fr-active";
         } else if (dist < 0) {
@@ -1767,54 +1927,91 @@ const LyricsView = exports.LyricsView = {
       }
     }
 
-    // --- 4a. Full-Sentence Top-to-Bottom Waterfall Flow (on line-synced 'synced' tracks) ---
+    // --- 4a. Full-Sentence Sweep & Waterfall Flow (on line-synced 'synced' tracks — NOT word-by-word) ---
     if (this.syncType === "synced" && this.activeIndex >= 0) {
       const activeLine = this.lines[this.activeIndex];
+      const wfMode = Settings.get("waterfallMode") || "normal";
+      const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
+
       const sentenceEl = activeLine?._sentenceEl;
       if (sentenceEl) {
-        const wfMode = Settings.get("waterfallMode") || "normal";
         const lineStart = Number(activeLine.startMs) || 0;
         const barSpan = Math.max(600, Number(activeLine._barSpanMs) || 2500);
         const rawProgress = Math.max(0, Math.min(1, (progressMs - lineStart) / barSpan));
-        // Smooth sine-eased progress across the entire bar from top of first letter ('b') to bottom of last ('m')
-        const eased = 0.5 * (1 - Math.cos(rawProgress * Math.PI));
-        const sweptPct = wfMode === "off" ? 115 : -14 + eased * 128;
-        const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
-        const flowY = dropPx * (1 - eased);
+        const sweptPct = wfMode === "off" ? 118 : rawProgress * 118;
+        const flowY = dropPx * (1 - rawProgress);
 
         sentenceEl.style.setProperty("--bar-pct", `${sweptPct.toFixed(1)}%`);
         sentenceEl.style.setProperty("--bar-flow-y", `${flowY.toFixed(2)}px`);
       }
+
+      const bgSentenceEl = activeLine?._bgSentenceEl;
+      if (bgSentenceEl && activeLine.bgVocal) {
+        const bgStart = Number(activeLine.bgVocal.startMs) || Number(activeLine.startMs) || 0;
+        const bgEnd = Number(activeLine.bgVocal.endMs) || bgStart + 1800;
+        const bgSpan = Math.max(400, bgEnd - bgStart);
+        const bgProg = Math.max(0, Math.min(1, (progressMs - bgStart) / bgSpan));
+        const bgPct = wfMode === "off" ? 118 : bgProg * 118;
+        const bgFlowY = dropPx * 0.65 * (1 - bgProg);
+
+        bgSentenceEl.style.setProperty("--bar-pct", `${bgPct.toFixed(1)}%`);
+        bgSentenceEl.style.setProperty("--bar-flow-y", `${bgFlowY.toFixed(2)}px`);
+      }
     }
 
-    // --- 4b. Word-by-Word Waterfall Flow (on word-synced tracks) ---
+    // --- 4b. 60fps Word-by-Word Waterfall & Karaoke Sweep (ONLY on word-synced tracks) ---
     if (this.syncType === "word-synced" && this.activeIndex >= 0) {
       const activeLine = this.lines[this.activeIndex];
-      if (activeLine && activeLine.isWordSynced && Array.isArray(activeLine.words)) {
-        const words = activeLine.words;
-        for (let k = 0; k < words.length; k++) {
-          const w = words[k];
-          const elWord = w.el;
-          if (!elWord) continue;
+      if (activeLine) {
+        const wfMode = Settings.get("waterfallMode") || "normal";
+        const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
 
-          const wStart = w.startMs ?? activeLine.startMs ?? 0;
-          const wEnd = w.endMs ?? wStart + 350;
+        const animateWordList = (words, dropScale = 1) => {
+          if (!Array.isArray(words)) return;
+          for (let k = 0; k < words.length; k++) {
+            const w = words[k];
+            const elWord = w?.el;
+            if (!elWord) continue;
 
-          if (progressMs < wStart) {
-            if (elWord.classList.contains("fr-w-active") || elWord.classList.contains("fr-w-done")) {
-              elWord.classList.remove("fr-w-active", "fr-w-done");
-            }
-          } else if (progressMs >= wEnd) {
-            if (!elWord.classList.contains("fr-w-done")) {
-              elWord.classList.remove("fr-w-active");
-              elWord.classList.add("fr-w-done");
-            }
-          } else {
-            if (!elWord.classList.contains("fr-w-active")) {
-              elWord.classList.remove("fr-w-done");
-              elWord.classList.add("fr-w-active");
+            const wStart = w.startMs ?? activeLine.startMs ?? 0;
+            const wEnd = w.endMs ?? wStart + 350;
+
+            if (progressMs <= wStart) {
+              if (elWord.classList.contains("fr-w-active") || elWord.classList.contains("fr-w-done")) {
+                elWord.classList.remove("fr-w-active", "fr-w-done");
+                elWord.style.removeProperty("--w-pct");
+                elWord.style.removeProperty("--w-lift");
+                elWord.style.removeProperty("--w-scale");
+              }
+            } else if (progressMs >= wEnd) {
+              if (!elWord.classList.contains("fr-w-done")) {
+                elWord.classList.remove("fr-w-active");
+                elWord.classList.add("fr-w-done");
+                elWord.style.setProperty("--w-pct", "118%");
+                elWord.style.setProperty("--w-lift", "0px");
+                elWord.style.setProperty("--w-scale", "1");
+              }
+            } else {
+              if (!elWord.classList.contains("fr-w-active")) {
+                elWord.classList.remove("fr-w-done");
+                elWord.classList.add("fr-w-active");
+              }
+              const dur = Math.max(40, wEnd - wStart);
+              const ratio = Math.max(0, Math.min(1, (progressMs - wStart) / dur));
+              const swept = -16 + ratio * 132;
+              const lift = dropPx * dropScale * 0.5 * (1 + Math.cos(ratio * Math.PI));
+              const scale = 1 + 0.03 * dropScale * Math.sin(ratio * Math.PI);
+
+              elWord.style.setProperty("--w-pct", `${swept.toFixed(1)}%`);
+              elWord.style.setProperty("--w-lift", `${lift.toFixed(2)}px`);
+              elWord.style.setProperty("--w-scale", `${scale.toFixed(3)}`);
             }
           }
+        };
+
+        animateWordList(activeLine.words, 1.0);
+        if (activeLine.bgVocal?.words) {
+          animateWordList(activeLine.bgVocal.words, 0.7);
         }
       }
     }
@@ -1822,7 +2019,7 @@ const LyricsView = exports.LyricsView = {
 
   /**
    * Positions all lyric lines using per-line GPU translate3d(--fr-cascade-y)
-   * with a top-to-bottom staggered delay (--fr-stagger) so lines cascade like a waterfall.
+   * with a liquid spring stagger (--fr-stagger) so bar-to-bar transitions flow smoothly.
    */
   applyCascadePosition(instant = false) {
     if (!this.scrollEl || !this.lineEls.length) return;
@@ -1831,26 +2028,26 @@ const LyricsView = exports.LyricsView = {
     if (!activeEl) return;
 
     const wfMode = Settings.get("waterfallMode") || "normal";
-    const lineStepMs = wfMode === "intense" ? 115 : wfMode === "normal" ? 80 : 0;
+    const lineStepMs = wfMode === "intense" ? 65 : wfMode === "normal" ? 45 : 0;
 
     const panelHeight = this.scrollEl.clientHeight || 600;
     const anchorY = panelHeight * 0.34;
-    const rawOffset = -(activeEl.offsetTop - anchorY + activeEl.offsetHeight / 2);
-    this._cascadeY = Math.min(0, rawOffset);
+    // Do NOT clamp with Math.min(0, ...) so even the first 3 lines of a song glide smoothly bar-to-bar
+    this._cascadeY = -(activeEl.offsetTop - anchorY + activeEl.offsetHeight / 2);
 
     if (instant) {
       this.scrollEl.classList.add("fr-no-transition");
     }
 
-    // Stagger from topmost visible line (targetIdx - 3) down to bottom visible line (targetIdx + 7)
-    const topVisibleIdx = targetIdx - 3;
+    // Exiting line (targetIdx - 1) moves at 0ms, new active line (targetIdx) at ~30ms,
+    // and upcoming lines below ripple downward in a smooth wave.
+    const waveStartIdx = Math.max(0, targetIdx - 1);
 
     for (let i = 0; i < this.lineEls.length; i++) {
       const lineEl = this.lineEls[i];
       let staggerMs = 0;
-      if (!instant && lineStepMs > 0 && i >= topVisibleIdx && i <= targetIdx + 8) {
-        const orderFromTop = i - topVisibleIdx; // 0, 1, 2, 3 (active), 4, 5, 6...
-        staggerMs = orderFromTop * lineStepMs;
+      if (!instant && lineStepMs > 0 && i >= waveStartIdx && i <= targetIdx + 8) {
+        staggerMs = (i - waveStartIdx) * lineStepMs;
       }
       lineEl.style.setProperty("--fr-stagger", `${staggerMs}ms`);
       lineEl.style.setProperty("--fr-cascade-y", `${this._cascadeY.toFixed(1)}px`);
@@ -1918,6 +2115,43 @@ const SettingsModal = exports.SettingsModal = {
     colorRow.append(el("label", null, t("customColor")), colorPicker);
     sec1.appendChild(colorRow);
 
+    // Mood Atmosphere Dropdown (Auto / Energetic / Melancholic / Late Night / Dreamy / Off)
+    const moodRow = el("div", "fr-settings-row");
+    const moodSelect = createCustomSelect({
+      options: [
+        {
+          value: "auto",
+          label: t("moodAuto"),
+          shortLabel: t("providerAutoShort"),
+          sublabel: t("moodAutoSub"),
+          badge: t("badgeSmart"),
+        },
+        { value: "energetic", label: t("moodEnergetic"), shortLabel: t("moodEnergetic") },
+        { value: "melancholic", label: t("moodMelancholic"), shortLabel: t("moodMelancholic") },
+        { value: "latenight", label: t("moodLateNight"), shortLabel: t("moodLateNight") },
+        { value: "dreamy", label: t("moodDreamy"), shortLabel: t("moodDreamy") },
+        { value: "off", label: t("moodOff"), shortLabel: t("moodOff") },
+      ],
+      value: Settings.get("moodMode") || "auto",
+      onChange: (val) => Settings.set("moodMode", val),
+    });
+    moodRow.append(el("label", null, t("moodAtmosphere")), moodSelect);
+    sec1.appendChild(moodRow);
+
+    // Beat & Bass Pulse Dropdown (Normal / Intense / Off)
+    const beatRow = el("div", "fr-settings-row");
+    const beatSelect = createCustomSelect({
+      options: [
+        { value: "normal", label: t("beatNormal"), shortLabel: t("beatNormal") },
+        { value: "intense", label: t("beatIntense"), shortLabel: t("beatIntense") },
+        { value: "off", label: t("beatOff"), shortLabel: t("beatOff") },
+      ],
+      value: Settings.get("beatReactive") || "normal",
+      onChange: (val) => Settings.set("beatReactive", val),
+    });
+    beatRow.append(el("label", null, t("beatReactive")), beatSelect);
+    sec1.appendChild(beatRow);
+
     panel.appendChild(sec1);
     panel.appendChild(el("div", "fr-settings-divider"));
 
@@ -1956,6 +2190,12 @@ const SettingsModal = exports.SettingsModal = {
     const interludeToggle = toggle(Settings.get("interludeDots") !== false, (v) => Settings.set("interludeDots", v));
     interludeRow.append(el("label", null, t("interludeDots")), interludeToggle);
     sec2.appendChild(interludeRow);
+
+    // Background Vocals & Duet View Toggle (Apple Music Sing / Duet)
+    const bgDuetRow = el("div", "fr-settings-row");
+    const bgDuetToggle = toggle(Settings.get("bgVocalsDuet") !== false, (v) => Settings.set("bgVocalsDuet", v));
+    bgDuetRow.append(el("label", null, t("bgVocalsDuet")), bgDuetToggle);
+    sec2.appendChild(bgDuetRow);
 
     // Lyrics Provider Dropdown (Apple Music / LRCLIB / Genius / Spotify)
     const providerRow = el("div", "fr-settings-row");
@@ -2335,7 +2575,7 @@ const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
 const {  App  } = require("./App.js");
 
 // CSS placeholder replaced at build time with bundled styles from src/styles/*.css
-const STYLES = "\n/* --- variables.css --- */\n:root {\n  --fr-bg: #060607;\n  --fr-fg: #ffffff;\n  --fr-fg-dim: rgba(255, 255, 255, 0.78);\n  --fr-fg-faint: rgba(255, 255, 255, 0.52);\n  --fr-accent: #ffffff;\n  --fr-accent-2: #101014;\n  --fr-radius: 18px;\n  --fr-font: \"Spotify Circular\", \"Circular Std\", -apple-system, \"Segoe UI\", Helvetica, Arial, sans-serif;\n  --fr-transition: 900ms;\n}\n\n#fullscreen-reloaded-root {\n  position: fixed;\n  inset: 0;\n  z-index: 999999;\n  font-family: var(--fr-font);\n  color: var(--fr-fg);\n  visibility: hidden;\n  opacity: 0;\n  transition: opacity 600ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 600ms;\n  overflow: hidden;\n  user-select: none;\n}\n\n#fullscreen-reloaded-root.fr-open {\n  visibility: visible;\n  opacity: 1;\n}\n\n#fullscreen-reloaded-root * {\n  box-sizing: border-box;\n}\n\n/* --- background.css --- */\n/* ---------------- Background ---------------- */\n.fr-bg-root {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  z-index: 0;\n}\n\n.fr-bg-layer {\n  position: absolute;\n  inset: -5%;\n  width: 110%;\n  height: 110%;\n  background-position: center;\n  background-size: cover;\n  opacity: 0;\n  transition: opacity var(--fr-transition) ease;\n  will-change: opacity;\n}\n\n.fr-bg-layer.fr-bg-active {\n  opacity: 1;\n}\n\n.fr-bg-tint {\n  position: absolute;\n  inset: 0;\n  background: radial-gradient(ellipse at 30% 20%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 75%);\n  pointer-events: none;\n}\n\n.fr-bg-scrim {\n  position: absolute;\n  inset: 0;\n  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.05) 30%, rgba(0, 0, 0, 0.55) 100%);\n  pointer-events: none;\n}\n\n/* --- stage.css --- */\n/* ---------------- Layout & Album Art ---------------- */\n.fr-stage {\n  position: relative;\n  z-index: 2;\n  height: 100%;\n  display: grid;\n  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);\n  grid-template-rows: 1fr;\n  grid-template-areas: \"art lyrics\";\n  padding: clamp(24px, 3.2vw, 64px);\n  padding-bottom: clamp(100px, 14vh, 160px);\n  gap: clamp(16px, 2vw, 40px);\n  opacity: 0;\n  transform: translateY(24px) scale(0.98);\n  transition: grid-template-columns 0.8s cubic-bezier(0.2, 0.8, 0.2, 1), gap 0.8s, opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms, transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-stage {\n  opacity: 1;\n  transform: translateY(0) scale(1);\n}\n\n.fr-stage.fr-centered {\n  grid-template-columns: 1fr;\n  grid-template-areas: \"art\";\n}\n\n.fr-stage.fr-centered .fr-lyrics-panel {\n  display: none;\n}\n\n/* ---------------- Album art ---------------- */\n.fr-art-panel {\n  grid-area: art;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 0;\n  min-width: 0;\n}\n\n.fr-art-wrap {\n  position: relative;\n  width: min(58vh, 44vw, 640px);\n  aspect-ratio: 1 / 1;\n  transition: width 300ms ease;\n}\n\n.fr-stage.fr-size-medium .fr-art-wrap { width: min(48vh, 35vw, 520px); }\n.fr-stage.fr-size-small .fr-art-wrap { width: min(38vh, 28vw, 420px); }\n.fr-stage.fr-centered .fr-art-wrap { width: min(62vh, 40vw, 720px); }\n\n.fr-art-img {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n  border-radius: var(--fr-radius);\n  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.65);\n  opacity: 0;\n  transform: scale(0.985);\n  transition: opacity 520ms ease, transform 520ms cubic-bezier(.2, .8, .2, 1), box-shadow 300ms ease;\n}\n\n.fr-art-img.fr-art-active {\n  opacity: 1;\n  transform: scale(1);\n}\n\n.fr-art-wrap.fr-no-shadow .fr-art-img {\n  box-shadow: none;\n}\n\n.fr-art-wrap.fr-glow::after {\n  content: \"\";\n  position: absolute;\n  inset: -6%;\n  border-radius: calc(var(--fr-radius) + 10px);\n  background: var(--fr-art-glow, transparent);\n  filter: blur(48px);\n  opacity: 0.55;\n  z-index: -1;\n  transition: background 700ms ease;\n}\n\n.fr-art-wrap:hover .fr-art-img {\n  transform: scale(1.012);\n}\n\n.fr-meta {\n  margin-top: clamp(18px, 2vw, 32px);\n  text-align: left;\n  max-width: min(58vh, 44vw, 640px);\n  transition: opacity 300ms ease, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-meta.fr-meta-animating {\n  opacity: 0;\n  transform: translateY(8px);\n}\n\n.fr-stage.fr-centered .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n}\n\n.fr-title {\n  font-size: clamp(22px, 2.4vw, 38px);\n  font-weight: 700;\n  letter-spacing: -0.01em;\n  line-height: 1.15;\n  margin: 0 0 6px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-artist {\n  font-size: clamp(14px, 1.2vw, 18px);\n  color: var(--fr-fg-dim);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-album {\n  font-size: clamp(12px, 1vw, 15px);\n  color: var(--fr-fg-faint);\n  margin: 0;\n}\n\n/* ---------------- Progress Ring ---------------- */\n.fr-progress-ring {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  overflow: visible;\n  pointer-events: none;\n  z-index: 3;\n  transform: rotate(-90deg);\n  transform-origin: center;\n  opacity: 0;\n  transition: opacity 400ms ease;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-progress-ring {\n  opacity: 0.75;\n}\n\n.fr-progress-ring-rect {\n  fill: transparent;\n  stroke: var(--fr-word-accent, #fff);\n  stroke-width: 4;\n  stroke-linecap: round;\n  stroke-dasharray: 100;\n  stroke-dashoffset: 100;\n  transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;\n}\n\n/* --- lyrics.css --- */\n/* ---------------- Lyrics Panel (True Per-Line & Per-Word Waterfall Engine) ---------------- */\n.fr-lyrics-panel {\n  grid-area: lyrics;\n  position: relative;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n}\n\n/* ---------------- \"Provided by\" 3-Second Startup Badge ---------------- */\n.fr-provider-badge {\n  position: absolute;\n  top: 10px;\n  left: 14px;\n  z-index: 8;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 14px;\n  border-radius: 999px;\n  background: rgba(18, 18, 24, 0.74);\n  backdrop-filter: blur(28px) saturate(1.8);\n  -webkit-backdrop-filter: blur(28px) saturate(1.8);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.16);\n  pointer-events: none;\n  opacity: 0;\n  transform: translate3d(0, -10px, 0) scale(0.96);\n  transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),\n              transform 400ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-provider-badge.fr-show {\n  opacity: 1;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-provider-dot {\n  width: 6px;\n  height: 6px;\n  border-radius: 50%;\n  background: #30d158;\n  box-shadow: 0 0 8px rgba(48, 209, 88, 0.85);\n  flex-shrink: 0;\n}\n\n.fr-provider-prefix {\n  font-size: 11.5px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-provider-name {\n  font-size: 12px;\n  font-weight: 700;\n  color: #ffffff;\n}\n\n.fr-provider-tag {\n  font-size: 9.5px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.13);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n/* ---------------- Scroll & Waterfall Viewport ---------------- */\n.fr-lyrics-scroll {\n  --fr-word-step: 120ms;\n  --fr-word-dur: 1050ms;\n  --fr-line-dur: 1050ms;\n  --fr-word-drop-future: -9px;\n  --fr-word-drop-past: 7px;\n  flex: 1;\n  overflow: hidden;\n  position: relative;\n  mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  -webkit-mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  padding: 6vh 14px 40vh 14px;\n  scrollbar-width: none;\n  opacity: 0;\n  transition: opacity 420ms ease;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"intense\"] {\n  --fr-word-step: 165ms;\n  --fr-word-dur: 1350ms;\n  --fr-line-dur: 1280ms;\n  --fr-word-drop-future: -13px;\n  --fr-word-drop-past: 10px;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] {\n  --fr-word-step: 0ms;\n  --fr-word-dur: 500ms;\n  --fr-line-dur: 550ms;\n  --fr-word-drop-future: 0px;\n  --fr-word-drop-past: 0px;\n}\n\n.fr-lyrics-scroll.fr-unsynced {\n  overflow-y: auto;\n  padding: 14vh 14px 28vh 14px;\n}\n\n.fr-lyrics-scroll.fr-ready {\n  opacity: 1;\n}\n\n.fr-lyrics-scroll::-webkit-scrollbar {\n  display: none;\n}\n\n/* ---------------- Per-Line Staggered Waterfall Positioning ---------------- */\n.fr-lyric-line {\n  --fr-scale: 0.94;\n  font-size: clamp(20px, 2.35vw, 31px);\n  font-weight: 600;\n  letter-spacing: -0.01em;\n  line-height: 1.48;\n  color: rgba(255, 255, 255, 0.32);\n  margin: 4px 0;\n  padding: 10px 14px;\n  border-radius: 16px;\n  transform-origin: left center;\n  transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));\n  filter: blur(0px);\n  transition:\n    transform var(--fr-line-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),\n    color 650ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),\n    opacity 680ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),\n    filter 680ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),\n    background-color 250ms ease;\n  cursor: default;\n  -webkit-font-smoothing: antialiased;\n  -moz-osx-font-smoothing: grayscale;\n  will-change: transform, filter, opacity;\n}\n\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-line,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word {\n  transition: none !important;\n}\n\n.fr-lyrics-scroll.fr-user-scrolling .fr-lyric-line {\n  transition:\n    transform 90ms linear 0ms,\n    color 300ms ease 0ms,\n    filter 300ms ease 0ms !important;\n}\n\n/* Depth-of-field distance classes */\n.fr-lyric-line.fr-near-1 {\n  --fr-scale: 0.97;\n  color: rgba(255, 255, 255, 0.42);\n  filter: blur(0.5px);\n}\n\n.fr-lyric-line.fr-near-2 {\n  --fr-scale: 0.945;\n  color: rgba(255, 255, 255, 0.28);\n  filter: blur(1.3px);\n}\n\n.fr-lyric-line.fr-far {\n  --fr-scale: 0.92;\n  color: rgba(255, 255, 255, 0.18);\n  filter: blur(2.2px);\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] .fr-lyric-line {\n  filter: none !important;\n}\n\n.fr-lyric-line.fr-active {\n  --fr-scale: 1.02;\n  color: #ffffff;\n  filter: blur(0px);\n}\n\n/* ---------------- Top-to-Bottom Word Waterfall Flow (Line-Synced Mode) ---------------- */\n.fr-lyric-word {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n/* ---------------- Full-Sentence Top-to-Bottom Waterfall Flow (Line-Synced 'synced' Mode) ---------------- */\n/* Flows continuously from the top of the first letter ('b') across the whole sentence\n   down to the bottom of the last letter ('m') over the full bar duration. */\n.fr-lyric-sentence {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.78;\n  transition:\n    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),\n    opacity 680ms ease;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {\n  color: transparent;\n  background-image: linear-gradient(\n    168deg,\n    #ffffff 0%,\n    #ffffff calc(var(--bar-pct, -14%) - 18%),\n    rgba(255, 255, 255, 0.88) calc(var(--bar-pct, -14%) - 3%),\n    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, -14%) + 16%),\n    rgba(255, 255, 255, 0.32) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);\n  filter: drop-shadow(0 3px 18px rgba(255, 255, 255, 0.28));\n  will-change: transform, background-image;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.65;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),\n    opacity 720ms ease;\n}\n\n/* ---------------- Top-to-Bottom Word Waterfall Flow (Word-Synced / Karaoke Mode) ---------------- */\n/* Uses the exact same silky waterfall drop & glow aesthetic as line-synced mode,\n   triggered at each word's exact studio timestamp (w.startMs -> w.endMs). */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.72;\n  transition:\n    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),\n    opacity 680ms ease,\n    color 680ms ease,\n    text-shadow 680ms ease;\n}\n\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active {\n  color: rgba(255, 255, 255, 0.36);\n}\n\n/* Unsung word inside active line: poised above (-9px) in soft muted white, waiting for its timestamp */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {\n  color: rgba(255, 255, 255, 0.36);\n  opacity: 0.78;\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  text-shadow: none;\n  transition:\n    transform var(--w-dur, 920ms) cubic-bezier(0.22, 0.61, 0.36, 1),\n    opacity var(--w-dur, 760ms) cubic-bezier(0.22, 0.61, 0.36, 1),\n    color var(--w-dur, 760ms) cubic-bezier(0.22, 0.61, 0.36, 1),\n    text-shadow var(--w-dur, 760ms) ease;\n}\n\n/* Word currently being sung: glides down smoothly to 0px and blooms with white light */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {\n  color: #ffffff;\n  opacity: 1;\n  transform: translate3d(0, -1.5px, 0) scale(1.015);\n  text-shadow: 0 0 18px rgba(255, 255, 255, 0.52), 0 3px 22px rgba(255, 255, 255, 0.34);\n}\n\n/* Word finished being sung: rests cleanly at 0px in full bright white */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {\n  color: #ffffff;\n  opacity: 1;\n  transform: translate3d(0, 0px, 0) scale(1);\n  text-shadow: 0 3px 22px rgba(255, 255, 255, 0.32);\n}\n\n/* Past line in word-synced mode: words cascade gently downward (+7px) just like line-synced mode */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.65;\n  text-shadow: none;\n  transition:\n    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94) calc(var(--w-idx, 0) * 75ms),\n    opacity 720ms ease calc(var(--w-idx, 0) * 75ms);\n}\n\n/* Interactive hover for synced lines */\n.fr-lyric-line.fr-synced {\n  cursor: pointer;\n}\n\n.fr-lyric-line.fr-synced:hover {\n  background-color: rgba(255, 255, 255, 0.05);\n  color: rgba(255, 255, 255, 0.85);\n  filter: blur(0px);\n}\n\n/* ---------------- Unsynced Teleprompter Mode ---------------- */\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-line {\n  font-size: clamp(19px, 2.2vw, 28px);\n  font-weight: 500;\n  line-height: 1.6;\n  color: rgba(255, 255, 255, 0.84);\n  transform: none !important;\n  filter: none !important;\n  padding: 8px 14px;\n}\n\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-word {\n  transform: none !important;\n  opacity: 1 !important;\n}\n\n/* ---------------- Instrumental Symbol & Apple Music Interlude Dots (• • •) ---------------- */\n.fr-lyric-line.fr-is-music {\n  padding: 16px 14px;\n}\n\n.fr-interlude-dots {\n  display: flex;\n  width: 100%;\n  align-items: center;\n  gap: 10px;\n  height: 0;\n  opacity: 0;\n  overflow: hidden;\n  margin-bottom: 0;\n  transform: translate3d(0, -6px, 0) scale(0.75);\n  transform-origin: left center;\n  pointer-events: none;\n  transition:\n    height 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    margin-bottom 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 380ms ease,\n    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-interlude-dots.fr-inline-music-dots {\n  height: 28px;\n  opacity: 0.45;\n  overflow: visible;\n  transform: scale(0.9);\n}\n\n.fr-interlude-dots.fr-interlude-active {\n  height: 28px;\n  margin-bottom: 10px;\n  opacity: 1;\n  overflow: visible;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-interlude-dot {\n  width: 11px;\n  height: 11px;\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0.25;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.55);\n  transition: opacity 150ms linear;\n  will-change: transform, opacity;\n}\n\n/* ---------------- Resume Sync Pill ---------------- */\n.fr-resume-sync {\n  position: absolute;\n  bottom: 12px;\n  left: 50%;\n  transform: translateX(-50%);\n  background: rgba(24, 24, 30, 0.78);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  padding: 8px 18px;\n  border-radius: 999px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 220ms ease, transform 220ms ease;\n  z-index: 9;\n}\n\n.fr-resume-sync.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateX(-50%) translateY(-4px);\n}\n\n.fr-resume-sync:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n/* ---------------- Instrumental / No-Lyrics Panel ---------------- */\n.fr-instrumental {\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  transform: translate(-50%, -50%) scale(0.85);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 20px;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);\n  z-index: 3;\n}\n\n.fr-instrumental.fr-show {\n  opacity: 1;\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-instrumental-bars {\n  display: flex;\n  align-items: flex-end;\n  gap: 5px;\n  height: 44px;\n}\n\n.fr-instrumental-bar {\n  width: 5px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.75);\n  animation: instrBar 1.2s ease-in-out infinite alternate;\n}\n\n.fr-instrumental-bar:nth-child(1) { animation-delay: 0s;    animation-duration: 0.9s; }\n.fr-instrumental-bar:nth-child(2) { animation-delay: 0.15s; animation-duration: 1.1s; }\n.fr-instrumental-bar:nth-child(3) { animation-delay: 0.3s;  animation-duration: 0.8s; }\n.fr-instrumental-bar:nth-child(4) { animation-delay: 0.1s;  animation-duration: 1.3s; }\n.fr-instrumental-bar:nth-child(5) { animation-delay: 0.25s; animation-duration: 1.0s; }\n.fr-instrumental-bar:nth-child(6) { animation-delay: 0.4s;  animation-duration: 0.85s; }\n.fr-instrumental-bar:nth-child(7) { animation-delay: 0.05s; animation-duration: 1.2s; }\n\n@keyframes instrBar {\n  0%   { height: 6px; opacity: 0.35; }\n  100% { height: 40px; opacity: 0.95; }\n}\n\n.fr-instrumental-label {\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.48);\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n\n/* --- controls.css --- */\n/* ---------------- Bottom Dock (Controls + Volume + Queue) ---------------- */\n.fr-bottom-bar {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 40px);\n  left: 50%;\n  transform: translateX(-50%);\n  width: min(92vw, 1000px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 28px;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 32px;\n  z-index: 5;\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-bottom-bar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translate(-50%, 40px) scale(0.95);\n}\n\n.fr-controls-left,\n.fr-controls-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-controls-center {\n  flex: 1;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  font-size: 12px;\n  color: var(--fr-fg-dim);\n  font-variant-numeric: tabular-nums;\n}\n\n.fr-progress-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-progress-bar:hover {\n  overflow: visible;\n}\n\n.fr-progress-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 0%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n}\n\n.fr-progress-bar:hover .fr-progress-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-progress-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 0%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 120ms ease;\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-progress-bar:hover .fr-progress-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-btn {\n  background: transparent;\n  border: none;\n  color: var(--fr-fg-dim);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 10px;\n  border-radius: 50%;\n  transition: color 150ms ease, transform 100ms ease, background 150ms ease;\n}\n\n.fr-btn:hover {\n  color: var(--fr-fg);\n  background: rgba(255, 255, 255, 0.08);\n}\n\n.fr-btn:active {\n  transform: scale(0.92);\n}\n\n.fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-btn-play {\n  width: 48px;\n  height: 48px;\n  background: var(--fr-fg);\n  color: #000;\n}\n\n.fr-btn-play:hover {\n  background: var(--fr-fg);\n  transform: scale(1.04);\n  color: #000;\n}\n\n.fr-btn svg {\n  width: 22px;\n  height: 22px;\n}\n\n.fr-btn-play svg {\n  width: 24px;\n  height: 24px;\n}\n\n.fr-volume-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  width: 140px;\n}\n\n.fr-volume-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-volume-bar:hover {\n  overflow: visible;\n}\n\n.fr-volume-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 100%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n  transition: width 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-volume-bar:hover .fr-volume-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-volume-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 100%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 150ms ease, left 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-volume-bar:hover .fr-volume-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n/* --- topbar.css --- */\n/* ---------------- Top bar ---------------- */\n.fr-topbar {\n  position: absolute;\n  top: clamp(18px, 2.4vw, 36px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 14;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border-radius: 999px;\n  padding: 6px 8px;\n  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-topbar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-20px) scale(0.95);\n}\n\n.fr-topbar .fr-btn {\n  padding: 8px;\n  border-radius: 50%;\n  width: 36px;\n  height: 36px;\n}\n\n.fr-topbar .fr-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n.fr-topbar-sep {\n  width: 1px;\n  height: 20px;\n  background: rgba(255, 255, 255, 0.12);\n  margin: 0 2px;\n}\n\n.fr-topbar .fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-topbar .fr-btn.fr-heart-active {\n  color: #ff4d6a;\n}\n\n/* --- settings.css --- */\n/* ---------------- Settings panel (Liquid Glass) ---------------- */\n.fr-settings-panel {\n  position: absolute;\n  top: clamp(60px, 6vw, 84px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 25;\n  width: min(360px, 92vw);\n  max-height: min(84vh, 700px);\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(24, 24, 30, 0.85);\n  backdrop-filter: blur(50px) saturate(2);\n  -webkit-backdrop-filter: blur(50px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 28px;\n  padding: 22px 24px;\n  display: flex;\n  flex-direction: column;\n  gap: 16px;\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-10px) scale(0.96);\n  transform-origin: top right;\n  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-settings-panel::-webkit-scrollbar {\n  width: 5px;\n}\n.fr-settings-panel::-webkit-scrollbar-track {\n  background: transparent;\n}\n.fr-settings-panel::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.2);\n  border-radius: 999px;\n}\n.fr-settings-panel::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n\n.fr-settings-panel.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-settings-section {\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-settings-divider {\n  height: 1px;\n  background: rgba(255, 255, 255, 0.08);\n  margin: 2px 0;\n}\n\n.fr-settings-title {\n  font-size: 11px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin: 0 0 2px 0;\n}\n\n.fr-settings-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  min-height: 32px;\n}\n\n.fr-settings-row label {\n  font-size: 14px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.9);\n  user-select: none;\n}\n\n/* ---------------- Custom Liquid Glass Dropdown ---------------- */\n.fr-select-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-select-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg);\n  border-radius: 999px;\n  padding: 6px 14px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n  max-width: 170px;\n}\n\n.fr-select-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.02);\n}\n\n.fr-select-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-select-wrap.fr-open .fr-select-btn {\n  background: rgba(255, 255, 255, 0.18);\n  border-color: rgba(255, 255, 255, 0.38);\n  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);\n}\n\n.fr-select-label {\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.fr-select-arrow {\n  width: 16px;\n  height: 16px;\n  fill: currentColor;\n  flex-shrink: 0;\n  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-wrap.fr-open .fr-select-arrow {\n  transform: rotate(180deg);\n}\n\n.fr-select-menu {\n  position: absolute;\n  top: calc(100% + 6px);\n  right: 0;\n  width: max-content;\n  min-width: 190px;\n  max-width: 285px;\n  max-height: 260px;\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(20, 20, 26, 0.96);\n  backdrop-filter: blur(44px) saturate(2);\n  -webkit-backdrop-filter: blur(44px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 18px;\n  padding: 6px;\n  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.18);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-menu::-webkit-scrollbar {\n  width: 4px;\n}\n.fr-select-menu::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.25);\n  border-radius: 999px;\n}\n\n.fr-select-wrap.fr-open .fr-select-menu {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-select-item {\n  padding: 8px 12px;\n  border-radius: 12px;\n  font-size: 13px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.86);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  transition: all 0.15s ease;\n  user-select: none;\n}\n\n.fr-select-item-left {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n}\n\n.fr-select-item-title {\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-select-item-sub {\n  font-size: 10px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.45);\n  letter-spacing: 0.01em;\n  white-space: nowrap;\n}\n\n.fr-select-item-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-shrink: 0;\n}\n\n.fr-select-item-badge {\n  font-size: 10px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.09);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: rgba(255, 255, 255, 0.72);\n}\n\n.fr-select-item:hover {\n  background: rgba(255, 255, 255, 0.11);\n  color: #ffffff;\n}\n\n.fr-select-item.fr-selected {\n  background: rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  font-weight: 600;\n}\n\n.fr-select-item.fr-selected .fr-select-item-badge {\n  background: rgba(255, 255, 255, 0.2);\n  border-color: rgba(255, 255, 255, 0.32);\n  color: #ffffff;\n}\n\n.fr-select-item .fr-check {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  flex-shrink: 0;\n  opacity: 0;\n}\n\n.fr-select-item.fr-selected .fr-check {\n  opacity: 1;\n}\n\n/* ---------------- Custom Liquid Glass Color Picker ---------------- */\n.fr-color-picker-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg, #ffffff);\n  border-radius: 999px;\n  padding: 5px 12px 5px 6px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n}\n\n.fr-color-swatch-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.03);\n}\n\n.fr-color-swatch-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.22);\n  border-color: var(--fr-word-accent, #1ed760);\n  box-shadow: 0 0 16px rgba(30, 215, 96, 0.25);\n}\n\n.fr-color-swatch-inner {\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.35);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n  flex-shrink: 0;\n  transition: background-color 0.2s ease;\n}\n\n.fr-color-hex-label {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 12px;\n  letter-spacing: 0.04em;\n  color: rgba(255, 255, 255, 0.9);\n}\n\n.fr-color-popup {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  width: 240px;\n  max-height: 480px;\n  overflow-y: auto;\n  scrollbar-width: none;\n  background: rgba(22, 22, 28, 0.96);\n  backdrop-filter: blur(40px) saturate(2);\n  -webkit-backdrop-filter: blur(40px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 22px;\n  padding: 16px;\n  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.2);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-color-popup::-webkit-scrollbar {\n  display: none;\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-popup {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-color-popup-title {\n  font-size: 10px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin-top: 2px;\n}\n\n.fr-color-preset-grid {\n  display: grid;\n  grid-template-columns: repeat(4, 1fr);\n  gap: 10px;\n  justify-items: center;\n}\n\n.fr-color-preset-item {\n  width: 34px;\n  height: 34px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.2);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);\n  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.15s ease, box-shadow 0.15s ease;\n  outline: none;\n}\n\n.fr-color-preset-item:hover {\n  transform: scale(1.18);\n  border-color: rgba(255, 255, 255, 0.7);\n  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);\n}\n\n.fr-color-preset-item.fr-selected {\n  border-color: #ffffff;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.6);\n  transform: scale(1.12);\n}\n\n.fr-check-sm {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));\n  opacity: 0;\n  transition: opacity 0.15s ease;\n}\n\n.fr-color-preset-item.fr-selected .fr-check-sm {\n  opacity: 1;\n}\n\n/* ---------------- Rainbow Hue Slider ---------------- */\n.fr-hue-slider-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding: 4px 0 2px 0;\n}\n\n.fr-hue-slider {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 100%;\n  height: 12px;\n  border-radius: 999px;\n  background: linear-gradient(\n    to right,\n    #ff0000 0%,\n    #ffff00 17%,\n    #00ff00 33%,\n    #00ffff 50%,\n    #0000ff 67%,\n    #ff00ff 83%,\n    #ff0000 100%\n  );\n  outline: none;\n  cursor: pointer;\n  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n}\n\n.fr-hue-slider::-webkit-slider-thumb {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #ffffff;\n  border: 2px solid rgba(0, 0, 0, 0.4);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.fr-hue-slider::-webkit-slider-thumb:hover {\n  transform: scale(1.2);\n}\n\n.fr-color-custom-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding-top: 8px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-color-wheel-btn {\n  background: transparent;\n  border: none;\n  padding: 0;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  outline: none;\n  border-radius: 50%;\n  transition: transform 0.2s ease;\n}\n\n.fr-color-wheel-btn:hover {\n  transform: scale(1.15);\n}\n\n.fr-color-wheel-btn:active {\n  transform: scale(0.95);\n}\n\n.fr-color-preview-circle {\n  width: 28px;\n  height: 28px;\n  border-radius: 50%;\n  border: 2px solid rgba(255, 255, 255, 0.4);\n  flex-shrink: 0;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);\n}\n\n.fr-color-text-input {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  border-radius: 10px;\n  padding: 6px 12px;\n  color: #ffffff;\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 13px;\n  font-weight: 600;\n  letter-spacing: 0.05em;\n  outline: none;\n  transition: border-color 0.2s ease, background 0.2s ease;\n}\n\n.fr-color-text-input:focus {\n  border-color: var(--fr-word-accent, #1ed760);\n  background: rgba(255, 255, 255, 0.14);\n}\n\n.fr-color-input {\n  -webkit-appearance: none;\n  appearance: none;\n  border: 2px solid rgba(255, 255, 255, 0.22);\n  width: 32px;\n  height: 32px;\n  border-radius: 50%;\n  cursor: pointer;\n  background: transparent;\n  padding: 0;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);\n  transition: transform 0.2s ease, border-color 0.2s ease;\n  outline: none;\n}\n\n.fr-color-input:hover {\n  transform: scale(1.12);\n  border-color: rgba(255, 255, 255, 0.6);\n}\n\n.fr-color-input::-webkit-color-swatch-wrapper {\n  padding: 0;\n}\n\n.fr-color-input::-webkit-color-swatch {\n  border: none;\n  border-radius: 50%;\n}\n\n/* ---------------- Toggles ---------------- */\n.fr-toggle {\n  width: 48px;\n  height: 26px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.3);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(255, 255, 255, 0.05);\n  position: relative;\n  cursor: pointer;\n  border: none;\n  outline: none;\n  transition: background 0.3s ease;\n  flex-shrink: 0;\n}\n\n.fr-toggle::after {\n  content: \"\";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  background: #ffffff;\n  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);\n  transition: left 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-toggle.fr-on {\n  background: var(--fr-word-accent, #1ed760);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(255, 255, 255, 0.05);\n}\n\n.fr-toggle.fr-on::after {\n  left: 25px;\n}\n\n/* --- ambient.css --- */\n/* ---------------- Ambient Effects ---------------- */\n.fr-ambient {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 1;\n  overflow: hidden;\n  mix-blend-mode: screen;\n  opacity: 0;\n  transition: opacity 2s ease;\n}\n\n.fr-ambient.fr-show {\n  opacity: 0.55;\n}\n\n.fr-orb {\n  position: absolute;\n  border-radius: 50%;\n  filter: blur(80px);\n  opacity: 0.6;\n  animation: floatOrb 20s infinite alternate ease-in-out;\n}\n\n@keyframes floatOrb {\n  0% { transform: translate(0, 0) scale(1); }\n  100% { transform: translate(100px, -100px) scale(1.2); }\n}\n\n.fr-particle {\n  position: absolute;\n  border-radius: 50%;\n  opacity: 0;\n  animation: floatUp linear infinite;\n}\n\n@keyframes floatUp {\n  0% { transform: translateY(110vh) scale(0.5); opacity: 0; }\n  20% { opacity: 0.3; }\n  80% { opacity: 0.3; }\n  100% { transform: translateY(-10vh) scale(1.5); opacity: 0; }\n}\n\n/* --- upnext.css --- */\n/* ---------------- Up Next Card ---------------- */\n.fr-up-next {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 64px);\n  right: clamp(24px, 3.2vw, 64px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 24px 12px 12px;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  z-index: 10;\n  transform: translateX(120%);\n  opacity: 0;\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.6s ease;\n  pointer-events: auto;\n  cursor: pointer;\n}\n\n.fr-up-next.fr-show {\n  transform: translateX(0);\n  opacity: 1;\n}\n\n.fr-up-next-img {\n  width: 48px;\n  height: 48px;\n  border-radius: 50%;\n  object-fit: cover;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n}\n\n.fr-up-next-info {\n  display: flex;\n  flex-direction: column;\n  max-width: 200px;\n}\n\n.fr-up-next-label {\n  font-size: 10px;\n  font-weight: 700;\n  color: var(--fr-fg-dim);\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  margin-bottom: 2px;\n}\n\n.fr-up-next-title {\n  font-size: 14px;\n  font-weight: 700;\n  color: var(--fr-fg);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-up-next-artist {\n  font-size: 12px;\n  color: var(--fr-fg-faint);\n  margin: 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-up-next {\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* --- idle.css --- */\n/* ---------------- Idle Mode & Clock ---------------- */\n#fullscreen-reloaded-root.fr-idle,\n#fullscreen-reloaded-root.fr-idle * {\n  cursor: none !important;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-controls,\n#fullscreen-reloaded-root.fr-idle .fr-topbar,\n#fullscreen-reloaded-root.fr-idle .fr-side-controls,\n#fullscreen-reloaded-root.fr-idle .fr-settings-panel,\n#fullscreen-reloaded-root.fr-idle .fr-resume-sync {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(12px);\n}\n\n.fr-controls,\n.fr-topbar,\n.fr-side-controls,\n.fr-settings-panel,\n.fr-resume-sync {\n  transition: opacity 400ms ease, transform 400ms ease;\n}\n\n/* ---------------- Clock & Idle Cinema Mode ---------------- */\n.fr-clock {\n  position: absolute;\n  left: 50%;\n  font-size: clamp(50px, 6vw, 80px);\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.9);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 10;\n  letter-spacing: 0.02em;\n  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.7);\n  font-variant-numeric: tabular-nums;\n  line-height: 1;\n}\n\n.fr-clock.fr-pos-top {\n  top: clamp(24px, 4.5vh, 48px);\n  bottom: auto;\n  transform: translateX(-50%) translateY(-20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, top 0.4s;\n}\n\n.fr-clock.fr-pos-bottom {\n  bottom: clamp(28px, 5vh, 56px);\n  top: auto;\n  transform: translateX(-50%) translateY(20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, bottom 0.4s;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-top,\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-bottom {\n  opacity: 1;\n  transform: translateX(-50%) translateY(0);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n  grid-template-columns: 1fr 0px;\n  gap: 0;\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-lyrics-panel {\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.8s ease;\n}\n\n/* Gracefully scale artwork in idle mode to prevent clock collision */\n#fullscreen-reloaded-root.fr-idle .fr-art-wrap {\n  width: min(48vh, 38vw, 520px);\n  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n/* Shift artwork cleanly away from clock */\n#fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\n  transform: translateY(clamp(45px, 7vh, 80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n  transform: translateY(clamp(-45px, -7vh, -80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n  margin-top: clamp(20px, 2.8vh, 36px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-title {\n  font-size: clamp(28px, 3.2vw, 44px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-artist {\n  font-size: clamp(16px, 1.6vw, 22px);\n}\n\n/* ---------------- Responsive Styles ---------------- */\n@media (max-aspect-ratio: 5/4), (max-width: 900px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: auto 1fr;\n    grid-template-areas: \"art\" \"lyrics\";\n    gap: 16px;\n    padding-top: clamp(24px, 4vh, 40px);\n  }\n\n  .fr-stage.fr-centered {\n    grid-template-rows: 1fr;\n  }\n\n  .fr-lyrics-panel {\n    display: flex;\n  }\n\n  .fr-lyrics-scroll {\n    padding: 4vh 4px 15vh 4px;\n  }\n\n  .fr-art-wrap {\n    width: min(35vh, 65vw, 400px);\n    margin: 0 auto;\n  }\n\n  .fr-meta {\n    text-align: center;\n    margin-left: auto;\n    margin-right: auto;\n    max-width: 80vw;\n  }\n\n  /* Make bottom dock more compact */\n  .fr-bottom-bar {\n    gap: 12px;\n    padding: 12px 16px;\n    width: 94vw;\n  }\n\n  .fr-volume-row {\n    width: 90px;\n  }\n\n  /* Override idle grid for portrait */\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\n    transform: translateY(clamp(30px, 5vh, 60px));\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n    transform: translateY(clamp(-30px, -5vh, -60px));\n  }\n}\n\n@media (max-width: 600px) {\n  .fr-controls-center {\n    display: none; /* Hide progress bar on small screens */\n  }\n}\n\n@media (max-height: 500px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n    grid-template-areas: \"art\";\n  }\n\n  .fr-lyrics-panel {\n    display: none !important;\n  }\n\n  .fr-art-wrap {\n    width: min(46vh, 60vw, 420px);\n  }\n}\n";
+const STYLES = "\n/* --- variables.css --- */\n:root {\n  --fr-bg: #060607;\n  --fr-fg: #ffffff;\n  --fr-fg-dim: rgba(255, 255, 255, 0.78);\n  --fr-fg-faint: rgba(255, 255, 255, 0.52);\n  --fr-accent: #ffffff;\n  --fr-accent-2: #101014;\n  --fr-radius: 18px;\n  --fr-font: \"Spotify Circular\", \"Circular Std\", -apple-system, \"Segoe UI\", Helvetica, Arial, sans-serif;\n  --fr-transition: 900ms;\n}\n\n#fullscreen-reloaded-root {\n  position: fixed;\n  inset: 0;\n  z-index: 999999;\n  font-family: var(--fr-font);\n  color: var(--fr-fg);\n  visibility: hidden;\n  opacity: 0;\n  transition: opacity 600ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 600ms;\n  overflow: hidden;\n  user-select: none;\n}\n\n#fullscreen-reloaded-root.fr-open {\n  visibility: visible;\n  opacity: 1;\n}\n\n#fullscreen-reloaded-root * {\n  box-sizing: border-box;\n}\n\n/* --- background.css --- */\n/* ---------------- Background ---------------- */\n.fr-bg-root {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  z-index: 0;\n}\n\n.fr-bg-layer {\n  position: absolute;\n  inset: -5%;\n  width: 110%;\n  height: 110%;\n  background-position: center;\n  background-size: cover;\n  opacity: 0;\n  transition: opacity var(--fr-transition) ease;\n  will-change: opacity;\n}\n\n.fr-bg-layer.fr-bg-active {\n  opacity: 1;\n}\n\n.fr-bg-tint {\n  position: absolute;\n  inset: 0;\n  background: radial-gradient(ellipse at 30% 20%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 75%);\n  pointer-events: none;\n}\n\n.fr-bg-scrim {\n  position: absolute;\n  inset: 0;\n  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.05) 30%, rgba(0, 0, 0, 0.55) 100%);\n  pointer-events: none;\n}\n\n/* --- stage.css --- */\n/* ---------------- Layout & Album Art ---------------- */\n.fr-stage {\n  position: relative;\n  z-index: 2;\n  height: 100%;\n  display: grid;\n  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);\n  grid-template-rows: 1fr;\n  grid-template-areas: \"art lyrics\";\n  padding: clamp(24px, 3.2vw, 64px);\n  padding-bottom: clamp(100px, 14vh, 160px);\n  gap: clamp(16px, 2vw, 40px);\n  opacity: 0;\n  transform: translateY(24px) scale(0.98);\n  transition: grid-template-columns 0.8s cubic-bezier(0.2, 0.8, 0.2, 1), gap 0.8s, opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms, transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-stage {\n  opacity: 1;\n  transform: translateY(0) scale(1);\n}\n\n.fr-stage.fr-centered {\n  grid-template-columns: 1fr;\n  grid-template-areas: \"art\";\n}\n\n.fr-stage.fr-centered .fr-lyrics-panel {\n  display: none;\n}\n\n/* ---------------- Album art ---------------- */\n.fr-art-panel {\n  grid-area: art;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 0;\n  min-width: 0;\n}\n\n.fr-art-wrap {\n  --fr-art-beat: 0;\n  --fr-glow-beat: 0.55;\n  --fr-glow-spread: 0%;\n  position: relative;\n  width: min(58vh, 44vw, 640px);\n  aspect-ratio: 1 / 1;\n  transform: scale(calc(1 + var(--fr-art-beat, 0)));\n  transition: width 300ms ease, transform 75ms linear;\n  will-change: transform;\n}\n\n.fr-stage.fr-size-medium .fr-art-wrap { width: min(48vh, 35vw, 520px); }\n.fr-stage.fr-size-small .fr-art-wrap { width: min(38vh, 28vw, 420px); }\n.fr-stage.fr-centered .fr-art-wrap { width: min(62vh, 40vw, 720px); }\n\n.fr-art-img {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n  border-radius: var(--fr-radius);\n  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.65);\n  opacity: 0;\n  transform: scale(0.985);\n  transition: opacity 520ms ease, transform 520ms cubic-bezier(.2, .8, .2, 1), box-shadow 300ms ease;\n}\n\n.fr-art-img.fr-art-active {\n  opacity: 1;\n  transform: scale(1);\n}\n\n.fr-art-wrap.fr-no-shadow .fr-art-img {\n  box-shadow: none;\n}\n\n.fr-art-wrap.fr-glow::after {\n  content: \"\";\n  position: absolute;\n  inset: calc(-6% - var(--fr-glow-spread, 0%));\n  border-radius: calc(var(--fr-radius) + 14px);\n  background: var(--fr-art-glow, transparent);\n  filter: blur(50px);\n  opacity: var(--fr-glow-beat, 0.55);\n  z-index: -1;\n  transition: background 700ms ease, opacity 85ms linear, inset 85ms linear;\n  will-change: opacity, inset;\n}\n\n.fr-art-wrap:hover .fr-art-img {\n  transform: scale(1.012);\n}\n\n.fr-meta {\n  margin-top: clamp(18px, 2vw, 32px);\n  text-align: left;\n  max-width: min(58vh, 44vw, 640px);\n  transition: opacity 300ms ease, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-meta.fr-meta-animating {\n  opacity: 0;\n  transform: translateY(8px);\n}\n\n.fr-stage.fr-centered .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n}\n\n.fr-title {\n  font-size: clamp(22px, 2.4vw, 38px);\n  font-weight: 700;\n  letter-spacing: -0.01em;\n  line-height: 1.15;\n  margin: 0 0 6px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-artist {\n  font-size: clamp(14px, 1.2vw, 18px);\n  color: var(--fr-fg-dim);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-album {\n  font-size: clamp(12px, 1vw, 15px);\n  color: var(--fr-fg-faint);\n  margin: 0;\n}\n\n/* ---------------- Progress Ring ---------------- */\n.fr-progress-ring {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  overflow: visible;\n  pointer-events: none;\n  z-index: 3;\n  transform: rotate(-90deg);\n  transform-origin: center;\n  opacity: 0;\n  transition: opacity 400ms ease;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-progress-ring {\n  opacity: 0.75;\n}\n\n.fr-progress-ring-rect {\n  fill: transparent;\n  stroke: var(--fr-word-accent, #fff);\n  stroke-width: 4;\n  stroke-linecap: round;\n  stroke-dasharray: 100;\n  stroke-dashoffset: 100;\n  transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;\n}\n\n/* --- lyrics.css --- */\n/* ---------------- Lyrics Panel (True Per-Line & Per-Word Waterfall Engine) ---------------- */\n.fr-lyrics-panel {\n  grid-area: lyrics;\n  position: relative;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n}\n\n/* ---------------- \"Provided by\" 3-Second Startup Badge ---------------- */\n.fr-provider-badge {\n  position: absolute;\n  top: 10px;\n  left: 14px;\n  z-index: 8;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 14px;\n  border-radius: 999px;\n  background: rgba(18, 18, 24, 0.74);\n  backdrop-filter: blur(28px) saturate(1.8);\n  -webkit-backdrop-filter: blur(28px) saturate(1.8);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.16);\n  pointer-events: none;\n  opacity: 0;\n  transform: translate3d(0, -10px, 0) scale(0.96);\n  transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),\n              transform 400ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-provider-badge.fr-show {\n  opacity: 1;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-provider-dot {\n  width: 6px;\n  height: 6px;\n  border-radius: 50%;\n  background: #30d158;\n  box-shadow: 0 0 8px rgba(48, 209, 88, 0.85);\n  flex-shrink: 0;\n}\n\n.fr-provider-prefix {\n  font-size: 11.5px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-provider-name {\n  font-size: 12px;\n  font-weight: 700;\n  color: #ffffff;\n}\n\n.fr-provider-tag {\n  font-size: 9.5px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.13);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n/* ---------------- Scroll & Waterfall Viewport ---------------- */\n.fr-lyrics-scroll {\n  --fr-word-step: 120ms;\n  --fr-word-dur: 900ms;\n  --fr-line-dur: 820ms;\n  --fr-word-drop-future: -9px;\n  --fr-word-drop-past: 7px;\n  flex: 1;\n  overflow: hidden;\n  position: relative;\n  mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  -webkit-mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  padding: 6vh 14px 40vh 14px;\n  scrollbar-width: none;\n  opacity: 0;\n  transition: opacity 420ms ease;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"intense\"] {\n  --fr-word-step: 165ms;\n  --fr-word-dur: 1150ms;\n  --fr-line-dur: 980ms;\n  --fr-word-drop-future: -13px;\n  --fr-word-drop-past: 10px;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] {\n  --fr-word-step: 0ms;\n  --fr-word-dur: 450ms;\n  --fr-line-dur: 500ms;\n  --fr-word-drop-future: 0px;\n  --fr-word-drop-past: 0px;\n}\n\n.fr-lyrics-scroll.fr-unsynced {\n  overflow-y: auto;\n  padding: 14vh 14px 28vh 14px;\n}\n\n.fr-lyrics-scroll.fr-ready {\n  opacity: 1;\n}\n\n.fr-lyrics-scroll::-webkit-scrollbar {\n  display: none;\n}\n\n/* ---------------- Per-Line Staggered Spring Waterfall Positioning ---------------- */\n.fr-lyric-line {\n  --fr-scale: 0.935;\n  font-size: clamp(20px, 2.35vw, 31px);\n  font-weight: 600;\n  letter-spacing: -0.01em;\n  line-height: 1.48;\n  color: rgba(255, 255, 255, 0.32);\n  margin: 6px 0;\n  padding: 10px 14px;\n  border-radius: 16px;\n  transform-origin: left center;\n  transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));\n  filter: blur(0px);\n  transition:\n    transform var(--fr-line-dur, 820ms) cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    color 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    opacity 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    filter 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    background-color 250ms ease;\n  cursor: default;\n  -webkit-font-smoothing: antialiased;\n  -moz-osx-font-smoothing: grayscale;\n  will-change: transform, filter, opacity;\n}\n\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-line,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-sentence {\n  transition: none !important;\n}\n\n.fr-lyrics-scroll.fr-user-scrolling .fr-lyric-line {\n  transition:\n    transform 90ms linear 0ms,\n    color 300ms ease 0ms,\n    filter 300ms ease 0ms !important;\n}\n\n/* Depth-of-field distance classes */\n.fr-lyric-line.fr-near-1 {\n  --fr-scale: 0.965;\n  color: rgba(255, 255, 255, 0.44);\n  filter: blur(0.6px);\n}\n\n.fr-lyric-line.fr-near-2 {\n  --fr-scale: 0.935;\n  color: rgba(255, 255, 255, 0.28);\n  filter: blur(1.5px);\n}\n\n.fr-lyric-line.fr-far {\n  --fr-scale: 0.905;\n  color: rgba(255, 255, 255, 0.17);\n  filter: blur(2.4px);\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] .fr-lyric-line {\n  filter: none !important;\n}\n\n.fr-lyric-line.fr-active {\n  --fr-scale: 1.035;\n  color: #ffffff;\n  filter: blur(0px);\n}\n\n/* ---------------- Full-Sentence Sweep & Waterfall Flow (Line-Synced 'synced' Mode — NOT Word-by-Word) ---------------- */\n.fr-lyric-sentence {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.78;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 680ms ease;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {\n  color: transparent;\n  background-image: linear-gradient(\n    100deg,\n    #ffffff 0%,\n    #ffffff calc(var(--bar-pct, 0%) - 18%),\n    rgba(255, 255, 255, 0.64) calc(var(--bar-pct, 0%) - 9%),\n    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, 0%)),\n    rgba(255, 255, 255, 0.32) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.32));\n  transition:\n    transform 80ms linear,\n    filter 280ms ease;\n  will-change: transform, background-image;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.72;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 720ms ease,\n    filter 450ms ease;\n}\n\n/* ---------------- Per-Word Waterfall & Karaoke Sweep (ONLY on Word-Synced 'word-by-word' Mode) ---------------- */\n.fr-lyric-word {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.74;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 680ms ease;\n}\n\n/* Unsung word inside active line: poised above (-8px) in soft muted white, waiting for its timestamp */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);\n  background-image: none;\n  opacity: 1;\n  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0) scale(var(--w-scale, 0.985));\n  transform-origin: center baseline;\n  filter: none;\n  transition:\n    transform 75ms linear,\n    filter 180ms ease,\n    color 180ms ease;\n  will-change: transform, background-image, filter;\n}\n\n/* Word currently being sung: glides smoothly from top to 0px while sweeping white light left-to-right */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {\n  color: transparent;\n  background-image: linear-gradient(\n    105deg,\n    #ffffff 0%,\n    #ffffff calc(var(--w-pct, -18%) - 14%),\n    rgba(255, 255, 255, 0.9) calc(var(--w-pct, -18%)),\n    rgba(255, 255, 255, 0.34) calc(var(--w-pct, -18%) + 14%),\n    rgba(255, 255, 255, 0.34) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.38));\n}\n\n/* Word finished being sung: rests cleanly at 0px in full bright white */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  transform: translate3d(0, 0px, 0) scale(1);\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.28));\n}\n\n/* Past line: words cascade gently downward (+7px) with a left-to-right stagger */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.72;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1) calc(var(--w-idx, 0) * 55ms),\n    opacity 720ms ease calc(var(--w-idx, 0) * 55ms),\n    filter 450ms ease;\n}\n\n/* Interactive hover for synced lines */\n.fr-lyric-line.fr-synced {\n  cursor: pointer;\n}\n\n.fr-lyric-line.fr-synced:hover {\n  background-color: rgba(255, 255, 255, 0.05);\n  color: rgba(255, 255, 255, 0.85);\n  filter: blur(0px);\n}\n\n/* ---------------- Apple Music Duet (Right-Aligned Singer v2) & Background Vocals ---------------- */\n.fr-lyric-line.fr-duet-right {\n  text-align: right;\n  transform-origin: right center;\n}\n\n.fr-lyric-line.fr-duet-right .fr-interlude-dots {\n  justify-content: flex-end;\n  transform-origin: right center;\n}\n\n/* Standalone background vocal line (e.g. \"(Yeah, ooh)\" or full x-bg paragraph) */\n.fr-lyric-line.fr-bg-only-line {\n  font-size: clamp(16px, 1.85vw, 24px);\n  font-weight: 500;\n  font-style: italic;\n  letter-spacing: 0;\n  padding-top: 5px;\n  padding-bottom: 5px;\n}\n\n.fr-lyric-line.fr-bg-only-line.fr-active {\n  --fr-scale: 1.0;\n  opacity: 0.88;\n}\n\n/* Sub-line background vocal attached right below a main vocal line */\n.fr-bg-vocal-sub {\n  display: block;\n  margin-top: 3px;\n  font-size: 0.72em;\n  font-weight: 500;\n  font-style: italic;\n  line-height: 1.35;\n  letter-spacing: 0;\n  opacity: 0.82;\n}\n\n.fr-lyric-line.fr-future .fr-bg-vocal-sub {\n  opacity: 0.65;\n}\n\n.fr-lyric-line.fr-past .fr-bg-vocal-sub {\n  opacity: 0.58;\n}\n\n/* ---------------- Unsynced Teleprompter Mode ---------------- */\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-line {\n  font-size: clamp(19px, 2.2vw, 28px);\n  font-weight: 500;\n  line-height: 1.6;\n  color: rgba(255, 255, 255, 0.84);\n  transform: none !important;\n  filter: none !important;\n  padding: 8px 14px;\n}\n\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-word {\n  transform: none !important;\n  opacity: 1 !important;\n}\n\n/* ---------------- Instrumental Symbol & Apple Music Interlude Dots (• • •) ---------------- */\n.fr-lyric-line.fr-is-music {\n  padding: 16px 14px;\n}\n\n.fr-interlude-dots {\n  display: flex;\n  width: 100%;\n  align-items: center;\n  gap: 10px;\n  height: 0;\n  opacity: 0;\n  overflow: hidden;\n  margin-bottom: 0;\n  transform: translate3d(0, -6px, 0) scale(0.75);\n  transform-origin: left center;\n  pointer-events: none;\n  transition:\n    height 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    margin-bottom 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 380ms ease,\n    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-interlude-dots.fr-inline-music-dots {\n  height: 28px;\n  opacity: 0.45;\n  overflow: visible;\n  transform: scale(0.9);\n}\n\n.fr-interlude-dots.fr-interlude-active {\n  height: 28px;\n  margin-bottom: 10px;\n  opacity: 1;\n  overflow: visible;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-interlude-dot {\n  width: 11px;\n  height: 11px;\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0.25;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.55);\n  transition: opacity 150ms linear;\n  will-change: transform, opacity;\n}\n\n/* ---------------- Resume Sync Pill ---------------- */\n.fr-resume-sync {\n  position: absolute;\n  bottom: 12px;\n  left: 50%;\n  transform: translateX(-50%);\n  background: rgba(24, 24, 30, 0.78);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  padding: 8px 18px;\n  border-radius: 999px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 220ms ease, transform 220ms ease;\n  z-index: 9;\n}\n\n.fr-resume-sync.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateX(-50%) translateY(-4px);\n}\n\n.fr-resume-sync:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n/* ---------------- Instrumental / No-Lyrics Panel ---------------- */\n.fr-instrumental {\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  transform: translate(-50%, -50%) scale(0.85);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 20px;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);\n  z-index: 3;\n}\n\n.fr-instrumental.fr-show {\n  opacity: 1;\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-instrumental-bars {\n  display: flex;\n  align-items: flex-end;\n  gap: 5px;\n  height: 44px;\n}\n\n.fr-instrumental-bar {\n  width: 5px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.75);\n  animation: instrBar 1.2s ease-in-out infinite alternate;\n}\n\n.fr-instrumental-bar:nth-child(1) { animation-delay: 0s;    animation-duration: 0.9s; }\n.fr-instrumental-bar:nth-child(2) { animation-delay: 0.15s; animation-duration: 1.1s; }\n.fr-instrumental-bar:nth-child(3) { animation-delay: 0.3s;  animation-duration: 0.8s; }\n.fr-instrumental-bar:nth-child(4) { animation-delay: 0.1s;  animation-duration: 1.3s; }\n.fr-instrumental-bar:nth-child(5) { animation-delay: 0.25s; animation-duration: 1.0s; }\n.fr-instrumental-bar:nth-child(6) { animation-delay: 0.4s;  animation-duration: 0.85s; }\n.fr-instrumental-bar:nth-child(7) { animation-delay: 0.05s; animation-duration: 1.2s; }\n\n@keyframes instrBar {\n  0%   { height: 6px; opacity: 0.35; }\n  100% { height: 40px; opacity: 0.95; }\n}\n\n.fr-instrumental-label {\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.48);\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n\n/* --- controls.css --- */\n/* ---------------- Bottom Dock (Controls + Volume + Queue) ---------------- */\n.fr-bottom-bar {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 40px);\n  left: 50%;\n  transform: translateX(-50%);\n  width: min(92vw, 1000px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 28px;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 32px;\n  z-index: 5;\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-bottom-bar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translate(-50%, 40px) scale(0.95);\n}\n\n.fr-controls-left,\n.fr-controls-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-controls-center {\n  flex: 1;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  font-size: 12px;\n  color: var(--fr-fg-dim);\n  font-variant-numeric: tabular-nums;\n}\n\n.fr-progress-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-progress-bar:hover {\n  overflow: visible;\n}\n\n.fr-progress-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 0%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n}\n\n.fr-progress-bar:hover .fr-progress-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-progress-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 0%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 120ms ease;\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-progress-bar:hover .fr-progress-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-btn {\n  background: transparent;\n  border: none;\n  color: var(--fr-fg-dim);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 10px;\n  border-radius: 50%;\n  transition: color 150ms ease, transform 100ms ease, background 150ms ease;\n}\n\n.fr-btn:hover {\n  color: var(--fr-fg);\n  background: rgba(255, 255, 255, 0.08);\n}\n\n.fr-btn:active {\n  transform: scale(0.92);\n}\n\n.fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-btn-play {\n  width: 48px;\n  height: 48px;\n  background: var(--fr-fg);\n  color: #000;\n}\n\n.fr-btn-play:hover {\n  background: var(--fr-fg);\n  transform: scale(1.04);\n  color: #000;\n}\n\n.fr-btn svg {\n  width: 22px;\n  height: 22px;\n}\n\n.fr-btn-play svg {\n  width: 24px;\n  height: 24px;\n}\n\n.fr-volume-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  width: 140px;\n}\n\n.fr-volume-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-volume-bar:hover {\n  overflow: visible;\n}\n\n.fr-volume-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 100%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n  transition: width 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-volume-bar:hover .fr-volume-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-volume-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 100%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 150ms ease, left 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-volume-bar:hover .fr-volume-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n/* --- topbar.css --- */\n/* ---------------- Top bar ---------------- */\n.fr-topbar {\n  position: absolute;\n  top: clamp(18px, 2.4vw, 36px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 14;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border-radius: 999px;\n  padding: 6px 8px;\n  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-topbar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-20px) scale(0.95);\n}\n\n.fr-topbar .fr-btn {\n  padding: 8px;\n  border-radius: 50%;\n  width: 36px;\n  height: 36px;\n}\n\n.fr-topbar .fr-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n.fr-topbar-sep {\n  width: 1px;\n  height: 20px;\n  background: rgba(255, 255, 255, 0.12);\n  margin: 0 2px;\n}\n\n.fr-topbar .fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-topbar .fr-btn.fr-heart-active {\n  color: #ff4d6a;\n}\n\n/* --- settings.css --- */\n/* ---------------- Settings panel (Liquid Glass) ---------------- */\n.fr-settings-panel {\n  position: absolute;\n  top: clamp(60px, 6vw, 84px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 25;\n  width: min(360px, 92vw);\n  max-height: min(84vh, 700px);\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(24, 24, 30, 0.85);\n  backdrop-filter: blur(50px) saturate(2);\n  -webkit-backdrop-filter: blur(50px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 28px;\n  padding: 22px 24px;\n  display: flex;\n  flex-direction: column;\n  gap: 16px;\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-10px) scale(0.96);\n  transform-origin: top right;\n  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-settings-panel::-webkit-scrollbar {\n  width: 5px;\n}\n.fr-settings-panel::-webkit-scrollbar-track {\n  background: transparent;\n}\n.fr-settings-panel::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.2);\n  border-radius: 999px;\n}\n.fr-settings-panel::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n\n.fr-settings-panel.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-settings-section {\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-settings-divider {\n  height: 1px;\n  background: rgba(255, 255, 255, 0.08);\n  margin: 2px 0;\n}\n\n.fr-settings-title {\n  font-size: 11px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin: 0 0 2px 0;\n}\n\n.fr-settings-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  min-height: 32px;\n}\n\n.fr-settings-row label {\n  font-size: 14px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.9);\n  user-select: none;\n}\n\n/* ---------------- Custom Liquid Glass Dropdown ---------------- */\n.fr-select-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-select-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg);\n  border-radius: 999px;\n  padding: 6px 14px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n  max-width: 170px;\n}\n\n.fr-select-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.02);\n}\n\n.fr-select-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-select-wrap.fr-open .fr-select-btn {\n  background: rgba(255, 255, 255, 0.18);\n  border-color: rgba(255, 255, 255, 0.38);\n  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);\n}\n\n.fr-select-label {\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.fr-select-arrow {\n  width: 16px;\n  height: 16px;\n  fill: currentColor;\n  flex-shrink: 0;\n  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-wrap.fr-open .fr-select-arrow {\n  transform: rotate(180deg);\n}\n\n.fr-select-menu {\n  position: absolute;\n  top: calc(100% + 6px);\n  right: 0;\n  width: max-content;\n  min-width: 190px;\n  max-width: 285px;\n  max-height: 260px;\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(20, 20, 26, 0.96);\n  backdrop-filter: blur(44px) saturate(2);\n  -webkit-backdrop-filter: blur(44px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 18px;\n  padding: 6px;\n  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.18);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-menu::-webkit-scrollbar {\n  width: 4px;\n}\n.fr-select-menu::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.25);\n  border-radius: 999px;\n}\n\n.fr-select-wrap.fr-open .fr-select-menu {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-select-item {\n  padding: 8px 12px;\n  border-radius: 12px;\n  font-size: 13px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.86);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  transition: all 0.15s ease;\n  user-select: none;\n}\n\n.fr-select-item-left {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n}\n\n.fr-select-item-title {\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-select-item-sub {\n  font-size: 10px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.45);\n  letter-spacing: 0.01em;\n  white-space: nowrap;\n}\n\n.fr-select-item-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-shrink: 0;\n}\n\n.fr-select-item-badge {\n  font-size: 10px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.09);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: rgba(255, 255, 255, 0.72);\n}\n\n.fr-select-item:hover {\n  background: rgba(255, 255, 255, 0.11);\n  color: #ffffff;\n}\n\n.fr-select-item.fr-selected {\n  background: rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  font-weight: 600;\n}\n\n.fr-select-item.fr-selected .fr-select-item-badge {\n  background: rgba(255, 255, 255, 0.2);\n  border-color: rgba(255, 255, 255, 0.32);\n  color: #ffffff;\n}\n\n.fr-select-item .fr-check {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  flex-shrink: 0;\n  opacity: 0;\n}\n\n.fr-select-item.fr-selected .fr-check {\n  opacity: 1;\n}\n\n/* ---------------- Custom Liquid Glass Color Picker ---------------- */\n.fr-color-picker-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg, #ffffff);\n  border-radius: 999px;\n  padding: 5px 12px 5px 6px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n}\n\n.fr-color-swatch-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.03);\n}\n\n.fr-color-swatch-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.22);\n  border-color: var(--fr-word-accent, #1ed760);\n  box-shadow: 0 0 16px rgba(30, 215, 96, 0.25);\n}\n\n.fr-color-swatch-inner {\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.35);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n  flex-shrink: 0;\n  transition: background-color 0.2s ease;\n}\n\n.fr-color-hex-label {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 12px;\n  letter-spacing: 0.04em;\n  color: rgba(255, 255, 255, 0.9);\n}\n\n.fr-color-popup {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  width: 240px;\n  max-height: 480px;\n  overflow-y: auto;\n  scrollbar-width: none;\n  background: rgba(22, 22, 28, 0.96);\n  backdrop-filter: blur(40px) saturate(2);\n  -webkit-backdrop-filter: blur(40px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 22px;\n  padding: 16px;\n  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.2);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-color-popup::-webkit-scrollbar {\n  display: none;\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-popup {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-color-popup-title {\n  font-size: 10px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin-top: 2px;\n}\n\n.fr-color-preset-grid {\n  display: grid;\n  grid-template-columns: repeat(4, 1fr);\n  gap: 10px;\n  justify-items: center;\n}\n\n.fr-color-preset-item {\n  width: 34px;\n  height: 34px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.2);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);\n  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.15s ease, box-shadow 0.15s ease;\n  outline: none;\n}\n\n.fr-color-preset-item:hover {\n  transform: scale(1.18);\n  border-color: rgba(255, 255, 255, 0.7);\n  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);\n}\n\n.fr-color-preset-item.fr-selected {\n  border-color: #ffffff;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.6);\n  transform: scale(1.12);\n}\n\n.fr-check-sm {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));\n  opacity: 0;\n  transition: opacity 0.15s ease;\n}\n\n.fr-color-preset-item.fr-selected .fr-check-sm {\n  opacity: 1;\n}\n\n/* ---------------- Rainbow Hue Slider ---------------- */\n.fr-hue-slider-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding: 4px 0 2px 0;\n}\n\n.fr-hue-slider {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 100%;\n  height: 12px;\n  border-radius: 999px;\n  background: linear-gradient(\n    to right,\n    #ff0000 0%,\n    #ffff00 17%,\n    #00ff00 33%,\n    #00ffff 50%,\n    #0000ff 67%,\n    #ff00ff 83%,\n    #ff0000 100%\n  );\n  outline: none;\n  cursor: pointer;\n  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n}\n\n.fr-hue-slider::-webkit-slider-thumb {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #ffffff;\n  border: 2px solid rgba(0, 0, 0, 0.4);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.fr-hue-slider::-webkit-slider-thumb:hover {\n  transform: scale(1.2);\n}\n\n.fr-color-custom-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding-top: 8px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-color-wheel-btn {\n  background: transparent;\n  border: none;\n  padding: 0;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  outline: none;\n  border-radius: 50%;\n  transition: transform 0.2s ease;\n}\n\n.fr-color-wheel-btn:hover {\n  transform: scale(1.15);\n}\n\n.fr-color-wheel-btn:active {\n  transform: scale(0.95);\n}\n\n.fr-color-preview-circle {\n  width: 28px;\n  height: 28px;\n  border-radius: 50%;\n  border: 2px solid rgba(255, 255, 255, 0.4);\n  flex-shrink: 0;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);\n}\n\n.fr-color-text-input {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  border-radius: 10px;\n  padding: 6px 12px;\n  color: #ffffff;\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 13px;\n  font-weight: 600;\n  letter-spacing: 0.05em;\n  outline: none;\n  transition: border-color 0.2s ease, background 0.2s ease;\n}\n\n.fr-color-text-input:focus {\n  border-color: var(--fr-word-accent, #1ed760);\n  background: rgba(255, 255, 255, 0.14);\n}\n\n.fr-color-input {\n  -webkit-appearance: none;\n  appearance: none;\n  border: 2px solid rgba(255, 255, 255, 0.22);\n  width: 32px;\n  height: 32px;\n  border-radius: 50%;\n  cursor: pointer;\n  background: transparent;\n  padding: 0;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);\n  transition: transform 0.2s ease, border-color 0.2s ease;\n  outline: none;\n}\n\n.fr-color-input:hover {\n  transform: scale(1.12);\n  border-color: rgba(255, 255, 255, 0.6);\n}\n\n.fr-color-input::-webkit-color-swatch-wrapper {\n  padding: 0;\n}\n\n.fr-color-input::-webkit-color-swatch {\n  border: none;\n  border-radius: 50%;\n}\n\n/* ---------------- Toggles ---------------- */\n.fr-toggle {\n  width: 48px;\n  height: 26px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.3);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(255, 255, 255, 0.05);\n  position: relative;\n  cursor: pointer;\n  border: none;\n  outline: none;\n  transition: background 0.3s ease;\n  flex-shrink: 0;\n}\n\n.fr-toggle::after {\n  content: \"\";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  background: #ffffff;\n  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);\n  transition: left 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-toggle.fr-on {\n  background: var(--fr-word-accent, #1ed760);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(255, 255, 255, 0.05);\n}\n\n.fr-toggle.fr-on::after {\n  left: 25px;\n}\n\n/* --- ambient.css --- */\n/* ---------------- Mood-Adaptive & Beat-Reactive Atmosphere ---------------- */\n.fr-ambient {\n  --fr-beat: 0;\n  --fr-bar: 0;\n  --fr-energy: 0.5;\n  --fr-amb-dominant: #4a3f78;\n  --fr-amb-accent: #7b52ab;\n  --fr-amb-dark: #14121d;\n  --fr-amb-accent-soft: rgba(123, 82, 171, 0.55);\n  --fr-amb-dominant-soft: rgba(74, 63, 120, 0.5);\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 1;\n  overflow: hidden;\n  opacity: 0;\n  transition: opacity 1.2s ease;\n}\n\n.fr-ambient.fr-show {\n  opacity: 1;\n}\n\n.fr-ambient[data-mood=\"off\"] {\n  opacity: 0 !important;\n}\n\n/* ---------------- 1. Aurora Ribbons (Energetic & Dreamy) ---------------- */\n.fr-mood-aurora {\n  position: absolute;\n  inset: -15%;\n  pointer-events: none;\n  mix-blend-mode: screen;\n  opacity: calc(0.28 + var(--fr-energy, 0.5) * 0.35 + var(--fr-beat, 0) * 0.25);\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.045));\n  transition: opacity 450ms ease;\n  will-change: transform, opacity;\n}\n\n.fr-aurora-wave {\n  position: absolute;\n  inset: 0;\n  border-radius: 50%;\n  filter: blur(85px);\n}\n\n.fr-aurora-1 {\n  background: radial-gradient(\n    ellipse 68% 34% at 32% 28%,\n    var(--fr-amb-accent-soft) 0%,\n    transparent 72%\n  );\n  animation: auroraDrift1 16s ease-in-out infinite alternate;\n}\n\n.fr-aurora-2 {\n  background: radial-gradient(\n    ellipse 64% 38% at 68% 66%,\n    var(--fr-amb-dominant-soft) 0%,\n    transparent 74%\n  );\n  animation: auroraDrift2 21s ease-in-out infinite alternate;\n}\n\n@keyframes auroraDrift1 {\n  0%   { transform: translate3d(-6%, -4%, 0) rotate(-6deg) scale(1); }\n  100% { transform: translate3d(8%, 6%, 0) rotate(8deg) scale(1.14); }\n}\n\n@keyframes auroraDrift2 {\n  0%   { transform: translate3d(6%, 5%, 0) rotate(5deg) scale(1.08); }\n  100% { transform: translate3d(-8%, -6%, 0) rotate(-9deg) scale(0.96); }\n}\n\n.fr-ambient[data-mood=\"energetic\"] .fr-mood-aurora {\n  opacity: calc(0.42 + var(--fr-energy, 0.5) * 0.38 + var(--fr-beat, 0) * 0.35);\n}\n\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-aurora {\n  opacity: calc(0.14 + var(--fr-energy, 0.4) * 0.18);\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-aurora {\n  opacity: calc(0.2 + var(--fr-energy, 0.4) * 0.22);\n}\n\n/* ---------------- 2. Beat-Reactive Light Orbs ---------------- */\n.fr-orbs-wrap {\n  position: absolute;\n  inset: 0;\n  mix-blend-mode: screen;\n  opacity: calc(0.38 + var(--fr-energy, 0.5) * 0.28 + var(--fr-beat, 0) * 0.22);\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.035 + var(--fr-bar, 0) * 0.02));\n  transform-origin: center center;\n  will-change: transform, opacity;\n}\n\n.fr-orb {\n  position: absolute;\n  border-radius: 50%;\n  filter: blur(88px);\n  opacity: 0.62;\n  animation: floatOrb 20s infinite alternate ease-in-out;\n  transition: background-color 900ms ease;\n}\n\n@keyframes floatOrb {\n  0%   { transform: translate3d(0, 0, 0) scale(1); }\n  100% { transform: translate3d(85px, -75px, 0) scale(1.18); }\n}\n\n/* ---------------- 3. Mood-Morphing Particle System ---------------- */\n.fr-particles-wrap {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.fr-particle {\n  position: absolute;\n  left: var(--p-x, 50%);\n  top: var(--p-y, 50%);\n  width: var(--p-size, 4px);\n  height: var(--p-size, 4px);\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0;\n  will-change: transform, opacity;\n}\n\n/* --- Mood A: ENERGETIC ⚡ (Fast Rising Neon Sparks pulsing with the Beat) --- */\n.fr-ambient[data-mood=\"energetic\"] .fr-particle {\n  top: auto;\n  bottom: -5vh;\n  width: var(--p-size, 4px);\n  height: var(--p-size, 4px);\n  background: #ffffff;\n  box-shadow: 0 0 calc(8px + var(--fr-beat, 0) * 14px) var(--fr-amb-accent),\n              0 0 4px #ffffff;\n  animation: frSparkRise calc(var(--p-dur, 10s) * 0.58) linear infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frSparkRise {\n  0% {\n    transform: translate3d(0, 5vh, 0) scale(0.5);\n    opacity: 0;\n  }\n  20% {\n    opacity: calc(0.38 + var(--fr-beat, 0) * 0.45);\n  }\n  80% {\n    opacity: calc(0.32 + var(--fr-beat, 0) * 0.45);\n  }\n  100% {\n    transform: translate3d(var(--p-drift, 20px), -110vh, 0) scale(1.35);\n    opacity: 0;\n  }\n}\n\n/* --- Mood B: MELANCHOLIC 🌧️ (Soft Falling Rain / Dew Streaks & Mist) --- */\n.fr-ambient[data-mood=\"melancholic\"] .fr-particle {\n  top: -8vh;\n  width: 1.5px;\n  height: calc(var(--p-size, 4px) * 5.2);\n  border-radius: 999px;\n  background: linear-gradient(\n    180deg,\n    rgba(255, 255, 255, 0) 0%,\n    rgba(255, 255, 255, 0.42) 70%,\n    rgba(255, 255, 255, 0.72) 100%\n  );\n  box-shadow: none;\n  animation: frRainFall calc(var(--p-dur, 10s) * 0.48) linear infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frRainFall {\n  0% {\n    transform: translate3d(0, -10vh, 0) rotate(8deg);\n    opacity: 0;\n  }\n  15% {\n    opacity: 0.34;\n  }\n  85% {\n    opacity: 0.28;\n  }\n  100% {\n    transform: translate3d(-24px, 112vh, 0) rotate(8deg);\n    opacity: 0;\n  }\n}\n\n/* --- Mood C: LATE NIGHT 🌙 (Warm Hovering Fireflies & Analog Vibe) --- */\n.fr-ambient[data-mood=\"latenight\"] .fr-particle {\n  width: calc(var(--p-size, 4px) * 1.15);\n  height: calc(var(--p-size, 4px) * 1.15);\n  background: rgba(255, 232, 185, 0.92);\n  box-shadow: 0 0 12px rgba(255, 200, 120, 0.75), 0 0 22px var(--fr-amb-accent);\n  animation: frFireflyDrift calc(var(--p-dur, 12s) * 1.1) ease-in-out infinite alternate;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frFireflyDrift {\n  0% {\n    transform: translate3d(0, 0, 0) scale(0.65);\n    opacity: 0.08;\n  }\n  50% {\n    transform: translate3d(var(--p-drift, 18px), -26px, 0) scale(calc(1.1 + var(--fr-beat, 0) * 0.35));\n    opacity: calc(0.45 + var(--fr-beat, 0) * 0.35);\n  }\n  100% {\n    transform: translate3d(calc(var(--p-drift, 18px) * -0.7), 18px, 0) scale(0.8);\n    opacity: 0.12;\n  }\n}\n\n/* --- Mood D: DREAMY ✨ (Soft Out-of-Focus Bokeh Light Circles) --- */\n.fr-ambient[data-mood=\"dreamy\"] .fr-particle {\n  top: auto;\n  bottom: -10vh;\n  width: calc(var(--p-size, 4px) * 3.8);\n  height: calc(var(--p-size, 4px) * 3.8);\n  background: radial-gradient(\n    circle,\n    rgba(255, 255, 255, 0.45) 0%,\n    var(--fr-amb-accent-soft) 55%,\n    transparent 100%\n  );\n  filter: blur(2.5px);\n  animation: frBokehFloat calc(var(--p-dur, 12s) * 1.15) ease-in-out infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frBokehFloat {\n  0% {\n    transform: translate3d(0, 8vh, 0) scale(0.7);\n    opacity: 0;\n  }\n  25% {\n    opacity: calc(0.24 + var(--fr-beat, 0) * 0.22);\n  }\n  75% {\n    opacity: calc(0.22 + var(--fr-beat, 0) * 0.22);\n  }\n  100% {\n    transform: translate3d(var(--p-drift, 24px), -108vh, 0) scale(1.25);\n    opacity: 0;\n  }\n}\n\n/* ---------------- 4. Atmospheric Mist & Cinematic Vignette ---------------- */\n.fr-mood-mist {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  opacity: 0;\n  background:\n    radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.52) 100%),\n    linear-gradient(180deg, transparent 55%, rgba(12, 14, 22, 0.48) 100%);\n  transition: opacity 900ms ease;\n}\n\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-mist {\n  opacity: 0.88;\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-mist {\n  opacity: 0.72;\n}\n\n/* ---------------- 5. Late-Night Analog Film Grain ---------------- */\n.fr-mood-grain {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  opacity: 0;\n  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 0);\n  background-size: 3px 3px;\n  mix-blend-mode: overlay;\n  transition: opacity 900ms ease;\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-grain {\n  opacity: 0.45;\n}\n\n/* --- upnext.css --- */\n/* ---------------- Up Next Card ---------------- */\n.fr-up-next {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 64px);\n  right: clamp(24px, 3.2vw, 64px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 24px 12px 12px;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  z-index: 10;\n  transform: translateX(120%);\n  opacity: 0;\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.6s ease;\n  pointer-events: auto;\n  cursor: pointer;\n}\n\n.fr-up-next.fr-show {\n  transform: translateX(0);\n  opacity: 1;\n}\n\n.fr-up-next-img {\n  width: 48px;\n  height: 48px;\n  border-radius: 50%;\n  object-fit: cover;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n}\n\n.fr-up-next-info {\n  display: flex;\n  flex-direction: column;\n  max-width: 200px;\n}\n\n.fr-up-next-label {\n  font-size: 10px;\n  font-weight: 700;\n  color: var(--fr-fg-dim);\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  margin-bottom: 2px;\n}\n\n.fr-up-next-title {\n  font-size: 14px;\n  font-weight: 700;\n  color: var(--fr-fg);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-up-next-artist {\n  font-size: 12px;\n  color: var(--fr-fg-faint);\n  margin: 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-up-next {\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* --- idle.css --- */\n/* ---------------- Idle Mode & Clock ---------------- */\n#fullscreen-reloaded-root.fr-idle,\n#fullscreen-reloaded-root.fr-idle * {\n  cursor: none !important;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-controls,\n#fullscreen-reloaded-root.fr-idle .fr-topbar,\n#fullscreen-reloaded-root.fr-idle .fr-side-controls,\n#fullscreen-reloaded-root.fr-idle .fr-settings-panel,\n#fullscreen-reloaded-root.fr-idle .fr-resume-sync {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(12px);\n}\n\n.fr-controls,\n.fr-topbar,\n.fr-side-controls,\n.fr-settings-panel,\n.fr-resume-sync {\n  transition: opacity 400ms ease, transform 400ms ease;\n}\n\n/* ---------------- Clock & Idle Cinema Mode ---------------- */\n.fr-clock {\n  position: absolute;\n  left: 50%;\n  font-size: clamp(50px, 6vw, 80px);\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.9);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 10;\n  letter-spacing: 0.02em;\n  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.7);\n  font-variant-numeric: tabular-nums;\n  line-height: 1;\n}\n\n.fr-clock.fr-pos-top {\n  top: clamp(24px, 4.5vh, 48px);\n  bottom: auto;\n  transform: translateX(-50%) translateY(-20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, top 0.4s;\n}\n\n.fr-clock.fr-pos-bottom {\n  bottom: clamp(28px, 5vh, 56px);\n  top: auto;\n  transform: translateX(-50%) translateY(20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, bottom 0.4s;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-top,\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-bottom {\n  opacity: 1;\n  transform: translateX(-50%) translateY(0);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n  grid-template-columns: 1fr 0px;\n  gap: 0;\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-lyrics-panel {\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.8s ease;\n}\n\n/* Gracefully scale artwork in idle mode to prevent clock collision */\n#fullscreen-reloaded-root.fr-idle .fr-art-wrap {\n  width: min(48vh, 38vw, 520px);\n  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n/* Shift artwork cleanly away from clock */\n#fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\n  transform: translateY(clamp(45px, 7vh, 80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n  transform: translateY(clamp(-45px, -7vh, -80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n  margin-top: clamp(20px, 2.8vh, 36px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-title {\n  font-size: clamp(28px, 3.2vw, 44px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-artist {\n  font-size: clamp(16px, 1.6vw, 22px);\n}\n\n/* ---------------- Responsive Styles ---------------- */\n@media (max-aspect-ratio: 5/4), (max-width: 900px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: auto 1fr;\n    grid-template-areas: \"art\" \"lyrics\";\n    gap: 16px;\n    padding-top: clamp(24px, 4vh, 40px);\n  }\n\n  .fr-stage.fr-centered {\n    grid-template-rows: 1fr;\n  }\n\n  .fr-lyrics-panel {\n    display: flex;\n  }\n\n  .fr-lyrics-scroll {\n    padding: 4vh 4px 15vh 4px;\n  }\n\n  .fr-art-wrap {\n    width: min(35vh, 65vw, 400px);\n    margin: 0 auto;\n  }\n\n  .fr-meta {\n    text-align: center;\n    margin-left: auto;\n    margin-right: auto;\n    max-width: 80vw;\n  }\n\n  /* Make bottom dock more compact */\n  .fr-bottom-bar {\n    gap: 12px;\n    padding: 12px 16px;\n    width: 94vw;\n  }\n\n  .fr-volume-row {\n    width: 90px;\n  }\n\n  /* Override idle grid for portrait */\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\n    transform: translateY(clamp(30px, 5vh, 60px));\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n    transform: translateY(clamp(-30px, -5vh, -60px));\n  }\n}\n\n@media (max-width: 600px) {\n  .fr-controls-center {\n    display: none; /* Hide progress bar on small screens */\n  }\n}\n\n@media (max-height: 500px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n    grid-template-areas: \"art\";\n  }\n\n  .fr-lyrics-panel {\n    display: none !important;\n  }\n\n  .fr-art-wrap {\n    width: min(46vh, 60vw, 420px);\n  }\n}\n";
 
 function injectStyles() {
   const ID = "fullscreen-reloaded-styles";
@@ -2504,6 +2744,403 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
       }
       return false;
     }
+  },
+};
+
+    },
+
+    "./services/AudioMoodEngine.js": function(require, exports, module) {
+// --- ./services/AudioMoodEngine.js ---
+/**
+ * Real-time Audio Analysis & Mood Atmosphere Engine.
+ * - Uses Spicetify.getAudioData() `segments` (loudness_start, loudness_max, loudness_max_time, timbre)
+ *   with true logarithmic decibel-to-amplitude conversion (10^(dB/20)) and transient onset detection.
+ * - Never fires fake metronome pulses during quiet sections or when audio analysis is unavailable.
+ * - Automatically classifies each track into one of 4 atmospheric moods:
+ *   "energetic" | "melancholic" | "latenight" | "dreamy"
+ */
+const {  Settings  } = require("./utils/settings.js");
+
+const MELANCHOLIC_KEYWORDS = [
+  "ağla", "agla", "veda", "yalnız", "yalniz", "hüzün", "huzun", "gözyaş", "gozyas",
+  "ayrılık", "ayrilik", "gitme", "kırık", "kirik", "keder", "dert", "özlem", "ozlem",
+  "bitti", "yara", "acı", "aci", "ölüm", "olum", "sensiz", "unut", "kaybet", "vazgeç",
+  "sad", "cry", "tears", "lonely", "broken", "hurt", "pain", "rain", "yağmur", "yagmur",
+  "sorry", "goodbye", "empty", "cold", "grief", "heartbreak",
+];
+
+const ENERGETIC_KEYWORDS = [
+  "remix", "phonk", "drill", "club", "dance", "party", "hype", "trap", "bass",
+  "workout", "gym", "hardstyle", "techno", "rave", "jump", "fire", "ateş", "ates",
+  "patla", "uç", "hız", "enerji", "vip", "banger", "boost",
+];
+
+const LATENIGHT_KEYWORDS = [
+  "gece", "karanlık", "karanlik", "sokak", "duman", "alkol", "şarap", "sarap",
+  "night", "midnight", "3am", "4am", "lofi", "lo-fi", "slowed", "reverb",
+  "dark", "shadow", "moon", "city", "drive", "smoke", "chill", "uyku", "sessiz",
+];
+
+const AudioMoodEngine = exports.AudioMoodEngine = {
+  _currentUri: null,
+  _audioCache: new Map(),
+
+  // Extracted track properties
+  bpm: 110,
+  baseEnergy: 0.5,
+  hasExactAudio: false,
+  segments: [],
+  beats: [],
+
+  // Color & lyric signals
+  _colorWarmth: 0.5,
+  _colorLum: 0.4,
+  _colorSat: 0.5,
+  _wordsPerSec: 1.5,
+  _trackText: "",
+
+  // Computed mood & smoothed 60fps outputs
+  _autoMood: "dreamy",
+  _smoothBeat: 0,
+  _smoothBar: 0,
+  _smoothEnergy: 0.35,
+  _segCursor: 0,
+  _beatCursor: 0,
+
+  /**
+   * Initializes analysis for a newly loaded track.
+   */
+  async loadTrack(track, colors = null) {
+    if (!track || !track.uri) return;
+    const uri = track.uri;
+    this._currentUri = uri;
+
+    this._segCursor = 0;
+    this._beatCursor = 0;
+    this.segments = [];
+    this.beats = [];
+    this.hasExactAudio = false;
+    this.bpm = 110;
+    this.baseEnergy = 0.5;
+    this._wordsPerSec = 1.5;
+    this._smoothBeat = 0;
+    this._smoothBar = 0;
+
+    const meta = track.metadata || {};
+    const title = meta.title || track.name || "";
+    const artist = meta.artist_name || "";
+    const album = meta.album_title || track.album?.name || "";
+    this._trackText = `${title} ${artist} ${album}`.toLowerCase();
+
+    if (colors) {
+      this._analyzeColors(colors);
+    }
+
+    this._recomputeAutoMood();
+
+    const audio = await this._fetchAudioData(uri);
+    if (this._currentUri !== uri) return;
+
+    if (audio) {
+      this._parseAudioData(audio);
+      this._recomputeAutoMood();
+    }
+  },
+
+  updateColors(colors) {
+    if (!colors) return;
+    this._analyzeColors(colors);
+    this._recomputeAutoMood();
+  },
+
+  updateLyricsMetrics(lines, syncType, durationMs) {
+    if (!Array.isArray(lines) || !lines.length) return;
+
+    let totalWords = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const wLen = Array.isArray(lines[i].words)
+        ? lines[i].words.length
+        : String(lines[i].text || "").trim().split(/\s+/).filter(Boolean).length;
+      totalWords += wLen;
+    }
+
+    const durSec = Math.max(45, (durationMs || 180000) / 1000);
+    this._wordsPerSec = totalWords / durSec;
+    this._recomputeAutoMood();
+  },
+
+  getEffectiveMood() {
+    const setting = Settings.get("moodMode") || "auto";
+    if (setting === "off") return "off";
+    if (setting !== "auto") return setting;
+    return this._autoMood || "dreamy";
+  },
+
+  /**
+   * Called every animation frame (60fps) from App.startTicking().
+   * Computes real instantaneous amplitude and bass kick transients from Spotify `segments`.
+   * Quiet sections produce 0.0 bass pulse; only genuine high-energy bass/drum transients trigger a pulse.
+   */
+  sample(progressMs, isPlaying) {
+    const mood = this.getEffectiveMood();
+    const beatMode = Settings.get("beatReactive") || "normal";
+
+    if (!isPlaying || beatMode === "off" || !this.hasExactAudio || !this.segments.length) {
+      this._smoothBeat *= 0.84;
+      this._smoothBar *= 0.84;
+      this._smoothEnergy += (0.3 - this._smoothEnergy) * 0.05;
+      return {
+        mood,
+        beatPulse: this._smoothBeat < 0.005 ? 0 : this._smoothBeat,
+        barPulse: this._smoothBar < 0.005 ? 0 : this._smoothBar,
+        sectionEnergy: this._smoothEnergy,
+        bpm: this.bpm,
+      };
+    }
+
+    const intensityMult = beatMode === "intense" ? 1.35 : 1.0;
+    const seg = this._findInterval(this.segments, progressMs, "_segCursor");
+
+    let rawKick = 0;
+    let targetEnergy = 0.25;
+
+    if (seg) {
+      // 1. Interpolate instantaneous decibel envelope inside the current segment:
+      //    loudness_start -> loudness_max (at peakOffsetMs) -> loudness_end
+      const elapsedMs = Math.max(0, progressMs - seg.startMs);
+      let currentDb;
+      if (elapsedMs <= seg.peakOffsetMs) {
+        const t = seg.peakOffsetMs > 5 ? elapsedMs / seg.peakOffsetMs : 1;
+        currentDb = seg.dbStart + (seg.dbMax - seg.dbStart) * t;
+      } else {
+        const remDur = Math.max(20, seg.durMs - seg.peakOffsetMs);
+        const t = Math.min(1, (elapsedMs - seg.peakOffsetMs) / remDur);
+        currentDb = seg.dbMax + (seg.dbEnd - seg.dbMax) * t;
+      }
+
+      // Convert relative decibels (dB below track's loudest peak) to physical linear amplitude: 10^(relDb / 20)
+      // e.g. 0dB below peak -> 1.0, -6dB -> 0.50, -12dB -> 0.25, -20dB -> 0.10, -30dB -> 0.03
+      const relDb = currentDb - this._trackPeakDb;
+      const linearAmp = Math.pow(10, Math.max(-40, Math.min(0, relDb)) / 20);
+      targetEnergy = Math.max(0.15, Math.min(1, linearAmp));
+
+      // 2. Real Bass / Kick Transient Detection:
+      //    Only trigger when the segment is loud (top 6.5dB of the song, i.e. peakAmp >= 0.47)
+      //    AND has a sharp percussive attack (deltaDb >= 3.8dB) + low-end bass weight.
+      if (seg.kickStrength > 0) {
+        const distFromPeakMs = elapsedMs - seg.peakOffsetMs;
+        if (distFromPeakMs >= -25 && distFromPeakMs <= 190) {
+          const env =
+            distFromPeakMs < 0
+              ? 1 + distFromPeakMs / 25
+              : Math.pow(1 - distFromPeakMs / 190, 2.2);
+          rawKick = env * seg.kickStrength * intensityMult;
+        }
+      }
+    }
+
+    // Fast attack on genuine kick transient, smooth natural release
+    const attackRate = rawKick > this._smoothBeat ? 0.48 : 0.15;
+    this._smoothBeat += (rawKick - this._smoothBeat) * attackRate;
+    this._smoothBar = this._smoothBeat * 0.65;
+    this._smoothEnergy += (targetEnergy - this._smoothEnergy) * 0.06;
+
+    return {
+      mood,
+      beatPulse: Math.min(1.2, this._smoothBeat < 0.008 ? 0 : this._smoothBeat),
+      barPulse: Math.min(1.0, this._smoothBar < 0.008 ? 0 : this._smoothBar),
+      sectionEnergy: Math.max(0.15, Math.min(1, this._smoothEnergy)),
+      bpm: this.bpm,
+    };
+  },
+
+  _findInterval(arr, progressMs, cursorKey) {
+    if (!arr.length) return null;
+    let idx = Math.min(this[cursorKey] || 0, arr.length - 1);
+    while (idx + 1 < arr.length && arr[idx + 1].startMs <= progressMs) idx++;
+    while (idx > 0 && arr[idx].startMs > progressMs) idx--;
+    this[cursorKey] = idx;
+    const item = arr[idx];
+    if (progressMs >= item.startMs && progressMs <= item.startMs + item.durMs + 80) {
+      return item;
+    }
+    return null;
+  },
+
+  _analyzeColors(colors) {
+    const dom = colors.dominant || [60, 60, 80];
+    const acc = colors.accent || dom;
+
+    const r = (dom[0] + acc[0]) * 0.5;
+    const g = (dom[1] + acc[1]) * 0.5;
+    const b = (dom[2] + acc[2]) * 0.5;
+
+    const max = Math.max(r, g, b) / 255;
+    const min = Math.min(r, g, b) / 255;
+    this._colorLum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    this._colorSat = max === 0 ? 0 : (max - min) / max;
+    this._colorWarmth = Math.max(0, Math.min(1, 0.5 + (r - b) / 320));
+  },
+
+  _recomputeAutoMood() {
+    const txt = this._trackText || "";
+
+    const hasMelancholicWord = MELANCHOLIC_KEYWORDS.some((kw) => txt.includes(kw));
+    const hasEnergeticWord = ENERGETIC_KEYWORDS.some((kw) => txt.includes(kw));
+    const hasLateNightWord = LATENIGHT_KEYWORDS.some((kw) => txt.includes(kw));
+
+    let scoreEnergetic = 0;
+    let scoreMelancholic = 0;
+    let scoreLateNight = 0;
+    let scoreDreamy = 0.35;
+
+    if (hasEnergeticWord) scoreEnergetic += 0.65;
+    if (hasMelancholicWord) scoreMelancholic += 0.65;
+    if (hasLateNightWord) scoreLateNight += 0.65;
+
+    if (this.bpm >= 124 || this._wordsPerSec >= 2.35) {
+      scoreEnergetic += 0.55;
+    } else if (this.bpm <= 95) {
+      scoreMelancholic += 0.42;
+      scoreLateNight += 0.3;
+    } else {
+      scoreDreamy += 0.25;
+      scoreLateNight += 0.2;
+    }
+
+    if (this.baseEnergy >= 0.68) {
+      scoreEnergetic += 0.45;
+    } else if (this.baseEnergy <= 0.42) {
+      scoreMelancholic += 0.35;
+      scoreLateNight += 0.25;
+    }
+
+    if (this._colorLum < 0.32) {
+      scoreLateNight += 0.38;
+      scoreMelancholic += 0.22;
+    }
+    if (this._colorWarmth < 0.44) {
+      scoreMelancholic += 0.32;
+    } else if (this._colorWarmth > 0.58) {
+      scoreDreamy += 0.35;
+      if (this._colorSat > 0.6) scoreEnergetic += 0.2;
+    }
+
+    const candidates = [
+      { id: "energetic", score: scoreEnergetic },
+      { id: "melancholic", score: scoreMelancholic },
+      { id: "latenight", score: scoreLateNight },
+      { id: "dreamy", score: scoreDreamy },
+    ];
+    candidates.sort((a, b) => b.score - a.score);
+    this._autoMood = candidates[0].id;
+  },
+
+  async _fetchAudioData(uri) {
+    if (this._audioCache.has(uri)) {
+      return this._audioCache.get(uri);
+    }
+    if (typeof Spicetify === "undefined" || typeof Spicetify.getAudioData !== "function") {
+      return null;
+    }
+
+    try {
+      const result = await Promise.race([
+        Spicetify.getAudioData(uri),
+        new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]);
+      if (result && Array.isArray(result.segments) && result.segments.length > 0) {
+        if (this._audioCache.size > 30) {
+          const oldest = this._audioCache.keys().next().value;
+          this._audioCache.delete(oldest);
+        }
+        this._audioCache.set(uri, result);
+        return result;
+      }
+    } catch (_) {
+      // Ignore audio-analysis errors gracefully
+    }
+    return null;
+  },
+
+  _parseAudioData(data) {
+    if (!data || !Array.isArray(data.segments) || !data.segments.length) return;
+
+    if (data.track && typeof data.track.tempo === "number" && data.track.tempo > 30) {
+      this.bpm = Math.round(data.track.tempo);
+    }
+
+    const rawSegs = data.segments;
+    // Find the track's 95th-percentile peak loudness (in dB) so quiet sections are accurately gated out
+    const maxValues = rawSegs
+      .map((s) => (typeof s.loudness_max === "number" ? s.loudness_max : -20))
+      .sort((a, b) => a - b);
+    const p95Idx = Math.min(maxValues.length - 1, Math.floor(maxValues.length * 0.95));
+    const trackPeakDb = maxValues[p95Idx] ?? -4;
+    this._trackPeakDb = trackPeakDb;
+
+    let sumLinearAmp = 0;
+
+    this.segments = rawSegs.map((s, idx) => {
+      const startMs = Math.round((s.start || 0) * 1000);
+      const durMs = Math.max(40, Math.round((s.duration || 0.25) * 1000));
+      const peakOffsetMs = Math.max(
+        5,
+        Math.min(durMs - 5, Math.round((s.loudness_max_time || 0.03) * 1000))
+      );
+
+      const dbStart = typeof s.loudness_start === "number" ? s.loudness_start : -24;
+      const dbMax = typeof s.loudness_max === "number" ? s.loudness_max : dbStart;
+      const nextSeg = rawSegs[idx + 1];
+      const dbEnd =
+        nextSeg && typeof nextSeg.loudness_start === "number"
+          ? nextSeg.loudness_start
+          : typeof s.loudness_end === "number"
+          ? s.loudness_end
+          : dbStart;
+
+      // Physical linear peak amplitude relative to the track's loudest peak: 10^((dbMax - trackPeakDb) / 20)
+      const relPeakDb = dbMax - trackPeakDb;
+      const peakAmp = Math.pow(10, Math.max(-40, Math.min(2, relPeakDb)) / 20);
+      sumLinearAmp += Math.min(1, peakAmp);
+
+      // Transient jump in dB from segment start to segment peak
+      const deltaDb = Math.max(0, dbMax - dbStart);
+
+      // Timbre low-frequency bass check: timbre[1] is spectral brightness (lower = deeper bass)
+      let bassFactor = 1.0;
+      if (Array.isArray(s.timbre) && s.timbre.length >= 2) {
+        const brightness = s.timbre[1]; // typically -100 (sub-bass) to +100 (hi-hat/treble)
+        if (brightness > 45) {
+          bassFactor = 0.25; // high-hat / sibilance, not a bass kick
+        } else if (brightness < -10) {
+          bassFactor = 1.25; // deep low-end punch
+        }
+      }
+
+      // Gate out quiet parts! A bass kick ONLY fires if:
+      // 1) Segment peak is within 6.5dB of the track's loudest moments (peakAmp >= 0.47)
+      // 2) Segment has a sharp percussive attack (deltaDb >= 3.5dB in <= 110ms)
+      let kickStrength = 0;
+      if (peakAmp >= 0.47 && deltaDb >= 3.5 && peakOffsetMs <= 110) {
+        const normAttack = Math.min(1, (deltaDb - 3.0) / 9.0);
+        const normLoud = Math.min(1, (peakAmp - 0.45) / 0.55);
+        kickStrength = Math.min(1, normAttack * normLoud * bassFactor);
+      }
+
+      return {
+        startMs,
+        durMs,
+        peakOffsetMs,
+        dbStart,
+        dbMax,
+        dbEnd,
+        kickStrength,
+      };
+    });
+
+    this.baseEnergy = Math.max(0.2, Math.min(0.95, sumLinearAmp / rawSegs.length));
+    this.hasExactAudio = true;
   },
 };
 
@@ -2800,6 +3437,16 @@ const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvide
 const {  AppleMusicAuth  } = require("./services/AppleMusicAuth.js");
 const {  parseTTML  } = require("./utils/parsers.js");
 
+function normText(s) {
+  return String(s || "")
+    .replace(/İ/g, "i")
+    .replace(/I/g, "ı")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
 class AppleMusicLyricsProvider extends BaseLyricsProvider {
   async fetch(track) {
     if (!track) return null;
@@ -2862,8 +3509,9 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
     if (!lines.length) return null;
 
     const wordSynced = lines.some((l) => l.isWordSynced);
+    const lineSynced = lines.some((l) => l.hasLineTime);
     return {
-      type: wordSynced ? "word-synced" : "synced",
+      type: wordSynced ? "word-synced" : lineSynced ? "synced" : "unsynced",
       source: "Apple Music",
       lines,
     };
@@ -2871,51 +3519,49 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
 
   async _fetchPublicTTML(title, artist, durationSec = 0) {
     try {
-      const params = new URLSearchParams({
-        track: title,
-        artist: artist,
-      });
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2200);
-      const r = await fetch(`https://lyrics-api.binimum.org/?${params.toString()}`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (!r.ok) return null;
-
-      const data = await r.json();
-      const results = Array.isArray(data?.results) ? data.results : [];
+      let results = await this._queryBinimum(title, artist);
+      if (!results.length && title.includes(" - ")) {
+        const shortTitle = title.split(" - ")[0].trim();
+        if (shortTitle) results = await this._queryBinimum(shortTitle, artist);
+      }
       if (!results.length) return null;
 
-      const normArtist = artist.toLowerCase();
-      // Filter out unrelated artists and 'none' timing entries
+      const normArtist = normText(artist);
+      const normTitle = normText(title);
+
+      // Filter by artist or title match (keep all timing_types including 'none' so unsynced Apple Music tracks also work)
       const valid = results.filter((item) => {
-        if (!item || !item.lyricsUrl || item.timing_type === "none") return false;
-        const itemArtist = (item.artist_name || "").toLowerCase();
-        return itemArtist.includes(normArtist) || normArtist.includes(itemArtist);
+        if (!item || !item.lyricsUrl) return false;
+        const itemArtist = normText(item.artist_name);
+        const itemTitle = normText(item.track_name);
+        const artistMatch = itemArtist.includes(normArtist) || normArtist.includes(itemArtist);
+        const titleMatch = itemTitle.includes(normTitle) || normTitle.includes(itemTitle);
+        return artistMatch || titleMatch;
       });
 
-      const pool = valid.length ? valid : results.filter((item) => item?.lyricsUrl && item.timing_type !== "none");
+      const pool = valid.length ? valid : results.filter((item) => item?.lyricsUrl);
       if (!pool.length) return null;
 
-      // Sort: prefer duration within 12s, and strongly prefer timing_type === 'word' over 'line'
+      const timingRank = (t) => (t === "word" ? 2 : t === "line" ? 1 : 0);
+
+      // Sort: strongly prefer word > line > none, and prefer close duration
       pool.sort((a, b) => {
+        const rankA = timingRank(a.timing_type);
+        const rankB = timingRank(b.timing_type);
+
         const diffA = durationSec > 0 ? Math.abs((Number(a.duration) || 0) - durationSec) : 0;
         const diffB = durationSec > 0 ? Math.abs((Number(b.duration) || 0) - durationSec) : 0;
-        const closeA = diffA <= 12 ? 1 : 0;
-        const closeB = diffB <= 12 ? 1 : 0;
+        const closeA = diffA <= 15 ? 1 : 0;
+        const closeB = diffB <= 15 ? 1 : 0;
+
         if (closeA !== closeB) return closeB - closeA;
-
-        const wordA = a.timing_type === "word" ? 1 : 0;
-        const wordB = b.timing_type === "word" ? 1 : 0;
-        if (wordA !== wordB) return wordB - wordA;
-
+        if (rankA !== rankB) return rankB - rankA;
         return diffA - diffB;
       });
 
       const best = pool[0];
       const ttmlCtrl = new AbortController();
-      const ttmlTimer = setTimeout(() => ttmlCtrl.abort(), 2200);
+      const ttmlTimer = setTimeout(() => ttmlCtrl.abort(), 2400);
       const ttmlRes = await fetch(best.lyricsUrl, { signal: ttmlCtrl.signal });
       clearTimeout(ttmlTimer);
       if (!ttmlRes.ok) return null;
@@ -2927,13 +3573,34 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
       if (!lines.length) return null;
 
       const wordSynced = best.timing_type === "word" && lines.some((l) => l.isWordSynced);
+      const lineSynced = best.timing_type !== "none" && lines.some((l) => l.hasLineTime || l.isWordSynced);
       return {
-        type: wordSynced ? "word-synced" : "synced",
+        type: wordSynced ? "word-synced" : lineSynced ? "synced" : "unsynced",
         source: "Apple Music",
         lines,
       };
     } catch (e) {
       return null;
+    }
+  }
+
+  async _queryBinimum(title, artist) {
+    try {
+      const params = new URLSearchParams({
+        track: title,
+        artist: artist,
+      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2400);
+      const r = await fetch(`https://lyrics-api.binimum.org/?${params.toString()}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return Array.isArray(data?.results) ? data.results : [];
+    } catch (e) {
+      return [];
     }
   }
 
@@ -3274,6 +3941,7 @@ exports.LrclibLyricsProvider = LrclibLyricsProvider;
  */
 const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvider.js");
 const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  splitParentheticalBg  } = require("./utils/parsers.js");
 
 class SpotifyLyricsProvider extends BaseLyricsProvider {
   async fetch(track) {
@@ -3385,12 +4053,27 @@ class SpotifyLyricsProvider extends BaseLyricsProvider {
         const text = rawText.trim();
         return {
           startMs,
+          _rawCleanText: text,
           words: this.splitWords(text, isSynced ? startMs : null),
         };
       })
       .filter((l) => l.words && l.words.length > 0);
 
     if (!rawLines.length) return null;
+
+    if (isSynced) {
+      for (let i = 0; i < rawLines.length; i++) {
+        const line = rawLines[i];
+        const nextStart = rawLines[i + 1] ? rawLines[i + 1].startMs : line.startMs + 3600;
+        if (!line.isWordSynced && line._rawCleanText) {
+          const split = splitParentheticalBg(line._rawCleanText, line.startMs, nextStart);
+          delete line._rawCleanText;
+          line.isBgOnly = split.isBgOnly;
+          line.bgVocal = split.bgVocal;
+          line.words = this.splitWords(split.mainText, line.startMs);
+        }
+      }
+    }
 
     return {
       type: hasSyllables ? "word-synced" : isSynced ? "synced" : "unsynced",
@@ -3841,7 +4524,20 @@ const Locales = exports.Locales = {
     waterfallIntense: "Deep Waterfall",
     waterfallOff: "Off (Classic)",
     interludeDots: "Interlude Dots (• • •)",
+    bgVocalsDuet: "Bg Vocals & Duet View",
     customPalette: "Palette & Custom Color",
+    moodAtmosphere: "Mood Atmosphere",
+    moodAuto: "Auto (Song Mood)",
+    moodAutoSub: "BPM · Energy · Cover Palette",
+    moodEnergetic: "Energetic / Hype ⚡",
+    moodMelancholic: "Melancholic / Rain 🌧️",
+    moodLateNight: "Late Night / Lo-Fi 🌙",
+    moodDreamy: "Dreamy / Bokeh ✨",
+    moodOff: "Off",
+    beatReactive: "Beat & Bass Pulse",
+    beatNormal: "Normal Pulse",
+    beatIntense: "Deep Bass Pulse",
+    beatOff: "Off",
   },
   tr: {
     appearance: "Görünüm",
@@ -3909,7 +4605,20 @@ const Locales = exports.Locales = {
     waterfallIntense: "Yoğun Şelale",
     waterfallOff: "Kapalı (Klasik)",
     interludeDots: "Ara Noktaları (• • •)",
+    bgVocalsDuet: "Arka Vokal & Düet Görünümü",
     customPalette: "Palet & Özel Renk",
+    moodAtmosphere: "Ruh Hali Atmosferi",
+    moodAuto: "Otomatik (Şarkıya Göre)",
+    moodAutoSub: "BPM · Enerji · Kapak Tonu",
+    moodEnergetic: "Enerjik / Hype ⚡",
+    moodMelancholic: "Melankolik / Yağmur 🌧️",
+    moodLateNight: "Gece / Lo-Fi 🌙",
+    moodDreamy: "Rüya / Bokeh ✨",
+    moodOff: "Kapalı",
+    beatReactive: "Ritim & Bas Tepkisi",
+    beatNormal: "Normal Tepki",
+    beatIntense: "Yoğun Bas Nabzı",
+    beatOff: "Kapalı",
   },
 };
 
@@ -3961,9 +4670,140 @@ const Icons = exports.Icons = {
 // --- ./utils/parsers.js ---
 /**
  * Parsers for synchronized lyrics formats (TTML, Enhanced LRC, and standard LRC).
- * Strictly preserves true word/syllable timestamps without fabricating fake word timings
- * on line-synced tracks.
+ * - Preserves true word/syllable timestamps.
+ * - Extracts Apple Music Background Vocals (`ttm:role="x-bg"` and parenthetical ad-libs)
+ *   and Duet singer alignment (`ttm:agent="v2"` / `v2:`).
  */
+
+function isBgSpan(span, stopNode) {
+  let curr = span;
+  while (curr && curr !== stopNode) {
+    const role = curr.getAttribute?.("ttm:role") || curr.getAttribute?.("role") || "";
+    if (role === "x-bg") return true;
+    curr = curr.parentElement || curr.parentNode;
+  }
+  return false;
+}
+
+function isIgnoredRole(span, stopNode) {
+  let curr = span;
+  while (curr && curr !== stopNode) {
+    const role = curr.getAttribute?.("ttm:role") || curr.getAttribute?.("role") || "";
+    if (role === "x-translation" || role === "x-roman") return true;
+    curr = curr.parentElement || curr.parentNode;
+  }
+  return false;
+}
+
+function extractWordsFromSpans(spans, fallbackStartMs, fallbackEndMs) {
+  const words = [];
+  let currentWord = null;
+
+  for (let i = 0; i < spans.length; i++) {
+    const s = spans[i];
+    const rawText = s.textContent || "";
+    const trimmed = rawText.trim();
+    if (!trimmed.length) continue;
+
+    const wStart = parseTTMLTime(s.getAttribute("begin"));
+    const wEnd = parseTTMLTime(s.getAttribute("end"));
+
+    let hasTrailingSpace = /\s$/.test(rawText);
+    if (!hasTrailingSpace && s.nextSibling) {
+      if (s.nextSibling.nodeType === 3 && /\s/.test(s.nextSibling.nodeValue || "")) {
+        hasTrailingSpace = true;
+      }
+    }
+    if (i === spans.length - 1) {
+      hasTrailingSpace = true;
+    }
+
+    if (!currentWord) {
+      currentWord = {
+        text: trimmed,
+        startMs: wStart,
+        endMs: wEnd,
+        exactWordSync: true,
+      };
+    } else {
+      currentWord.text += trimmed;
+      if (wEnd != null) currentWord.endMs = wEnd;
+    }
+
+    if (hasTrailingSpace) {
+      const isLast = i === spans.length - 1;
+      currentWord.text = isLast ? currentWord.text : currentWord.text + " ";
+      words.push(currentWord);
+      currentWord = null;
+    }
+  }
+
+  if (currentWord) {
+    words.push(currentWord);
+  }
+
+  const hasValidWordTimes = words.some((w) => w.startMs != null);
+  if (words.length && hasValidWordTimes) {
+    const startMs = fallbackStartMs != null ? fallbackStartMs : words[0].startMs || 0;
+    const endMs = fallbackEndMs != null ? fallbackEndMs : words[words.length - 1].endMs || startMs + 3000;
+
+    for (let k = 0; k < words.length; k++) {
+      if (words[k].startMs == null) {
+        words[k].startMs = k === 0 ? startMs : words[k - 1].endMs || startMs;
+      }
+      if (words[k].endMs == null || words[k].endMs <= words[k].startMs) {
+        words[k].endMs = words[k + 1]?.startMs || endMs;
+      }
+    }
+  }
+
+  return { words, hasValidWordTimes };
+}
+
+/**
+ * Splits trailing parenthetical background vocals from a line-synced text string:
+ * e.g. "Neden ağlattın? (neden, neden)" -> main: "Neden ağlattın?", bg: "(neden, neden)"
+ * Also detects standalone parenthetical lines like "(Yeah, ooh)".
+ */
+function splitParentheticalBg(rawText, startMs = 0, endMs = 3000) {
+  const trimmed = String(rawText || "").trim();
+  if (!trimmed) return { mainText: "", bgVocal: null, isBgOnly: false };
+
+  // Case 1: Entire line is inside parentheses "(...)" with no outside text
+  if (/^\([^()]+\)$/.test(trimmed) && trimmed.length >= 4) {
+    return { mainText: trimmed, bgVocal: null, isBgOnly: true };
+  }
+
+  // Case 2: Main lyric followed by a trailing parenthetical vocal at the end: "Main lyric (bg vocal)"
+  const m = trimmed.match(/^(.*?[^\s(])\s+(\([^()]{2,65}\))$/);
+  if (m) {
+    const mainText = m[1].trim();
+    const bgText = m[2].trim();
+    if (mainText.length >= 2 && bgText.length >= 3) {
+      const dur = Math.max(800, (endMs || startMs + 3000) - startMs);
+      const bgStart = startMs + Math.round(dur * 0.42);
+      const bgEnd = startMs + Math.round(dur * 0.98);
+      const bgParts = bgText.split(/\s+/).filter(Boolean);
+      return {
+        mainText,
+        isBgOnly: false,
+        bgVocal: {
+          text: bgText,
+          startMs: bgStart,
+          endMs: bgEnd,
+          isWordSynced: false,
+          words: bgParts.map((w, idx) => ({
+            text: idx < bgParts.length - 1 ? w + " " : w,
+            startMs: bgStart,
+            endMs: bgEnd,
+          })),
+        },
+      };
+    }
+  }
+
+  return { mainText: trimmed, bgVocal: null, isBgOnly: false };
+}
 
 function parseTTML(ttmlString) {
   let doc;
@@ -3973,7 +4813,6 @@ function parseTTML(ttmlString) {
     return [];
   }
 
-  // Check root timing attribute (e.g. lrc:timing="Word" vs "Line")
   const ttEl = doc.documentElement;
   const rootTiming = (
     ttEl?.getAttribute("lrc:timing") ||
@@ -3983,121 +4822,179 @@ function parseTTML(ttmlString) {
 
   const paragraphs = Array.from(doc.getElementsByTagName("p"));
   const lines = [];
+  let primaryAgent = null;
 
   for (const p of paragraphs) {
-    // Only take direct or vocal spans (skip translation/romanization metadata spans if any)
-    const allSpans = Array.from(p.getElementsByTagName("span")).filter((s) => {
-      const role = s.getAttribute("ttm:role") || "";
-      return role !== "x-translation" && role !== "x-roman";
+    const agent = (p.getAttribute("ttm:agent") || p.getAttribute("agent") || "").trim();
+    if (agent && !primaryAgent) {
+      primaryAgent = agent;
+    }
+    const isDuet = Boolean(agent && primaryAgent && agent !== primaryAgent);
+    const pRole = p.getAttribute("ttm:role") || p.getAttribute("role") || "";
+
+    // Collect only leaf spans (spans that do not wrap nested child spans)
+    // so container <span ttm:role="x-bg"> elements are not duplicated alongside their children
+    const rawSpans = Array.from(p.getElementsByTagName("span")).filter(
+      (s) => !isIgnoredRole(s, p)
+    );
+    const leafSpans = rawSpans.filter((s) => {
+      const childSpans = Array.from(s.getElementsByTagName("span")).filter(
+        (cs) => !isIgnoredRole(cs, p)
+      );
+      return childSpans.length === 0;
     });
 
     const lineStart = parseTTMLTime(p.getAttribute("begin"));
     const lineEnd = parseTTMLTime(p.getAttribute("end"));
 
-    if (allSpans.length && rootTiming !== "line") {
-      const words = [];
-      let currentWord = null;
+    if (leafSpans.length && rootTiming !== "line") {
+      const mainSpans = [];
+      const bgSpans = [];
 
-      for (let i = 0; i < allSpans.length; i++) {
-        const s = allSpans[i];
-        const rawText = s.textContent || "";
-        const trimmed = rawText.trim();
-        if (!trimmed.length) continue;
-
-        const wStart = parseTTMLTime(s.getAttribute("begin"));
-        const wEnd = parseTTMLTime(s.getAttribute("end"));
-
-        // Determine if there is whitespace after this span (word boundary vs syllable inside the same word)
-        let hasTrailingSpace = /\s$/.test(rawText);
-        if (!hasTrailingSpace && s.nextSibling) {
-          if (s.nextSibling.nodeType === 3 && /\s/.test(s.nextSibling.nodeValue || "")) {
-            hasTrailingSpace = true;
-          }
-        }
-        if (i === allSpans.length - 1) {
-          hasTrailingSpace = true;
-        }
-
-        // Merge syllables of the same word into a single whole word so words never split visually
-        if (!currentWord) {
-          currentWord = {
-            text: trimmed,
-            startMs: wStart,
-            endMs: wEnd,
-            exactWordSync: true,
-          };
+      for (const s of leafSpans) {
+        if (pRole === "x-bg" || isBgSpan(s, p)) {
+          bgSpans.push(s);
         } else {
-          currentWord.text += trimmed;
-          if (wEnd != null) currentWord.endMs = wEnd;
-        }
-
-        if (hasTrailingSpace) {
-          const isLast = i === allSpans.length - 1;
-          currentWord.text = isLast ? currentWord.text : currentWord.text + " ";
-          words.push(currentWord);
-          currentWord = null;
+          mainSpans.push(s);
         }
       }
 
-      if (currentWord) {
-        words.push(currentWord);
+      const mainRes = extractWordsFromSpans(mainSpans, lineStart, lineEnd);
+      const bgRes = extractWordsFromSpans(bgSpans, null, lineEnd);
+
+      let bgVocal = null;
+      if (bgRes.words.length > 0) {
+        const bgStartMs = bgRes.words[0].startMs ?? lineStart ?? 0;
+        const bgEndMs =
+          bgRes.words[bgRes.words.length - 1].endMs ?? lineEnd ?? bgStartMs + 2200;
+        bgVocal = {
+          text: bgRes.words.map((w) => w.text).join("").trim(),
+          startMs: bgStartMs,
+          endMs: bgEndMs,
+          isWordSynced: bgRes.hasValidWordTimes,
+          words: bgRes.words,
+        };
       }
 
-      const hasValidWordTimes = words.some((w) => w.startMs != null);
-      if (words.length && hasValidWordTimes) {
-        const startMs = lineStart != null ? lineStart : words[0].startMs || 0;
-        const endMs = lineEnd != null ? lineEnd : words[words.length - 1].endMs || startMs + 3000;
-
-        // Fill any missing endMs on individual syllables/words
-        for (let k = 0; k < words.length; k++) {
-          if (words[k].startMs == null) {
-            words[k].startMs = k === 0 ? startMs : words[k - 1].endMs || startMs;
-          }
-          if (words[k].endMs == null || words[k].endMs <= words[k].startMs) {
-            words[k].endMs = words[k + 1]?.startMs || endMs;
-          }
-        }
+      if (mainRes.words.length && mainRes.hasValidWordTimes) {
+        const startMs = lineStart != null ? lineStart : mainRes.words[0].startMs || 0;
+        const endMs =
+          lineEnd != null
+            ? lineEnd
+            : mainRes.words[mainRes.words.length - 1].endMs || startMs + 3000;
 
         lines.push({
           startMs,
           endMs,
+          hasLineTime: true,
           isWordSynced: true,
-          words,
+          isDuet,
+          isBgOnly: false,
+          words: mainRes.words,
+          bgVocal,
+        });
+        continue;
+      } else if (!mainRes.words.length && bgVocal && bgRes.hasValidWordTimes) {
+        // Standalone background vocal paragraph
+        lines.push({
+          startMs: bgVocal.startMs,
+          endMs: bgVocal.endMs,
+          hasLineTime: true,
+          isWordSynced: true,
+          isDuet,
+          isBgOnly: true,
+          words: bgVocal.words,
+          bgVocal: null,
         });
         continue;
       }
     }
 
-    const text = (p.textContent || "").trim();
-    if (text.length) {
+    // Fallback: line-synced or unsynced <p>
+    let mainText = "";
+    let bgTextFromSpan = "";
+
+    // Check if there is a direct <span ttm:role="x-bg"> inside a line-timed <p>
+    const bgContainers = Array.from(p.getElementsByTagName("span")).filter(
+      (s) => (s.getAttribute("ttm:role") || s.getAttribute("role")) === "x-bg"
+    );
+    if (bgContainers.length > 0) {
+      bgTextFromSpan = bgContainers.map((b) => (b.textContent || "").trim()).join(" ").trim();
+      const clone = p.cloneNode(true);
+      Array.from(clone.getElementsByTagName("span")).forEach((s) => {
+        const r = s.getAttribute("ttm:role") || s.getAttribute("role") || "";
+        if (r === "x-bg" || r === "x-translation" || r === "x-roman") {
+          s.parentNode?.removeChild(s);
+        }
+      });
+      mainText = (clone.textContent || "").trim();
+    } else {
+      mainText = (p.textContent || "").trim();
+    }
+
+    if (mainText.length || bgTextFromSpan.length) {
+      const hasLineTime = lineStart != null;
       const startMs = lineStart || 0;
       const endMs = lineEnd || startMs + 3500;
-      const parts = text.split(/\s+/).filter(Boolean);
-      lines.push({
-        startMs,
-        endMs,
-        isWordSynced: false,
-        words: parts.map((w, idx) => ({
-          text: idx < parts.length - 1 ? w + " " : w,
+
+      let bgVocal = null;
+      let isBgOnly = pRole === "x-bg";
+
+      if (bgTextFromSpan && mainText) {
+        const bgStart = startMs + Math.round((endMs - startMs) * 0.4);
+        const bgParts = bgTextFromSpan.split(/\s+/).filter(Boolean);
+        bgVocal = {
+          text: bgTextFromSpan,
+          startMs: bgStart,
+          endMs,
+          isWordSynced: false,
+          words: bgParts.map((w, idx) => ({
+            text: idx < bgParts.length - 1 ? w + " " : w,
+            startMs: bgStart,
+            endMs,
+          })),
+        };
+      } else if (!mainText && bgTextFromSpan) {
+        mainText = bgTextFromSpan;
+        isBgOnly = true;
+      } else if (hasLineTime) {
+        const split = splitParentheticalBg(mainText, startMs, endMs);
+        mainText = split.mainText;
+        bgVocal = split.bgVocal;
+        if (split.isBgOnly) isBgOnly = true;
+      }
+
+      const parts = mainText.split(/\s+/).filter(Boolean);
+      if (parts.length) {
+        lines.push({
           startMs,
           endMs,
-        })),
-      });
+          hasLineTime,
+          isWordSynced: false,
+          isDuet,
+          isBgOnly,
+          bgVocal,
+          words: parts.map((w, idx) => ({
+            text: idx < parts.length - 1 ? w + " " : w,
+            startMs: hasLineTime ? startMs : null,
+            endMs: hasLineTime ? endMs : null,
+          })),
+        });
+      }
     }
   }
 
-  return lines.sort((a, b) => a.startMs - b.startMs);
+  const hasAnyTime = lines.some((l) => l.hasLineTime || l.isWordSynced);
+  return hasAnyTime ? lines.sort((a, b) => a.startMs - b.startMs) : lines;
 }
 
 function parseTTMLTime(value) {
   if (!value) return null;
   const str = String(value).trim();
 
-  // "12.345s" or bare seconds "27.395"
   let m = str.match(/^(\d+(?:\.\d+)?)s?$/);
   if (m) return Math.round(parseFloat(m[1]) * 1000);
 
-  // "00:00:12.340" or "00:00:12:340"
   m = str.match(/^(\d+):(\d\d):(\d\d)[.:](\d+)$/);
   if (m) {
     const [, h, mi, s, frac] = m;
@@ -4105,7 +5002,6 @@ function parseTTMLTime(value) {
     return (Number(h) * 3600 + Number(mi) * 60 + Number(s)) * 1000 + ms;
   }
 
-  // "00:12.340" or "00:12:34"
   m = str.match(/^(\d+):(\d\d)[.:](\d+)$/);
   if (m) {
     const [, mi, s, frac] = m;
@@ -4113,7 +5009,6 @@ function parseTTMLTime(value) {
     return (Number(mi) * 60 + Number(s)) * 1000 + ms;
   }
 
-  // "00:12"
   m = str.match(/^(\d+):(\d\d)$/);
   if (m) {
     return (Number(m[1]) * 60 + Number(m[2])) * 1000;
@@ -4136,8 +5031,17 @@ function parseLRC(lrcString) {
     const [, min, sec, rawContent] = m;
     const startMs = Math.round((Number(min) * 60 + parseFloat(sec)) * 1000);
 
-    const content = rawContent.replace(/^\s*(\[\d+:\d+(?:\.\d+)?\])+/, "").trim();
+    let content = rawContent.replace(/^\s*(\[\d+:\d+(?:\.\d+)?\])+/, "").trim();
     if (!content.length) continue;
+
+    // Detect optional duet singer markers like "v2:" or "[v2]"
+    let isDuet = false;
+    if (/^(?:\[?v2\]?\s*:?\s+)/i.test(content)) {
+      isDuet = true;
+      content = content.replace(/^(?:\[?v2\]?\s*:?\s+)/i, "").trim();
+    } else if (/^(?:\[?v1\]?\s*:?\s+)/i.test(content)) {
+      content = content.replace(/^(?:\[?v1\]?\s*:?\s+)/i, "").trim();
+    }
 
     // Check for Enhanced LRC <mm:ss.xx> real word timestamps
     if (content.includes("<") && /<\d+:\d+(?:\.\d+)?>/.test(content)) {
@@ -4168,6 +5072,8 @@ function parseLRC(lrcString) {
           startMs: words[0].startMs ?? startMs,
           endMs: words[words.length - 1].endMs,
           isWordSynced: true,
+          isDuet,
+          isBgOnly: false,
           words,
         });
         continue;
@@ -4177,27 +5083,39 @@ function parseLRC(lrcString) {
     const cleanText = content.replace(/<[^>]+>/g, "").trim();
     if (!cleanText.length) continue;
 
-    const parts = cleanText.split(/\s+/).filter(Boolean);
     lines.push({
       startMs,
       isWordSynced: false,
-      words: parts.map((w, idx) => ({
-        text: idx < parts.length - 1 ? w + " " : w,
-        startMs,
-      })),
+      isDuet,
+      _rawCleanText: cleanText,
+      words: [],
     });
   }
 
   const sorted = lines.sort((a, b) => a.startMs - b.startMs);
   for (let i = 0; i < sorted.length; i++) {
-    if (!sorted[i].endMs) {
-      sorted[i].endMs = sorted[i + 1] ? sorted[i + 1].startMs : sorted[i].startMs + 4000;
+    const line = sorted[i];
+    if (!line.endMs) {
+      line.endMs = sorted[i + 1] ? sorted[i + 1].startMs : line.startMs + 4000;
+    }
+    if (!line.isWordSynced && line._rawCleanText) {
+      const split = splitParentheticalBg(line._rawCleanText, line.startMs, line.endMs);
+      delete line._rawCleanText;
+      line.isBgOnly = split.isBgOnly;
+      line.bgVocal = split.bgVocal;
+      const parts = split.mainText.split(/\s+/).filter(Boolean);
+      line.words = parts.map((w, idx) => ({
+        text: idx < parts.length - 1 ? w + " " : w,
+        startMs: line.startMs,
+        endMs: line.endMs,
+      }));
     }
   }
   return sorted;
 }
 
 // Exported functions
+exports.splitParentheticalBg = splitParentheticalBg;
 exports.parseTTML = parseTTML;
 exports.parseTTMLTime = parseTTMLTime;
 exports.parseLRC = parseLRC;
@@ -4226,6 +5144,9 @@ const Settings = exports.Settings = {
     unsyncedScrollMode: "track", // track | slow | normal | fast | off
     waterfallMode: "normal", // normal | intense | off
     interludeDots: true,
+    bgVocalsDuet: true,
+    moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off
+    beatReactive: "normal", // normal | intense | off
     lyricsProvider: "auto", // auto | spotify | lrclib | genius | applemusic
     showAlbumArt: true,
     showTitle: true,

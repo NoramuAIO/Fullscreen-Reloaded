@@ -7,6 +7,16 @@ import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
 import { AppleMusicAuth } from "../AppleMusicAuth.js";
 import { parseTTML } from "../../utils/parsers.js";
 
+function normText(s) {
+  return String(s || "")
+    .replace(/İ/g, "i")
+    .replace(/I/g, "ı")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
 export class AppleMusicLyricsProvider extends BaseLyricsProvider {
   async fetch(track) {
     if (!track) return null;
@@ -69,8 +79,9 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
     if (!lines.length) return null;
 
     const wordSynced = lines.some((l) => l.isWordSynced);
+    const lineSynced = lines.some((l) => l.hasLineTime);
     return {
-      type: wordSynced ? "word-synced" : "synced",
+      type: wordSynced ? "word-synced" : lineSynced ? "synced" : "unsynced",
       source: "Apple Music",
       lines,
     };
@@ -78,51 +89,49 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
 
   async _fetchPublicTTML(title, artist, durationSec = 0) {
     try {
-      const params = new URLSearchParams({
-        track: title,
-        artist: artist,
-      });
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2200);
-      const r = await fetch(`https://lyrics-api.binimum.org/?${params.toString()}`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (!r.ok) return null;
-
-      const data = await r.json();
-      const results = Array.isArray(data?.results) ? data.results : [];
+      let results = await this._queryBinimum(title, artist);
+      if (!results.length && title.includes(" - ")) {
+        const shortTitle = title.split(" - ")[0].trim();
+        if (shortTitle) results = await this._queryBinimum(shortTitle, artist);
+      }
       if (!results.length) return null;
 
-      const normArtist = artist.toLowerCase();
-      // Filter out unrelated artists and 'none' timing entries
+      const normArtist = normText(artist);
+      const normTitle = normText(title);
+
+      // Filter by artist or title match (keep all timing_types including 'none' so unsynced Apple Music tracks also work)
       const valid = results.filter((item) => {
-        if (!item || !item.lyricsUrl || item.timing_type === "none") return false;
-        const itemArtist = (item.artist_name || "").toLowerCase();
-        return itemArtist.includes(normArtist) || normArtist.includes(itemArtist);
+        if (!item || !item.lyricsUrl) return false;
+        const itemArtist = normText(item.artist_name);
+        const itemTitle = normText(item.track_name);
+        const artistMatch = itemArtist.includes(normArtist) || normArtist.includes(itemArtist);
+        const titleMatch = itemTitle.includes(normTitle) || normTitle.includes(itemTitle);
+        return artistMatch || titleMatch;
       });
 
-      const pool = valid.length ? valid : results.filter((item) => item?.lyricsUrl && item.timing_type !== "none");
+      const pool = valid.length ? valid : results.filter((item) => item?.lyricsUrl);
       if (!pool.length) return null;
 
-      // Sort: prefer duration within 12s, and strongly prefer timing_type === 'word' over 'line'
+      const timingRank = (t) => (t === "word" ? 2 : t === "line" ? 1 : 0);
+
+      // Sort: strongly prefer word > line > none, and prefer close duration
       pool.sort((a, b) => {
+        const rankA = timingRank(a.timing_type);
+        const rankB = timingRank(b.timing_type);
+
         const diffA = durationSec > 0 ? Math.abs((Number(a.duration) || 0) - durationSec) : 0;
         const diffB = durationSec > 0 ? Math.abs((Number(b.duration) || 0) - durationSec) : 0;
-        const closeA = diffA <= 12 ? 1 : 0;
-        const closeB = diffB <= 12 ? 1 : 0;
+        const closeA = diffA <= 15 ? 1 : 0;
+        const closeB = diffB <= 15 ? 1 : 0;
+
         if (closeA !== closeB) return closeB - closeA;
-
-        const wordA = a.timing_type === "word" ? 1 : 0;
-        const wordB = b.timing_type === "word" ? 1 : 0;
-        if (wordA !== wordB) return wordB - wordA;
-
+        if (rankA !== rankB) return rankB - rankA;
         return diffA - diffB;
       });
 
       const best = pool[0];
       const ttmlCtrl = new AbortController();
-      const ttmlTimer = setTimeout(() => ttmlCtrl.abort(), 2200);
+      const ttmlTimer = setTimeout(() => ttmlCtrl.abort(), 2400);
       const ttmlRes = await fetch(best.lyricsUrl, { signal: ttmlCtrl.signal });
       clearTimeout(ttmlTimer);
       if (!ttmlRes.ok) return null;
@@ -134,13 +143,34 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
       if (!lines.length) return null;
 
       const wordSynced = best.timing_type === "word" && lines.some((l) => l.isWordSynced);
+      const lineSynced = best.timing_type !== "none" && lines.some((l) => l.hasLineTime || l.isWordSynced);
       return {
-        type: wordSynced ? "word-synced" : "synced",
+        type: wordSynced ? "word-synced" : lineSynced ? "synced" : "unsynced",
         source: "Apple Music",
         lines,
       };
     } catch (e) {
       return null;
+    }
+  }
+
+  async _queryBinimum(title, artist) {
+    try {
+      const params = new URLSearchParams({
+        track: title,
+        artist: artist,
+      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2400);
+      const r = await fetch(`https://lyrics-api.binimum.org/?${params.toString()}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return Array.isArray(data?.results) ? data.results : [];
+    } catch (e) {
+      return [];
     }
   }
 

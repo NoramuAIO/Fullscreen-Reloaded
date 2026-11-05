@@ -1,42 +1,289 @@
-/* ---------------- Ambient Effects ---------------- */
+/* ---------------- Mood-Adaptive & Beat-Reactive Atmosphere ---------------- */
 .fr-ambient {
+  --fr-beat: 0;
+  --fr-bar: 0;
+  --fr-energy: 0.5;
+  --fr-amb-dominant: #4a3f78;
+  --fr-amb-accent: #7b52ab;
+  --fr-amb-dark: #14121d;
+  --fr-amb-accent-soft: rgba(123, 82, 171, 0.55);
+  --fr-amb-dominant-soft: rgba(74, 63, 120, 0.5);
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 1;
   overflow: hidden;
-  mix-blend-mode: screen;
   opacity: 0;
-  transition: opacity 2s ease;
+  transition: opacity 1.2s ease;
 }
 
 .fr-ambient.fr-show {
-  opacity: 0.55;
+  opacity: 1;
+}
+
+.fr-ambient[data-mood="off"] {
+  opacity: 0 !important;
+}
+
+/* ---------------- 1. Aurora Ribbons (Energetic & Dreamy) ---------------- */
+.fr-mood-aurora {
+  position: absolute;
+  inset: -15%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: calc(0.28 + var(--fr-energy, 0.5) * 0.35 + var(--fr-beat, 0) * 0.25);
+  transform: scale(calc(1 + var(--fr-beat, 0) * 0.045));
+  transition: opacity 450ms ease;
+  will-change: transform, opacity;
+}
+
+.fr-aurora-wave {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  filter: blur(85px);
+}
+
+.fr-aurora-1 {
+  background: radial-gradient(
+    ellipse 68% 34% at 32% 28%,
+    var(--fr-amb-accent-soft) 0%,
+    transparent 72%
+  );
+  animation: auroraDrift1 16s ease-in-out infinite alternate;
+}
+
+.fr-aurora-2 {
+  background: radial-gradient(
+    ellipse 64% 38% at 68% 66%,
+    var(--fr-amb-dominant-soft) 0%,
+    transparent 74%
+  );
+  animation: auroraDrift2 21s ease-in-out infinite alternate;
+}
+
+@keyframes auroraDrift1 {
+  0%   { transform: translate3d(-6%, -4%, 0) rotate(-6deg) scale(1); }
+  100% { transform: translate3d(8%, 6%, 0) rotate(8deg) scale(1.14); }
+}
+
+@keyframes auroraDrift2 {
+  0%   { transform: translate3d(6%, 5%, 0) rotate(5deg) scale(1.08); }
+  100% { transform: translate3d(-8%, -6%, 0) rotate(-9deg) scale(0.96); }
+}
+
+.fr-ambient[data-mood="energetic"] .fr-mood-aurora {
+  opacity: calc(0.42 + var(--fr-energy, 0.5) * 0.38 + var(--fr-beat, 0) * 0.35);
+}
+
+.fr-ambient[data-mood="melancholic"] .fr-mood-aurora {
+  opacity: calc(0.14 + var(--fr-energy, 0.4) * 0.18);
+}
+
+.fr-ambient[data-mood="latenight"] .fr-mood-aurora {
+  opacity: calc(0.2 + var(--fr-energy, 0.4) * 0.22);
+}
+
+/* ---------------- 2. Beat-Reactive Light Orbs ---------------- */
+.fr-orbs-wrap {
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: screen;
+  opacity: calc(0.38 + var(--fr-energy, 0.5) * 0.28 + var(--fr-beat, 0) * 0.22);
+  transform: scale(calc(1 + var(--fr-beat, 0) * 0.035 + var(--fr-bar, 0) * 0.02));
+  transform-origin: center center;
+  will-change: transform, opacity;
 }
 
 .fr-orb {
   position: absolute;
   border-radius: 50%;
-  filter: blur(80px);
-  opacity: 0.6;
+  filter: blur(88px);
+  opacity: 0.62;
   animation: floatOrb 20s infinite alternate ease-in-out;
+  transition: background-color 900ms ease;
 }
 
 @keyframes floatOrb {
-  0% { transform: translate(0, 0) scale(1); }
-  100% { transform: translate(100px, -100px) scale(1.2); }
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(85px, -75px, 0) scale(1.18); }
+}
+
+/* ---------------- 3. Mood-Morphing Particle System ---------------- */
+.fr-particles-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .fr-particle {
   position: absolute;
+  left: var(--p-x, 50%);
+  top: var(--p-y, 50%);
+  width: var(--p-size, 4px);
+  height: var(--p-size, 4px);
   border-radius: 50%;
+  background: #ffffff;
   opacity: 0;
-  animation: floatUp linear infinite;
+  will-change: transform, opacity;
 }
 
-@keyframes floatUp {
-  0% { transform: translateY(110vh) scale(0.5); opacity: 0; }
-  20% { opacity: 0.3; }
-  80% { opacity: 0.3; }
-  100% { transform: translateY(-10vh) scale(1.5); opacity: 0; }
+/* --- Mood A: ENERGETIC ⚡ (Fast Rising Neon Sparks pulsing with the Beat) --- */
+.fr-ambient[data-mood="energetic"] .fr-particle {
+  top: auto;
+  bottom: -5vh;
+  width: var(--p-size, 4px);
+  height: var(--p-size, 4px);
+  background: #ffffff;
+  box-shadow: 0 0 calc(8px + var(--fr-beat, 0) * 14px) var(--fr-amb-accent),
+              0 0 4px #ffffff;
+  animation: frSparkRise calc(var(--p-dur, 10s) * 0.58) linear infinite;
+  animation-delay: var(--p-delay, 0s);
+}
+
+@keyframes frSparkRise {
+  0% {
+    transform: translate3d(0, 5vh, 0) scale(0.5);
+    opacity: 0;
+  }
+  20% {
+    opacity: calc(0.38 + var(--fr-beat, 0) * 0.45);
+  }
+  80% {
+    opacity: calc(0.32 + var(--fr-beat, 0) * 0.45);
+  }
+  100% {
+    transform: translate3d(var(--p-drift, 20px), -110vh, 0) scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* --- Mood B: MELANCHOLIC 🌧️ (Soft Falling Rain / Dew Streaks & Mist) --- */
+.fr-ambient[data-mood="melancholic"] .fr-particle {
+  top: -8vh;
+  width: 1.5px;
+  height: calc(var(--p-size, 4px) * 5.2);
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.42) 70%,
+    rgba(255, 255, 255, 0.72) 100%
+  );
+  box-shadow: none;
+  animation: frRainFall calc(var(--p-dur, 10s) * 0.48) linear infinite;
+  animation-delay: var(--p-delay, 0s);
+}
+
+@keyframes frRainFall {
+  0% {
+    transform: translate3d(0, -10vh, 0) rotate(8deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.34;
+  }
+  85% {
+    opacity: 0.28;
+  }
+  100% {
+    transform: translate3d(-24px, 112vh, 0) rotate(8deg);
+    opacity: 0;
+  }
+}
+
+/* --- Mood C: LATE NIGHT 🌙 (Warm Hovering Fireflies & Analog Vibe) --- */
+.fr-ambient[data-mood="latenight"] .fr-particle {
+  width: calc(var(--p-size, 4px) * 1.15);
+  height: calc(var(--p-size, 4px) * 1.15);
+  background: rgba(255, 232, 185, 0.92);
+  box-shadow: 0 0 12px rgba(255, 200, 120, 0.75), 0 0 22px var(--fr-amb-accent);
+  animation: frFireflyDrift calc(var(--p-dur, 12s) * 1.1) ease-in-out infinite alternate;
+  animation-delay: var(--p-delay, 0s);
+}
+
+@keyframes frFireflyDrift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.65);
+    opacity: 0.08;
+  }
+  50% {
+    transform: translate3d(var(--p-drift, 18px), -26px, 0) scale(calc(1.1 + var(--fr-beat, 0) * 0.35));
+    opacity: calc(0.45 + var(--fr-beat, 0) * 0.35);
+  }
+  100% {
+    transform: translate3d(calc(var(--p-drift, 18px) * -0.7), 18px, 0) scale(0.8);
+    opacity: 0.12;
+  }
+}
+
+/* --- Mood D: DREAMY ✨ (Soft Out-of-Focus Bokeh Light Circles) --- */
+.fr-ambient[data-mood="dreamy"] .fr-particle {
+  top: auto;
+  bottom: -10vh;
+  width: calc(var(--p-size, 4px) * 3.8);
+  height: calc(var(--p-size, 4px) * 3.8);
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.45) 0%,
+    var(--fr-amb-accent-soft) 55%,
+    transparent 100%
+  );
+  filter: blur(2.5px);
+  animation: frBokehFloat calc(var(--p-dur, 12s) * 1.15) ease-in-out infinite;
+  animation-delay: var(--p-delay, 0s);
+}
+
+@keyframes frBokehFloat {
+  0% {
+    transform: translate3d(0, 8vh, 0) scale(0.7);
+    opacity: 0;
+  }
+  25% {
+    opacity: calc(0.24 + var(--fr-beat, 0) * 0.22);
+  }
+  75% {
+    opacity: calc(0.22 + var(--fr-beat, 0) * 0.22);
+  }
+  100% {
+    transform: translate3d(var(--p-drift, 24px), -108vh, 0) scale(1.25);
+    opacity: 0;
+  }
+}
+
+/* ---------------- 4. Atmospheric Mist & Cinematic Vignette ---------------- */
+.fr-mood-mist {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.52) 100%),
+    linear-gradient(180deg, transparent 55%, rgba(12, 14, 22, 0.48) 100%);
+  transition: opacity 900ms ease;
+}
+
+.fr-ambient[data-mood="melancholic"] .fr-mood-mist {
+  opacity: 0.88;
+}
+
+.fr-ambient[data-mood="latenight"] .fr-mood-mist {
+  opacity: 0.72;
+}
+
+/* ---------------- 5. Late-Night Analog Film Grain ---------------- */
+.fr-mood-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 0);
+  background-size: 3px 3px;
+  mix-blend-mode: overlay;
+  transition: opacity 900ms ease;
+}
+
+.fr-ambient[data-mood="latenight"] .fr-mood-grain {
+  opacity: 0.45;
 }

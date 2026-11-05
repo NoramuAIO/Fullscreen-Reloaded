@@ -4,6 +4,7 @@
  */
 import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
 import { SpicetifyBridge } from "../SpicetifyBridge.js";
+import { splitParentheticalBg } from "../../utils/parsers.js";
 
 export class SpotifyLyricsProvider extends BaseLyricsProvider {
   async fetch(track) {
@@ -115,12 +116,27 @@ export class SpotifyLyricsProvider extends BaseLyricsProvider {
         const text = rawText.trim();
         return {
           startMs,
+          _rawCleanText: text,
           words: this.splitWords(text, isSynced ? startMs : null),
         };
       })
       .filter((l) => l.words && l.words.length > 0);
 
     if (!rawLines.length) return null;
+
+    if (isSynced) {
+      for (let i = 0; i < rawLines.length; i++) {
+        const line = rawLines[i];
+        const nextStart = rawLines[i + 1] ? rawLines[i + 1].startMs : line.startMs + 3600;
+        if (!line.isWordSynced && line._rawCleanText) {
+          const split = splitParentheticalBg(line._rawCleanText, line.startMs, nextStart);
+          delete line._rawCleanText;
+          line.isBgOnly = split.isBgOnly;
+          line.bgVocal = split.bgVocal;
+          line.words = this.splitWords(split.mainText, line.startMs);
+        }
+      }
+    }
 
     return {
       type: hasSyllables ? "word-synced" : isSynced ? "synced" : "unsynced",

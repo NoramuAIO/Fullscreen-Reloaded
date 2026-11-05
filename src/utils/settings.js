@@ -18,6 +18,9 @@ export const Settings = {
     unsyncedScrollMode: "track", // track | slow | normal | fast | off
     waterfallMode: "normal", // normal | intense | off
     interludeDots: true,
+    bgVocalsDuet: true,
+    moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off
+    beatReactive: "normal", // normal | intense | off
     lyricsProvider: "auto", // auto | spotify | lrclib | genius | applemusic
     showAlbumArt: true,
     showTitle: true,

@@ -11,6 +11,7 @@ import { t } from "../utils/i18n.js";
 import { Settings } from "../utils/settings.js";
 import { LyricsService } from "../services/LyricsService.js";
 import { SpicetifyBridge } from "../services/SpicetifyBridge.js";
+import { AudioMoodEngine } from "../services/AudioMoodEngine.js";
 
 export const LyricsView = {
   panel: null,
@@ -216,6 +217,7 @@ export const LyricsView = {
     this.providerSource = data.source || "Spotify";
     this.lines = data.lines;
     this.syncType = data.type;
+    AudioMoodEngine.updateLyricsMetrics(this.lines, this.syncType, this._currentTrackDurationMs);
 
     if (this.instrPanel) this.instrPanel.classList.remove("fr-show");
     if (app?.applyLayoutSettings) app.applyLayoutSettings();
@@ -231,10 +233,18 @@ export const LyricsView = {
     }
 
     const isSyncedAny = this.syncType === "word-synced" || this.syncType === "synced";
+    const enableBgDuet = Settings.get("bgVocalsDuet") !== false;
     let prevVocalEndMs = 0;
 
     this.lines.forEach((line, lineIdx) => {
-      const lineEl = el("div", "fr-lyric-line fr-future fr-far");
+      let extraCls = "";
+      if (enableBgDuet) {
+        if (line.isDuet) extraCls += " fr-duet-right";
+        if (line.isBgOnly) extraCls += " fr-bg-only-line";
+      }
+      line._extraCls = extraCls;
+
+      const lineEl = el("div", `fr-lyric-line fr-future fr-far${extraCls}`);
 
       let fullText = "";
       if (!Array.isArray(line.words) || !line.words.length) {
@@ -248,6 +258,11 @@ export const LyricsView = {
         fullText = line.words.map((w) => (typeof w === "string" ? w : w.text || "")).join("");
       }
 
+      // If BgVocals & Duet view is disabled, merge bgVocal inline into fullText / words
+      if (!enableBgDuet && line.bgVocal?.text) {
+        fullText = `${fullText.trim()} ${line.bgVocal.text}`.trim();
+      }
+
       const textClean = fullText.trim().toLowerCase();
       const isMusicSymbol =
         textClean === "♪" ||
@@ -255,17 +270,19 @@ export const LyricsView = {
         textClean === "🎶" ||
         textClean === "instrumental" ||
         textClean === "[instrumental]";
+      line._isMusic = isMusicSymbol;
 
-      // Compute full-bar duration so the waterfall flows continuously until the end of the bar/sentence
+      // Compute full-bar duration so the waterfall flows continuously right until the end of the bar/sentence
       const lineStart = Number(line.startMs) || 0;
       const nextLine = this.lines[lineIdx + 1];
       const nextStart = nextLine ? Number(nextLine.startMs) : lineStart + 3600;
-      const rawBarMs = Math.max(800, nextStart - lineStart);
+      const rawBarMs = Math.max(600, nextStart - lineStart);
       const wordCount = Math.max(1, line.words.length);
 
-      // Span 95% of the bar (capped only for long instrumental gaps so vocal bars fill 100% of their bar)
-      const maxVocalBarMs = Math.max(1600, wordCount * 1200 + 600);
-      const barSpanMs = Math.min(rawBarMs * 0.95, maxVocalBarMs);
+      // For normal vocal bars (< 5.5s), span 98% of the full bar so the sweep finishes right as the sentence ends.
+      // Only cap when an instrumental interlude (>= 5.5s gap) follows the line.
+      const maxVocalBarMs = Math.max(3400, wordCount * 1250 + 1000);
+      const barSpanMs = rawBarMs >= 5500 ? Math.min(rawBarMs * 0.88, maxVocalBarMs) : rawBarMs * 0.98;
       line._barSpanMs = barSpanMs;
 
       // Check if an Apple Music Interlude (• • •) precedes this line (intro >= 3s or instrumental gap >= 5s)
@@ -307,40 +324,70 @@ export const LyricsView = {
           isInline: true,
         };
       } else if (this.syncType === "synced") {
-        // Line-synced mode: render the entire sentence as a single unified block so the waterfall
-        // flows continuously from the top of the first letter ('b') down to the bottom of the last letter ('m').
+        // Line-synced mode (NOT word-by-word): render the entire sentence as ONE unified element
         const sentenceEl = el("span", "fr-lyric-sentence", fullText.trim());
         lineEl.appendChild(sentenceEl);
         line._sentenceEl = sentenceEl;
+
+        if (enableBgDuet && line.bgVocal?.text) {
+          const bgWrap = el("div", "fr-bg-vocal-sub");
+          const bgSentenceEl = el("span", "fr-lyric-sentence fr-bg-sentence", line.bgVocal.text);
+          bgWrap.appendChild(bgSentenceEl);
+          lineEl.appendChild(bgWrap);
+          line._bgSentenceEl = bgSentenceEl;
+        }
       } else {
         // Word-synced or unsynced mode: render individual word spans
-        const weights = line.words.map((w) => {
-          const clean = (typeof w === "string" ? w : w.text || "").trim();
-          return Math.pow(Math.max(2, clean.length), 0.72);
-        });
-        const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+        const buildWordSpans = (wordsArr, containerEl, startBaseMs, spanDurMs, isBg = false) => {
+          const weights = wordsArr.map((w) => {
+            const clean = (typeof w === "string" ? w : w.text || "").trim();
+            return Math.pow(Math.max(1.8, clean.length), 0.78);
+          });
+          const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+          let cursorMs = 0;
 
-        let cursorMs = 0;
-        line.words.forEach((w, wIdx) => {
-          const wordText = typeof w === "string" ? w : w.text != null ? String(w.text) : "";
-          const wordEl = el("span", "fr-lyric-word", wordText);
-          wordEl.style.setProperty("--w-idx", String(wIdx));
+          return wordsArr.map((rawW, wIdx) => {
+            const wObj =
+              rawW && typeof rawW === "object"
+                ? rawW
+                : { text: rawW != null ? String(rawW) : "" };
+            const wordText = wObj.text != null ? String(wObj.text) : "";
+            const wordEl = el("span", isBg ? "fr-lyric-word fr-bg-word" : "fr-lyric-word", wordText);
+            wordEl.style.setProperty("--w-idx", String(wIdx));
 
-          const sliceMs = (weights[wIdx] / totalWeight) * barSpanMs;
-          const realWordDur =
-            w && typeof w === "object" && w.startMs != null && w.endMs != null && w.endMs > w.startMs
-              ? (w.endMs - w.startMs) * 1.65
-              : sliceMs * 1.75;
-          const wDurMs = Math.round(Math.max(720, Math.min(1650, realWordDur)));
-          const wDelayMs = Math.round(Math.max(0, Math.min(barSpanMs - wDurMs * 0.35, cursorMs)));
-          cursorMs += sliceMs * 0.88;
+            const sliceMs = (weights[wIdx] / totalWeight) * spanDurMs;
+            const synthStart = startBaseMs + cursorMs;
+            const synthEnd = startBaseMs + cursorMs + sliceMs;
+            cursorMs += sliceMs;
 
-          wordEl.style.setProperty("--w-delay", `${wDelayMs}ms`);
-          wordEl.style.setProperty("--w-dur", `${wDurMs}ms`);
+            if (wObj.startMs == null) {
+              wObj.startMs = synthStart;
+              wObj.endMs = Math.max(synthStart + 80, synthEnd);
+            } else if (wObj.endMs == null || wObj.endMs <= wObj.startMs) {
+              const nextW = wordsArr[wIdx + 1];
+              const fallbackEnd =
+                nextW && typeof nextW === "object" && nextW.startMs > wObj.startMs
+                  ? nextW.startMs
+                  : wObj.startMs + Math.max(180, sliceMs);
+              wObj.endMs = fallbackEnd;
+            }
 
-          lineEl.appendChild(wordEl);
-          if (w && typeof w === "object") w.el = wordEl;
-        });
+            wObj.el = wordEl;
+            containerEl.appendChild(wordEl);
+            return wObj;
+          });
+        };
+
+        line.words = buildWordSpans(line.words, lineEl, lineStart, barSpanMs, false);
+
+        if (enableBgDuet && line.bgVocal && Array.isArray(line.bgVocal.words) && line.bgVocal.words.length) {
+          const bgWrap = el("div", "fr-bg-vocal-sub");
+          const bgStart = line.bgVocal.startMs ?? lineStart + Math.round(barSpanMs * 0.4);
+          const bgEnd = line.bgVocal.endMs ?? lineStart + barSpanMs;
+          const bgSpan = Math.max(400, bgEnd - bgStart);
+          line.bgVocal.words = buildWordSpans(line.bgVocal.words, bgWrap, bgStart, bgSpan, true);
+          lineEl.appendChild(bgWrap);
+        }
       }
 
       if (isSyncedAny) {
@@ -381,13 +428,24 @@ export const LyricsView = {
       line._sentenceEl.style.removeProperty("--bar-pct");
       line._sentenceEl.style.removeProperty("--bar-flow-y");
     }
-    if (!Array.isArray(line.words)) return;
-    for (let k = 0; k < line.words.length; k++) {
-      const w = line.words[k];
-      if (!w.el) continue;
-      w.el.classList.remove("fr-w-active", "fr-w-done");
-      if (asPast) w.el.classList.add("fr-w-done");
+    if (line._bgSentenceEl) {
+      line._bgSentenceEl.style.removeProperty("--bar-pct");
+      line._bgSentenceEl.style.removeProperty("--bar-flow-y");
     }
+    const clearWords = (arr) => {
+      if (!Array.isArray(arr)) return;
+      for (let k = 0; k < arr.length; k++) {
+        const w = arr[k];
+        if (!w || !w.el) continue;
+        w.el.classList.remove("fr-w-active", "fr-w-done");
+        w.el.style.removeProperty("--w-pct");
+        w.el.style.removeProperty("--w-lift");
+        w.el.style.removeProperty("--w-scale");
+        if (asPast) w.el.classList.add("fr-w-done");
+      }
+    };
+    clearWords(line.words);
+    if (line.bgVocal?.words) clearWords(line.bgVocal.words);
   },
 
   update(progressMs, instant = false) {
@@ -461,10 +519,11 @@ export const LyricsView = {
 
       for (let i = 0; i < this.lineEls.length; i++) {
         const lineEl = this.lineEls[i];
-        const dist = idx < 0 ? i : i - idx;
+        const dist = idx < 0 ? i + 1 : i - idx;
         const absDist = Math.abs(dist);
+        const extraCls = this.lines[i]?._extraCls || "";
 
-        let cls = "fr-lyric-line fr-synced";
+        let cls = `fr-lyric-line fr-synced${extraCls}`;
         if (i === idx) {
           cls += " fr-active";
         } else if (dist < 0) {
@@ -518,54 +577,91 @@ export const LyricsView = {
       }
     }
 
-    // --- 4a. Full-Sentence Top-to-Bottom Waterfall Flow (on line-synced 'synced' tracks) ---
+    // --- 4a. Full-Sentence Sweep & Waterfall Flow (on line-synced 'synced' tracks — NOT word-by-word) ---
     if (this.syncType === "synced" && this.activeIndex >= 0) {
       const activeLine = this.lines[this.activeIndex];
+      const wfMode = Settings.get("waterfallMode") || "normal";
+      const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
+
       const sentenceEl = activeLine?._sentenceEl;
       if (sentenceEl) {
-        const wfMode = Settings.get("waterfallMode") || "normal";
         const lineStart = Number(activeLine.startMs) || 0;
         const barSpan = Math.max(600, Number(activeLine._barSpanMs) || 2500);
         const rawProgress = Math.max(0, Math.min(1, (progressMs - lineStart) / barSpan));
-        // Smooth sine-eased progress across the entire bar from top of first letter ('b') to bottom of last ('m')
-        const eased = 0.5 * (1 - Math.cos(rawProgress * Math.PI));
-        const sweptPct = wfMode === "off" ? 115 : -14 + eased * 128;
-        const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
-        const flowY = dropPx * (1 - eased);
+        const sweptPct = wfMode === "off" ? 118 : rawProgress * 118;
+        const flowY = dropPx * (1 - rawProgress);
 
         sentenceEl.style.setProperty("--bar-pct", `${sweptPct.toFixed(1)}%`);
         sentenceEl.style.setProperty("--bar-flow-y", `${flowY.toFixed(2)}px`);
       }
+
+      const bgSentenceEl = activeLine?._bgSentenceEl;
+      if (bgSentenceEl && activeLine.bgVocal) {
+        const bgStart = Number(activeLine.bgVocal.startMs) || Number(activeLine.startMs) || 0;
+        const bgEnd = Number(activeLine.bgVocal.endMs) || bgStart + 1800;
+        const bgSpan = Math.max(400, bgEnd - bgStart);
+        const bgProg = Math.max(0, Math.min(1, (progressMs - bgStart) / bgSpan));
+        const bgPct = wfMode === "off" ? 118 : bgProg * 118;
+        const bgFlowY = dropPx * 0.65 * (1 - bgProg);
+
+        bgSentenceEl.style.setProperty("--bar-pct", `${bgPct.toFixed(1)}%`);
+        bgSentenceEl.style.setProperty("--bar-flow-y", `${bgFlowY.toFixed(2)}px`);
+      }
     }
 
-    // --- 4b. Word-by-Word Waterfall Flow (on word-synced tracks) ---
+    // --- 4b. 60fps Word-by-Word Waterfall & Karaoke Sweep (ONLY on word-synced tracks) ---
     if (this.syncType === "word-synced" && this.activeIndex >= 0) {
       const activeLine = this.lines[this.activeIndex];
-      if (activeLine && activeLine.isWordSynced && Array.isArray(activeLine.words)) {
-        const words = activeLine.words;
-        for (let k = 0; k < words.length; k++) {
-          const w = words[k];
-          const elWord = w.el;
-          if (!elWord) continue;
+      if (activeLine) {
+        const wfMode = Settings.get("waterfallMode") || "normal";
+        const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
 
-          const wStart = w.startMs ?? activeLine.startMs ?? 0;
-          const wEnd = w.endMs ?? wStart + 350;
+        const animateWordList = (words, dropScale = 1) => {
+          if (!Array.isArray(words)) return;
+          for (let k = 0; k < words.length; k++) {
+            const w = words[k];
+            const elWord = w?.el;
+            if (!elWord) continue;
 
-          if (progressMs < wStart) {
-            if (elWord.classList.contains("fr-w-active") || elWord.classList.contains("fr-w-done")) {
-              elWord.classList.remove("fr-w-active", "fr-w-done");
-            }
-          } else if (progressMs >= wEnd) {
-            if (!elWord.classList.contains("fr-w-done")) {
-              elWord.classList.remove("fr-w-active");
-              elWord.classList.add("fr-w-done");
-            }
-          } else {
-            if (!elWord.classList.contains("fr-w-active")) {
-              elWord.classList.remove("fr-w-done");
-              elWord.classList.add("fr-w-active");
+            const wStart = w.startMs ?? activeLine.startMs ?? 0;
+            const wEnd = w.endMs ?? wStart + 350;
+
+            if (progressMs <= wStart) {
+              if (elWord.classList.contains("fr-w-active") || elWord.classList.contains("fr-w-done")) {
+                elWord.classList.remove("fr-w-active", "fr-w-done");
+                elWord.style.removeProperty("--w-pct");
+                elWord.style.removeProperty("--w-lift");
+                elWord.style.removeProperty("--w-scale");
+              }
+            } else if (progressMs >= wEnd) {
+              if (!elWord.classList.contains("fr-w-done")) {
+                elWord.classList.remove("fr-w-active");
+                elWord.classList.add("fr-w-done");
+                elWord.style.setProperty("--w-pct", "118%");
+                elWord.style.setProperty("--w-lift", "0px");
+                elWord.style.setProperty("--w-scale", "1");
+              }
+            } else {
+              if (!elWord.classList.contains("fr-w-active")) {
+                elWord.classList.remove("fr-w-done");
+                elWord.classList.add("fr-w-active");
+              }
+              const dur = Math.max(40, wEnd - wStart);
+              const ratio = Math.max(0, Math.min(1, (progressMs - wStart) / dur));
+              const swept = -16 + ratio * 132;
+              const lift = dropPx * dropScale * 0.5 * (1 + Math.cos(ratio * Math.PI));
+              const scale = 1 + 0.03 * dropScale * Math.sin(ratio * Math.PI);
+
+              elWord.style.setProperty("--w-pct", `${swept.toFixed(1)}%`);
+              elWord.style.setProperty("--w-lift", `${lift.toFixed(2)}px`);
+              elWord.style.setProperty("--w-scale", `${scale.toFixed(3)}`);
             }
           }
+        };
+
+        animateWordList(activeLine.words, 1.0);
+        if (activeLine.bgVocal?.words) {
+          animateWordList(activeLine.bgVocal.words, 0.7);
         }
       }
     }
@@ -573,7 +669,7 @@ export const LyricsView = {
 
   /**
    * Positions all lyric lines using per-line GPU translate3d(--fr-cascade-y)
-   * with a top-to-bottom staggered delay (--fr-stagger) so lines cascade like a waterfall.
+   * with a liquid spring stagger (--fr-stagger) so bar-to-bar transitions flow smoothly.
    */
   applyCascadePosition(instant = false) {
     if (!this.scrollEl || !this.lineEls.length) return;
@@ -582,26 +678,26 @@ export const LyricsView = {
     if (!activeEl) return;
 
     const wfMode = Settings.get("waterfallMode") || "normal";
-    const lineStepMs = wfMode === "intense" ? 115 : wfMode === "normal" ? 80 : 0;
+    const lineStepMs = wfMode === "intense" ? 65 : wfMode === "normal" ? 45 : 0;
 
     const panelHeight = this.scrollEl.clientHeight || 600;
     const anchorY = panelHeight * 0.34;
-    const rawOffset = -(activeEl.offsetTop - anchorY + activeEl.offsetHeight / 2);
-    this._cascadeY = Math.min(0, rawOffset);
+    // Do NOT clamp with Math.min(0, ...) so even the first 3 lines of a song glide smoothly bar-to-bar
+    this._cascadeY = -(activeEl.offsetTop - anchorY + activeEl.offsetHeight / 2);
 
     if (instant) {
       this.scrollEl.classList.add("fr-no-transition");
     }
 
-    // Stagger from topmost visible line (targetIdx - 3) down to bottom visible line (targetIdx + 7)
-    const topVisibleIdx = targetIdx - 3;
+    // Exiting line (targetIdx - 1) moves at 0ms, new active line (targetIdx) at ~30ms,
+    // and upcoming lines below ripple downward in a smooth wave.
+    const waveStartIdx = Math.max(0, targetIdx - 1);
 
     for (let i = 0; i < this.lineEls.length; i++) {
       const lineEl = this.lineEls[i];
       let staggerMs = 0;
-      if (!instant && lineStepMs > 0 && i >= topVisibleIdx && i <= targetIdx + 8) {
-        const orderFromTop = i - topVisibleIdx; // 0, 1, 2, 3 (active), 4, 5, 6...
-        staggerMs = orderFromTop * lineStepMs;
+      if (!instant && lineStepMs > 0 && i >= waveStartIdx && i <= targetIdx + 8) {
+        staggerMs = (i - waveStartIdx) * lineStepMs;
       }
       lineEl.style.setProperty("--fr-stagger", `${staggerMs}ms`);
       lineEl.style.setProperty("--fr-cascade-y", `${this._cascadeY.toFixed(1)}px`);

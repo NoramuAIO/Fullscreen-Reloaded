@@ -44,6 +44,43 @@ export const SettingsModal = {
     colorRow.append(el("label", null, t("customColor")), colorPicker);
     sec1.appendChild(colorRow);
 
+    // Mood Atmosphere Dropdown (Auto / Energetic / Melancholic / Late Night / Dreamy / Off)
+    const moodRow = el("div", "fr-settings-row");
+    const moodSelect = createCustomSelect({
+      options: [
+        {
+          value: "auto",
+          label: t("moodAuto"),
+          shortLabel: t("providerAutoShort"),
+          sublabel: t("moodAutoSub"),
+          badge: t("badgeSmart"),
+        },
+        { value: "energetic", label: t("moodEnergetic"), shortLabel: t("moodEnergetic") },
+        { value: "melancholic", label: t("moodMelancholic"), shortLabel: t("moodMelancholic") },
+        { value: "latenight", label: t("moodLateNight"), shortLabel: t("moodLateNight") },
+        { value: "dreamy", label: t("moodDreamy"), shortLabel: t("moodDreamy") },
+        { value: "off", label: t("moodOff"), shortLabel: t("moodOff") },
+      ],
+      value: Settings.get("moodMode") || "auto",
+      onChange: (val) => Settings.set("moodMode", val),
+    });
+    moodRow.append(el("label", null, t("moodAtmosphere")), moodSelect);
+    sec1.appendChild(moodRow);
+
+    // Beat & Bass Pulse Dropdown (Normal / Intense / Off)
+    const beatRow = el("div", "fr-settings-row");
+    const beatSelect = createCustomSelect({
+      options: [
+        { value: "normal", label: t("beatNormal"), shortLabel: t("beatNormal") },
+        { value: "intense", label: t("beatIntense"), shortLabel: t("beatIntense") },
+        { value: "off", label: t("beatOff"), shortLabel: t("beatOff") },
+      ],
+      value: Settings.get("beatReactive") || "normal",
+      onChange: (val) => Settings.set("beatReactive", val),
+    });
+    beatRow.append(el("label", null, t("beatReactive")), beatSelect);
+    sec1.appendChild(beatRow);
+
     panel.appendChild(sec1);
     panel.appendChild(el("div", "fr-settings-divider"));
 
@@ -82,6 +119,12 @@ export const SettingsModal = {
     const interludeToggle = toggle(Settings.get("interludeDots") !== false, (v) => Settings.set("interludeDots", v));
     interludeRow.append(el("label", null, t("interludeDots")), interludeToggle);
     sec2.appendChild(interludeRow);
+
+    // Background Vocals & Duet View Toggle (Apple Music Sing / Duet)
+    const bgDuetRow = el("div", "fr-settings-row");
+    const bgDuetToggle = toggle(Settings.get("bgVocalsDuet") !== false, (v) => Settings.set("bgVocalsDuet", v));
+    bgDuetRow.append(el("label", null, t("bgVocalsDuet")), bgDuetToggle);
+    sec2.appendChild(bgDuetRow);
 
     // Lyrics Provider Dropdown (Apple Music / LRCLIB / Genius / Spotify)
     const providerRow = el("div", "fr-settings-row");

@@ -15,6 +15,7 @@ import { TopBar } from "./components/TopBar.js";
 import { BottomDock } from "./components/BottomDock.js";
 import { LyricsView } from "./components/LyricsView.js";
 import { LyricsService } from "./services/LyricsService.js";
+import { AudioMoodEngine } from "./services/AudioMoodEngine.js";
 
 export const App = {
   root: null,
@@ -237,8 +238,9 @@ export const App = {
       UpNextCard.reset();
       TopBar.updatePiPImage(image);
 
-      // Start fetching lyrics immediately without waiting for background color extraction
+      // Start fetching lyrics & audio analysis immediately without waiting for background color extraction
       LyricsView.loadForTrack(track, this);
+      AudioMoodEngine.loadTrack(track);
 
       // Crossfade album art between dual stacked layers
       const showing = this.artActiveIsImg ? this.artImg : this.artImgAlt;
@@ -252,6 +254,7 @@ export const App = {
 
       const colors = await BackgroundManager.update(image);
       AmbientManager.updateColors(colors);
+      AudioMoodEngine.updateColors(colors);
       this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));
       this.artWrap.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
     } else if (LyricsView._currentTrackUri !== track.uri) {
@@ -267,6 +270,9 @@ export const App = {
       if (typeof progress === "number") {
         LyricsView.update(progress);
         UpNextCard.update(duration, progress);
+
+        const moodFrame = AudioMoodEngine.sample(progress, SpicetifyBridge.isPlaying(), LyricsView);
+        AmbientManager.updateFrame(moodFrame, this.artWrap);
 
         if (duration && this.ringRect) {
           const pct = Math.max(0, Math.min(1, progress / duration));
@@ -355,6 +361,9 @@ export const App = {
     }
     if (key === "lyricsProvider" && this.currentTrack) {
       LyricsService.clearCache();
+      LyricsView.loadForTrack(this.currentTrack, this, true);
+    }
+    if (key === "bgVocalsDuet" && this.currentTrack) {
       LyricsView.loadForTrack(this.currentTrack, this, true);
     }
     if (key === "waterfallMode") {

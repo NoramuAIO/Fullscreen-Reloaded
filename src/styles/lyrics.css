@@ -70,8 +70,8 @@
 /* ---------------- Scroll & Waterfall Viewport ---------------- */
 .fr-lyrics-scroll {
   --fr-word-step: 120ms;
-  --fr-word-dur: 1050ms;
-  --fr-line-dur: 1050ms;
+  --fr-word-dur: 900ms;
+  --fr-line-dur: 820ms;
   --fr-word-drop-future: -9px;
   --fr-word-drop-past: 7px;
   flex: 1;
@@ -103,16 +103,16 @@
 
 .fr-lyrics-scroll[data-waterfall="intense"] {
   --fr-word-step: 165ms;
-  --fr-word-dur: 1350ms;
-  --fr-line-dur: 1280ms;
+  --fr-word-dur: 1150ms;
+  --fr-line-dur: 980ms;
   --fr-word-drop-future: -13px;
   --fr-word-drop-past: 10px;
 }
 
 .fr-lyrics-scroll[data-waterfall="off"] {
   --fr-word-step: 0ms;
-  --fr-word-dur: 500ms;
-  --fr-line-dur: 550ms;
+  --fr-word-dur: 450ms;
+  --fr-line-dur: 500ms;
   --fr-word-drop-future: 0px;
   --fr-word-drop-past: 0px;
 }
@@ -130,25 +130,25 @@
   display: none;
 }
 
-/* ---------------- Per-Line Staggered Waterfall Positioning ---------------- */
+/* ---------------- Per-Line Staggered Spring Waterfall Positioning ---------------- */
 .fr-lyric-line {
-  --fr-scale: 0.94;
+  --fr-scale: 0.935;
   font-size: clamp(20px, 2.35vw, 31px);
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.48;
   color: rgba(255, 255, 255, 0.32);
-  margin: 4px 0;
+  margin: 6px 0;
   padding: 10px 14px;
   border-radius: 16px;
   transform-origin: left center;
   transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));
   filter: blur(0px);
   transition:
-    transform var(--fr-line-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
-    color 650ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
-    opacity 680ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
-    filter 680ms cubic-bezier(0.25, 0.46, 0.45, 0.94) var(--fr-stagger, 0ms),
+    transform var(--fr-line-dur, 820ms) cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),
+    color 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),
+    opacity 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),
+    filter 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),
     background-color 250ms ease;
   cursor: default;
   -webkit-font-smoothing: antialiased;
@@ -157,7 +157,8 @@
 }
 
 .fr-lyrics-scroll.fr-no-transition .fr-lyric-line,
-.fr-lyrics-scroll.fr-no-transition .fr-lyric-word {
+.fr-lyrics-scroll.fr-no-transition .fr-lyric-word,
+.fr-lyrics-scroll.fr-no-transition .fr-lyric-sentence {
   transition: none !important;
 }
 
@@ -170,21 +171,21 @@
 
 /* Depth-of-field distance classes */
 .fr-lyric-line.fr-near-1 {
-  --fr-scale: 0.97;
-  color: rgba(255, 255, 255, 0.42);
-  filter: blur(0.5px);
+  --fr-scale: 0.965;
+  color: rgba(255, 255, 255, 0.44);
+  filter: blur(0.6px);
 }
 
 .fr-lyric-line.fr-near-2 {
-  --fr-scale: 0.945;
+  --fr-scale: 0.935;
   color: rgba(255, 255, 255, 0.28);
-  filter: blur(1.3px);
+  filter: blur(1.5px);
 }
 
 .fr-lyric-line.fr-far {
-  --fr-scale: 0.92;
-  color: rgba(255, 255, 255, 0.18);
-  filter: blur(2.2px);
+  --fr-scale: 0.905;
+  color: rgba(255, 255, 255, 0.17);
+  filter: blur(2.4px);
 }
 
 .fr-lyrics-scroll[data-waterfall="off"] .fr-lyric-line {
@@ -192,21 +193,12 @@
 }
 
 .fr-lyric-line.fr-active {
-  --fr-scale: 1.02;
+  --fr-scale: 1.035;
   color: #ffffff;
   filter: blur(0px);
 }
 
-/* ---------------- Top-to-Bottom Word Waterfall Flow (Line-Synced Mode) ---------------- */
-.fr-lyric-word {
-  display: inline-block;
-  white-space: pre-wrap;
-  color: inherit;
-}
-
-/* ---------------- Full-Sentence Top-to-Bottom Waterfall Flow (Line-Synced 'synced' Mode) ---------------- */
-/* Flows continuously from the top of the first letter ('b') across the whole sentence
-   down to the bottom of the last letter ('m') over the full bar duration. */
+/* ---------------- Full-Sentence Sweep & Waterfall Flow (Line-Synced 'synced' Mode — NOT Word-by-Word) ---------------- */
 .fr-lyric-sentence {
   display: inline-block;
   white-space: pre-wrap;
@@ -217,25 +209,28 @@
   transform: translate3d(0, var(--fr-word-drop-future), 0);
   opacity: 0.78;
   transition:
-    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),
     opacity 680ms ease;
 }
 
 .fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {
   color: transparent;
   background-image: linear-gradient(
-    168deg,
+    100deg,
     #ffffff 0%,
-    #ffffff calc(var(--bar-pct, -14%) - 18%),
-    rgba(255, 255, 255, 0.88) calc(var(--bar-pct, -14%) - 3%),
-    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, -14%) + 16%),
+    #ffffff calc(var(--bar-pct, 0%) - 18%),
+    rgba(255, 255, 255, 0.64) calc(var(--bar-pct, 0%) - 9%),
+    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, 0%)),
     rgba(255, 255, 255, 0.32) 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);
-  filter: drop-shadow(0 3px 18px rgba(255, 255, 255, 0.28));
+  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.32));
+  transition:
+    transform 80ms linear,
+    filter 280ms ease;
   will-change: transform, background-image;
 }
 
@@ -244,67 +239,83 @@
   -webkit-text-fill-color: currentColor;
   background-image: none;
   transform: translate3d(0, var(--fr-word-drop-past), 0);
-  opacity: 0.65;
+  opacity: 0.72;
   filter: none;
   transition:
-    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),
-    opacity 720ms ease;
+    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 720ms ease,
+    filter 450ms ease;
 }
 
-/* ---------------- Top-to-Bottom Word Waterfall Flow (Word-Synced / Karaoke Mode) ---------------- */
-/* Uses the exact same silky waterfall drop & glow aesthetic as line-synced mode,
-   triggered at each word's exact studio timestamp (w.startMs -> w.endMs). */
+/* ---------------- Per-Word Waterfall & Karaoke Sweep (ONLY on Word-Synced 'word-by-word' Mode) ---------------- */
+.fr-lyric-word {
+  display: inline-block;
+  white-space: pre-wrap;
+  color: inherit;
+}
+
 .fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {
   transform: translate3d(0, var(--fr-word-drop-future), 0);
-  opacity: 0.72;
+  opacity: 0.74;
   transition:
-    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94),
-    opacity 680ms ease,
-    color 680ms ease,
-    text-shadow 680ms ease;
+    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 680ms ease;
 }
 
-.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active {
-  color: rgba(255, 255, 255, 0.36);
-}
-
-/* Unsung word inside active line: poised above (-9px) in soft muted white, waiting for its timestamp */
+/* Unsung word inside active line: poised above (-8px) in soft muted white, waiting for its timestamp */
 .fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {
-  color: rgba(255, 255, 255, 0.36);
-  opacity: 0.78;
-  transform: translate3d(0, var(--fr-word-drop-future), 0);
-  text-shadow: none;
+  color: rgba(255, 255, 255, 0.34);
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);
+  background-image: none;
+  opacity: 1;
+  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0) scale(var(--w-scale, 0.985));
+  transform-origin: center baseline;
+  filter: none;
   transition:
-    transform var(--w-dur, 920ms) cubic-bezier(0.22, 0.61, 0.36, 1),
-    opacity var(--w-dur, 760ms) cubic-bezier(0.22, 0.61, 0.36, 1),
-    color var(--w-dur, 760ms) cubic-bezier(0.22, 0.61, 0.36, 1),
-    text-shadow var(--w-dur, 760ms) ease;
+    transform 75ms linear,
+    filter 180ms ease,
+    color 180ms ease;
+  will-change: transform, background-image, filter;
 }
 
-/* Word currently being sung: glides down smoothly to 0px and blooms with white light */
+/* Word currently being sung: glides smoothly from top to 0px while sweeping white light left-to-right */
 .fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {
-  color: #ffffff;
-  opacity: 1;
-  transform: translate3d(0, -1.5px, 0) scale(1.015);
-  text-shadow: 0 0 18px rgba(255, 255, 255, 0.52), 0 3px 22px rgba(255, 255, 255, 0.34);
+  color: transparent;
+  background-image: linear-gradient(
+    105deg,
+    #ffffff 0%,
+    #ffffff calc(var(--w-pct, -18%) - 14%),
+    rgba(255, 255, 255, 0.9) calc(var(--w-pct, -18%)),
+    rgba(255, 255, 255, 0.34) calc(var(--w-pct, -18%) + 14%),
+    rgba(255, 255, 255, 0.34) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.38));
 }
 
 /* Word finished being sung: rests cleanly at 0px in full bright white */
 .fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {
   color: #ffffff;
-  opacity: 1;
+  -webkit-text-fill-color: #ffffff;
+  background-image: none;
   transform: translate3d(0, 0px, 0) scale(1);
-  text-shadow: 0 3px 22px rgba(255, 255, 255, 0.32);
+  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.28));
 }
 
-/* Past line in word-synced mode: words cascade gently downward (+7px) just like line-synced mode */
+/* Past line: words cascade gently downward (+7px) with a left-to-right stagger */
 .fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+  background-image: none;
   transform: translate3d(0, var(--fr-word-drop-past), 0);
-  opacity: 0.65;
-  text-shadow: none;
+  opacity: 0.72;
+  filter: none;
   transition:
-    transform var(--fr-word-dur, 1050ms) cubic-bezier(0.25, 0.46, 0.45, 0.94) calc(var(--w-idx, 0) * 75ms),
-    opacity 720ms ease calc(var(--w-idx, 0) * 75ms);
+    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1) calc(var(--w-idx, 0) * 55ms),
+    opacity 720ms ease calc(var(--w-idx, 0) * 55ms),
+    filter 450ms ease;
 }
 
 /* Interactive hover for synced lines */
@@ -316,6 +327,52 @@
   background-color: rgba(255, 255, 255, 0.05);
   color: rgba(255, 255, 255, 0.85);
   filter: blur(0px);
+}
+
+/* ---------------- Apple Music Duet (Right-Aligned Singer v2) & Background Vocals ---------------- */
+.fr-lyric-line.fr-duet-right {
+  text-align: right;
+  transform-origin: right center;
+}
+
+.fr-lyric-line.fr-duet-right .fr-interlude-dots {
+  justify-content: flex-end;
+  transform-origin: right center;
+}
+
+/* Standalone background vocal line (e.g. "(Yeah, ooh)" or full x-bg paragraph) */
+.fr-lyric-line.fr-bg-only-line {
+  font-size: clamp(16px, 1.85vw, 24px);
+  font-weight: 500;
+  font-style: italic;
+  letter-spacing: 0;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.fr-lyric-line.fr-bg-only-line.fr-active {
+  --fr-scale: 1.0;
+  opacity: 0.88;
+}
+
+/* Sub-line background vocal attached right below a main vocal line */
+.fr-bg-vocal-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.72em;
+  font-weight: 500;
+  font-style: italic;
+  line-height: 1.35;
+  letter-spacing: 0;
+  opacity: 0.82;
+}
+
+.fr-lyric-line.fr-future .fr-bg-vocal-sub {
+  opacity: 0.65;
+}
+
+.fr-lyric-line.fr-past .fr-bg-vocal-sub {
+  opacity: 0.58;
 }
 
 /* ---------------- Unsynced Teleprompter Mode ---------------- */
