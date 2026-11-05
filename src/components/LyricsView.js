@@ -92,6 +92,15 @@ export const LyricsView = {
     );
     this.scrollEl.addEventListener("touchmove", () => this.onUserScroll(), { passive: true });
 
+    if (typeof ResizeObserver !== "undefined") {
+      this._resizeObserver = new ResizeObserver(() => {
+        if (!this.userScrolling && (this.syncType === "synced" || this.syncType === "word-synced")) {
+          this.applyCascadePosition(true);
+        }
+      });
+      this._resizeObserver.observe(this.scrollEl);
+    }
+
     this.applyWaterfallMode();
     return this.panel;
   },
@@ -681,7 +690,10 @@ export const LyricsView = {
     const lineStepMs = wfMode === "intense" ? 65 : wfMode === "normal" ? 45 : 0;
 
     const panelHeight = this.scrollEl.clientHeight || 600;
-    const anchorY = panelHeight * 0.34;
+    const isPortrait =
+      (typeof window !== "undefined" &&
+        (window.innerHeight > window.innerWidth * 0.8 || window.innerWidth <= 900));
+    const anchorY = isPortrait ? Math.min(panelHeight * 0.16, 130) : panelHeight * 0.34;
     // Do NOT clamp with Math.min(0, ...) so even the first 3 lines of a song glide smoothly bar-to-bar
     this._cascadeY = -(activeEl.offsetTop - anchorY + activeEl.offsetHeight / 2);
 
