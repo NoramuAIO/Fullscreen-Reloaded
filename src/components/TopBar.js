@@ -5,6 +5,7 @@ import { el, iconBtn } from "../utils/dom.js";
 import { Icons } from "../utils/icons.js";
 import { SettingsModal } from "./SettingsModal.js";
 import { FullLyricsCreator } from "./FullLyricsCreator.js";
+import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 
 export const TopBar = {
   root: null,
@@ -60,7 +61,7 @@ export const TopBar = {
       // If Legacy Video PiP is open, close it
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
-        this.pipBtn.classList.remove("fr-active");
+        this.pipBtn?.classList.remove("fr-active");
         return;
       }
 
@@ -70,6 +71,12 @@ export const TopBar = {
           width: 400,
           height: 400,
         });
+        if (!this.root || SpotiKitBridge.isStopped()) {
+          try {
+            pipWindow?.close?.();
+          } catch (_) {}
+          return;
+        }
         pipWindow.document.body.style.margin = "0";
         pipWindow.document.body.style.backgroundColor = "#121212";
         pipWindow.document.body.style.overflow = "hidden";
@@ -99,7 +106,7 @@ export const TopBar = {
         img.crossOrigin = "anonymous";
         img.src = app.currentImage || "";
         img.onload = async () => {
-          if (!this.root) return;
+          if (!this.root || SpotiKitBridge.isStopped()) return;
           ctx.fillStyle = "#121212";
           ctx.fillRect(0, 0, 800, 800);
           ctx.drawImage(img, 0, 0, 800, 800);
@@ -108,7 +115,16 @@ export const TopBar = {
           video.srcObject = stream;
           video.muted = true;
           await video.play();
+          if (!this.root || SpotiKitBridge.isStopped()) return;
           await video.requestPictureInPicture();
+          if (!this.root || SpotiKitBridge.isStopped()) {
+            try {
+              if (document.pictureInPictureElement && typeof document.exitPictureInPicture === "function") {
+                await document.exitPictureInPicture();
+              }
+            } catch (_) {}
+            return;
+          }
           video.addEventListener("leavepictureinpicture", () => {
             this.pipBtn?.classList.remove("fr-active");
           });

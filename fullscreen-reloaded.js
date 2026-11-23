@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (SpotiKit ESM bundle)
 // A cinematic, modern fullscreen experience for Spotify.
-// Generated on: 2026-11-23T14:34:41.221Z
+// Generated on: 2026-11-23T19:03:17.914Z
 // ==========================================================================
 
 function __createRuntime() {
@@ -5314,6 +5314,7 @@ const {  el, iconBtn  } = require("./utils/dom.js");
 const {  Icons  } = require("./utils/icons.js");
 const {  SettingsModal  } = require("./components/SettingsModal.js");
 const {  FullLyricsCreator  } = require("./components/FullLyricsCreator.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 const TopBar = exports.TopBar = {
   root: null,
@@ -5369,7 +5370,7 @@ const TopBar = exports.TopBar = {
       // If Legacy Video PiP is open, close it
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
-        this.pipBtn.classList.remove("fr-active");
+        this.pipBtn?.classList.remove("fr-active");
         return;
       }
 
@@ -5379,6 +5380,12 @@ const TopBar = exports.TopBar = {
           width: 400,
           height: 400,
         });
+        if (!this.root || SpotiKitBridge.isStopped()) {
+          try {
+            pipWindow?.close?.();
+          } catch (_) {}
+          return;
+        }
         pipWindow.document.body.style.margin = "0";
         pipWindow.document.body.style.backgroundColor = "#121212";
         pipWindow.document.body.style.overflow = "hidden";
@@ -5408,7 +5415,7 @@ const TopBar = exports.TopBar = {
         img.crossOrigin = "anonymous";
         img.src = app.currentImage || "";
         img.onload = async () => {
-          if (!this.root) return;
+          if (!this.root || SpotiKitBridge.isStopped()) return;
           ctx.fillStyle = "#121212";
           ctx.fillRect(0, 0, 800, 800);
           ctx.drawImage(img, 0, 0, 800, 800);
@@ -5417,7 +5424,16 @@ const TopBar = exports.TopBar = {
           video.srcObject = stream;
           video.muted = true;
           await video.play();
+          if (!this.root || SpotiKitBridge.isStopped()) return;
           await video.requestPictureInPicture();
+          if (!this.root || SpotiKitBridge.isStopped()) {
+            try {
+              if (document.pictureInPictureElement && typeof document.exitPictureInPicture === "function") {
+                await document.exitPictureInPicture();
+              }
+            } catch (_) {}
+            return;
+          }
           video.addEventListener("leavepictureinpicture", () => {
             this.pipBtn?.classList.remove("fr-active");
           });
@@ -5679,7 +5695,14 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
         if (!raw) return null;
         parsed = JSON.parse(raw);
       }
-      if (!parsed || typeof parsed !== "object" || !parsed.token || parsed.expires < Date.now()) {
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.token !== "string" ||
+        !parsed.token ||
+        !Number.isFinite(parsed.expires) ||
+        parsed.expires < Date.now()
+      ) {
         return null;
       }
       return parsed;
@@ -5740,7 +5763,7 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
       const MusicKit = await this.loadMusicKit();
       await MusicKit.configure({
         developerToken: devToken,
-        app: { name: "Fullscreen Reloaded", build: "1.3.6" },
+        app: { name: "Fullscreen Reloaded", build: "1.4.0" },
       });
       const instance = MusicKit.getInstance();
       const userToken = await instance.authorize();

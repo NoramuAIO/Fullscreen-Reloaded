@@ -180,8 +180,22 @@ test("appleMusicAuth: caches apple-dev-token in SpotiKit.Storage scope and notif
     AppleMusicAuth._musicKitLoading = null;
 
     const scope = env.mock.SpotiKit.Storage.scope("fullscreen-reloaded");
-    const futureExpires = Date.now() + 60_000;
-    scope.set("apple-dev-token", { token: "cached-dev-token", expires: futureExpires });
+
+    // _readCache rejects non-finite or expired timestamps and non-string tokens
+    for (const invalid of [
+      { token: "missing-expires" },
+      { token: "nan-expires", expires: Number.NaN },
+      { token: "inf-expires", expires: Number.POSITIVE_INFINITY },
+      { token: "string-expires", expires: String(Date.now() + 60_000) },
+      { token: "expired", expires: Date.now() - 1_000 },
+      { token: "", expires: Date.now() + 60_000 },
+    ]) {
+      scope.set("apple-dev-token", invalid);
+      assert.equal(AppleMusicAuth._readCache(), null);
+    }
+
+    const scopeValid = Date.now() + 60_000;
+    scope.set("apple-dev-token", { token: "cached-dev-token", expires: scopeValid });
 
     // Reads cached token from SpotiKit.Storage scope
     const fromCache = await AppleMusicAuth.getDeveloperToken();

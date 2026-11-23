@@ -73,7 +73,14 @@ export const AppleMusicAuth = {
         if (!raw) return null;
         parsed = JSON.parse(raw);
       }
-      if (!parsed || typeof parsed !== "object" || !parsed.token || parsed.expires < Date.now()) {
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.token !== "string" ||
+        !parsed.token ||
+        !Number.isFinite(parsed.expires) ||
+        parsed.expires < Date.now()
+      ) {
         return null;
       }
       return parsed;
@@ -134,7 +141,7 @@ export const AppleMusicAuth = {
       const MusicKit = await this.loadMusicKit();
       await MusicKit.configure({
         developerToken: devToken,
-        app: { name: "Fullscreen Reloaded", build: "1.3.6" },
+        app: { name: "Fullscreen Reloaded", build: "1.4.0" },
       });
       const instance = MusicKit.getInstance();
       const userToken = await instance.authorize();

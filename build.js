@@ -132,8 +132,9 @@ function transformModule(content, filePath, bundledCss) {
   return content;
 }
 
-export function build() {
+export function build({ outFile = DIST_FILE } = {}) {
   const startTime = Date.now();
+  const targetFile = outFile || DIST_FILE;
   console.log("[Fullscreen Reloaded] Building extension bundle...");
 
   const bundledCss = buildStyles();
@@ -197,10 +198,12 @@ export default async function start(context) {
 }
 `;
 
-  fs.writeFileSync(DIST_FILE, bundle, "utf-8");
+  fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+  fs.writeFileSync(targetFile, bundle, "utf-8");
   const elapsed = Date.now() - startTime;
   const sizeKb = (Buffer.byteLength(bundle, "utf-8") / 1024).toFixed(1);
-  console.log(`[Fullscreen Reloaded] Bundle created: ${DIST_FILE} (${sizeKb} KB) in ${elapsed}ms`);
+  console.log(`[Fullscreen Reloaded] Bundle created: ${targetFile} (${sizeKb} KB) in ${elapsed}ms`);
+  return targetFile;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {

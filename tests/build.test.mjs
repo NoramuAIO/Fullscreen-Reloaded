@@ -2,23 +2,49 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
+function normalizeGeneratedHeader(bundleText) {
+  return bundleText.replace(/^\/\/ Generated on: .*$/m, "// Generated on: <normalized>");
+}
+
 test("build.js produces ESM module exporting default start(context) and includes creator.css", async () => {
   const { build } = await import(pathToFileURL(path.join(ROOT, "build.js")).href);
-  build();
-  const outPath = path.join(ROOT, "fullscreen-reloaded.js");
-  const code = fs.readFileSync(outPath, "utf8");
-  assert.match(code, /function __createRuntime\(\)/);
-  assert.match(code, /export default async function start\(context\)/);
-  assert.doesNotMatch(code, /\(function FullscreenReloaded\(\)/);
-  assert.match(code, /\/\* --- creator\.css --- \*\//);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-build-test-"));
+  const outPath = path.join(tmpDir, "fullscreen-reloaded.js");
+  try {
+    build({ outFile: outPath });
+    const code = fs.readFileSync(outPath, "utf8");
+    assert.match(code, /function __createRuntime\(\)/);
+    assert.match(code, /export default async function start\(context\)/);
+    assert.doesNotMatch(code, /\(function FullscreenReloaded\(\)/);
+    assert.match(code, /\/\* --- creator\.css --- \*\//);
 
-  const indexCss = fs.readFileSync(path.join(ROOT, "src/styles/index.css"), "utf8");
-  assert.match(indexCss, /@import\s+"\.\/creator\.css";/);
+    const indexCss = fs.readFileSync(path.join(ROOT, "src/styles/index.css"), "utf8");
+    assert.match(indexCss, /@import\s+"\.\/creator\.css";/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("committed fullscreen-reloaded.js is up to date with src/ without mutating working tree", async () => {
+  const { build } = await import(pathToFileURL(path.join(ROOT, "build.js")).href);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-freshness-test-"));
+  const tmpOutPath = path.join(tmpDir, "fullscreen-reloaded.js");
+  try {
+    build({ outFile: tmpOutPath });
+    const freshBundle = normalizeGeneratedHeader(fs.readFileSync(tmpOutPath, "utf8"));
+    const committedBundle = normalizeGeneratedHeader(
+      fs.readFileSync(path.join(ROOT, "fullscreen-reloaded.js"), "utf8")
+    );
+    assert.equal(committedBundle, freshBundle);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("installDomStub provides required DOM APIs and restores globals on reset()", async () => {

@@ -1,12 +1,21 @@
 // tests/lifecycle.test.mjs
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { installDomStub, createSpotiKitMock } from "./helpers/domStub.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+const tempBundleDirs = [];
+
+after(() => {
+  for (const dir of tempBundleDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  tempBundleDirs.length = 0;
+});
 
 function createLifecycleEnv(overrides = {}) {
   const dom = installDomStub();
@@ -130,11 +139,12 @@ function createLifecycleEnv(overrides = {}) {
 }
 
 async function importFreshBundle() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-lifecycle-test-"));
+  tempBundleDirs.push(tmpDir);
+  const tmpOut = path.join(tmpDir, "fullscreen-reloaded.mjs");
   const { build } = await import(pathToFileURL(path.join(ROOT, "build.js")).href);
-  build();
-  const bundleUrl =
-    pathToFileURL(path.join(ROOT, "fullscreen-reloaded.js")).href + `?v=${Date.now()}-${Math.random()}`;
-  return import(bundleUrl);
+  build({ outFile: tmpOut });
+  return import(pathToFileURL(tmpOut).href);
 }
 
 test("startAndStopLifecycle: bundled start(ctx) mounts, toggles via fullscreen button & Escape, tears down cleanly, and restarts isolated", async () => {
@@ -773,6 +783,64 @@ test("backgroundUpdateAcrossRebuildAndUnmount: pending BackgroundManager.update 
     assert.equal(detachedLayerB.style.backgroundColor, "");
   } finally {
     ColorExtractor.extract = origExtract;
+    env.teardown();
+  }
+});
+
+test("topBarPipStopGuard: closes orphaned pipWindow if extension stops while requestWindow is pending", async () => {
+  const env = createLifecycleEnv();
+  let resolvePipWindow;
+  const pipPromise = new Promise((resolve) => {
+    resolvePipWindow = resolve;
+  });
+
+  let closed = false;
+  let appendCalls = 0;
+  const fakePipWindow = {
+    document: {
+      body: {
+        style: {},
+        appendChild() {
+          appendCalls++;
+        },
+      },
+    },
+    addEventListener() {},
+    close() {
+      closed = true;
+    },
+  };
+
+  env.dom.window.documentPictureInPicture = {
+    window: null,
+    requestWindow: async () => pipPromise,
+  };
+
+  try {
+    const [{ SpotiKitBridge }, { TopBar }] = await Promise.all([
+      import(pathToFileURL(path.join(ROOT, "src/services/SpotiKitBridge.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/components/TopBar.js")).href),
+    ]);
+
+    SpotiKitBridge.init(env.mock.ctx);
+    const bar = TopBar.build({
+      currentImage: "https://example.com/art.jpg",
+      toggleLyricsVisible() {},
+      close() {},
+    });
+    document.body.appendChild(bar);
+
+    const togglePromise = TopBar.togglePiP({ currentImage: "https://example.com/art.jpg" });
+    TopBar.destroy();
+    env.mock.abortController.abort();
+
+    resolvePipWindow(fakePipWindow);
+    await togglePromise;
+
+    assert.equal(closed, true);
+    assert.equal(appendCalls, 0);
+    assert.equal(TopBar.pipImg, null);
+  } finally {
     env.teardown();
   }
 });
