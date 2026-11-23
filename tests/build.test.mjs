@@ -9,7 +9,9 @@ import { pathToFileURL } from "node:url";
 const ROOT = path.resolve(import.meta.dirname, "..");
 
 function normalizeGeneratedHeader(bundleText) {
-  return bundleText.replace(/^\/\/ Generated on: .*$/m, "// Generated on: <normalized>");
+  return bundleText
+    .replace(/\r\n/g, "\n")
+    .replace(/^\/\/ Generated on: .*$/m, "// Generated on: <normalized>");
 }
 
 test("build.js produces ESM module exporting default start(context) and includes creator.css", async () => {

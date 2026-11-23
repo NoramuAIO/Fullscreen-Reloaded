@@ -32,12 +32,16 @@ const CSS_FILES_ORDER = [
   "creator.css",
 ];
 
+function normalizeLf(text) {
+  return text.replace(/\r\n/g, "\n");
+}
+
 function buildStyles() {
   let combinedCss = "";
   for (const file of CSS_FILES_ORDER) {
     const filePath = path.join(STYLES_DIR, file);
     if (fs.existsSync(filePath)) {
-      combinedCss += `\n/* --- ${file} --- */\n` + fs.readFileSync(filePath, "utf-8");
+      combinedCss += `\n/* --- ${file} --- */\n` + normalizeLf(fs.readFileSync(filePath, "utf-8"));
     }
   }
   return combinedCss;
@@ -143,7 +147,7 @@ export function build({ outFile = DIST_FILE } = {}) {
   let modulesObj = "{\n";
   for (const file of jsFiles) {
     const moduleId = normalizeModuleId(SRC_DIR, file);
-    const rawContent = fs.readFileSync(file, "utf-8");
+    const rawContent = normalizeLf(fs.readFileSync(file, "utf-8"));
     const transformed = transformModule(rawContent, file, bundledCss);
 
     modulesObj += `    ${JSON.stringify(moduleId)}: function(require, exports, module) {\n`;
@@ -198,10 +202,11 @@ export default async function start(context) {
 }
 `;
 
+  const normalizedBundle = normalizeLf(bundle);
   fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-  fs.writeFileSync(targetFile, bundle, "utf-8");
+  fs.writeFileSync(targetFile, normalizedBundle, "utf-8");
   const elapsed = Date.now() - startTime;
-  const sizeKb = (Buffer.byteLength(bundle, "utf-8") / 1024).toFixed(1);
+  const sizeKb = (Buffer.byteLength(normalizedBundle, "utf-8") / 1024).toFixed(1);
   console.log(`[Fullscreen Reloaded] Bundle created: ${targetFile} (${sizeKb} KB) in ${elapsed}ms`);
   return targetFile;
 }
