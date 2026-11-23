@@ -14,6 +14,7 @@ import { SettingsModal } from "./components/SettingsModal.js";
 import { TopBar } from "./components/TopBar.js";
 import { BottomDock } from "./components/BottomDock.js";
 import { LyricsView } from "./components/LyricsView.js";
+import { FullLyricsCreator } from "./components/FullLyricsCreator.js";
 import { LyricsService } from "./services/LyricsService.js";
 import { AudioMoodEngine } from "./services/AudioMoodEngine.js";
 
@@ -105,6 +106,9 @@ export const App = {
     // Settings panel
     root.appendChild(SettingsModal.build());
 
+    // FullLyrics Creator Studio modal
+    root.appendChild(FullLyricsCreator.build(this));
+
     document.body.appendChild(root);
     this.root = root;
 
@@ -143,6 +147,7 @@ export const App = {
   setIdle(isIdle) {
     if (!this.root || !this.open) return;
     if (SettingsModal.root && SettingsModal.root.classList.contains("fr-show")) return;
+    if (FullLyricsCreator.isOpen) return;
     this.root.classList.toggle("fr-idle", isIdle);
     AmbientManager.setIdle(isIdle);
   },
@@ -173,11 +178,18 @@ export const App = {
             target.isContentEditable);
 
         if (isTyping) return;
+        if (FullLyricsCreator.isOpen) return;
 
         // F11 support
         if (e.key === "F11") {
           e.preventDefault();
           this.toggleOpen();
+          return;
+        }
+
+        if (this.open && (e.key === "e" || e.key === "E") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          FullLyricsCreator.openForCurrentTrack();
           return;
         }
 
@@ -319,6 +331,7 @@ export const App = {
     this.open = false;
     this.root.classList.remove("fr-open");
     SettingsModal.close();
+    FullLyricsCreator.close();
     document.body.style.overflow = "";
     Clock.stop();
 

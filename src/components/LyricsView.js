@@ -224,8 +224,13 @@ export const LyricsView = {
 
     this.hasLyrics = true;
     this.providerSource = data.source || "Spotify";
-    this.lines = data.lines;
+    this.lines = Array.isArray(data.lines) ? data.lines : [];
     this.syncType = data.type;
+
+    if (this.syncType === "synced" || this.syncType === "word-synced") {
+      this.lines.sort((a, b) => (Number(a.startMs) || 0) - (Number(b.startMs) || 0));
+    }
+
     AudioMoodEngine.updateLyricsMetrics(this.lines, this.syncType, this._currentTrackDurationMs);
 
     if (this.instrPanel) this.instrPanel.classList.remove("fr-show");
@@ -246,15 +251,6 @@ export const LyricsView = {
     let prevVocalEndMs = 0;
 
     this.lines.forEach((line, lineIdx) => {
-      let extraCls = "";
-      if (enableBgDuet) {
-        if (line.isDuet) extraCls += " fr-duet-right";
-        if (line.isBgOnly) extraCls += " fr-bg-only-line";
-      }
-      line._extraCls = extraCls;
-
-      const lineEl = el("div", `fr-lyric-line fr-future fr-far${extraCls}`);
-
       let fullText = "";
       if (!Array.isArray(line.words) || !line.words.length) {
         fullText = String(line.text || "");
@@ -278,8 +274,21 @@ export const LyricsView = {
         textClean === "🎵" ||
         textClean === "🎶" ||
         textClean === "instrumental" ||
-        textClean === "[instrumental]";
+        textClean === "[instrumental]" ||
+        Boolean(line._isMusic);
       line._isMusic = isMusicSymbol;
+
+      let extraCls = "";
+      if (enableBgDuet) {
+        if (line.isDuet) extraCls += " fr-duet-right";
+        if (line.isBgOnly) extraCls += " fr-bg-only-line";
+      }
+      if (isMusicSymbol) {
+        extraCls += " fr-is-music";
+      }
+      line._extraCls = extraCls;
+
+      const lineEl = el("div", `fr-lyric-line fr-future fr-far${extraCls}`);
 
       // Compute full-bar duration so the waterfall flows continuously right until the end of the bar/sentence
       const lineStart = Number(line.startMs) || 0;

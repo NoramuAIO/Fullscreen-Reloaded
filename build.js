@@ -29,6 +29,7 @@ const CSS_FILES_ORDER = [
   "ambient.css",
   "upnext.css",
   "idle.css",
+  "creator.css",
 ];
 
 function buildStyles() {

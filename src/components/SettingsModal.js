@@ -144,6 +144,12 @@ export const SettingsModal = {
           badge: t("badgeWordSync"),
         },
         {
+          value: "spicy",
+          label: t("providerSpicy"),
+          shortLabel: "Spicy Lyrics",
+          badge: t("badgeWordSync"),
+        },
+        {
           value: "lrclib",
           label: t("providerLrclib"),
           shortLabel: "LRCLIB",

@@ -1,12 +1,14 @@
 /**
  * Lyrics orchestration service.
- * Manages provider priority chain and resolves lyrics for the active track.
+ * Manages provider priority chain (Local Custom Sync -> Apple Music -> Spicy Lyrics -> LRCLIB -> Spotify -> Genius)
+ * and resolves lyrics for the active track.
  */
 import { SpotifyLyricsProvider } from "./providers/SpotifyLyricsProvider.js";
 import { LrclibLyricsProvider } from "./providers/LrclibLyricsProvider.js";
 import { GeniusLyricsProvider } from "./providers/GeniusLyricsProvider.js";
 import { AppleMusicLyricsProvider } from "./providers/AppleMusicLyricsProvider.js";
-import { AppleMusicAuth } from "./AppleMusicAuth.js";
+import { SpicyLyricsProvider } from "./providers/SpicyLyricsProvider.js";
+import { getCustomSync, spicyLyricsToFullscreenLines } from "./CustomSyncStorage.js";
 import { Settings } from "../utils/settings.js";
 
 const _lyricsCache = new Map();
@@ -15,6 +17,7 @@ const _inflight = new Map();
 export const LyricsService = {
   providers: {
     applemusic: new AppleMusicLyricsProvider(),
+    spicy: new SpicyLyricsProvider(),
     lrclib: new LrclibLyricsProvider(),
     genius: new GeniusLyricsProvider(),
     spotify: new SpotifyLyricsProvider(),
@@ -24,13 +27,15 @@ export const LyricsService = {
     const pref = Settings.get("lyricsProvider") || "auto";
 
     if (pref === "applemusic") return [this.providers.applemusic];
+    if (pref === "spicy") return [this.providers.spicy];
     if (pref === "lrclib") return [this.providers.lrclib];
     if (pref === "genius") return [this.providers.genius];
     if (pref === "spotify") return [this.providers.spotify];
 
-    // Requested order for "auto": Apple Music -> LRCLIB -> Genius -> Spotify
+    // Priority chain for "auto": Apple Music -> Spicy Lyrics -> LRCLIB -> Genius -> Spotify
     return [
       this.providers.applemusic,
+      this.providers.spicy,
       this.providers.lrclib,
       this.providers.genius,
       this.providers.spotify,
@@ -53,6 +58,16 @@ export const LyricsService = {
 
   async resolve(track) {
     if (!track) return { type: "none", lines: [] };
+
+    // 0. Always check Local Custom Sync (FullLyrics Creator / Liquid Lyrics localStorage) first!
+    const customSync = getCustomSync(track);
+    if (customSync && customSync.lyrics) {
+      const localRes = spicyLyricsToFullscreenLines(customSync.lyrics, "FullLyrics Local");
+      if (localRes && localRes.lines?.length) {
+        return localRes;
+      }
+    }
+
     const trackKey = track.uri || (track.name + "_" + (track.artists?.[0]?.name || ""));
 
     // 1. Instant Cache hit (0ms)
@@ -79,6 +94,16 @@ export const LyricsService = {
     }
   },
 
+  /**
+   * Resolves lyrics strictly from online providers (ignoring local custom sync),
+   * used by FullLyrics Creator's "Load from Online Provider" action.
+   */
+  async resolveOnlineOnly(track) {
+    if (!track) return { type: "none", lines: [] };
+    const trackKey = "online:" + (track.uri || (track.name + "_" + (track.artists?.[0]?.name || "")));
+    return this._resolveInternal(track, trackKey);
+  },
+
   async _resolveInternal(track, trackKey) {
     const pref = Settings.get("lyricsProvider") || "auto";
 
@@ -97,7 +122,19 @@ export const LyricsService = {
         }
       } catch (_) {}
 
-      // 2. LRCLIB & Spotify (start Spotify in background so there is zero wait if LRCLIB misses)
+      // 2. Spicy Lyrics (Syllable / Word-synced & Line-synced)
+      try {
+        const spicyRes = await this.providers.spicy.fetch(track);
+        if (spicyRes && spicyRes.lines?.length) {
+          if (spicyRes.type === "synced" || spicyRes.type === "word-synced") {
+            this._cacheResult(trackKey, spicyRes);
+            return spicyRes;
+          }
+          if (!unsyncedCandidate) unsyncedCandidate = spicyRes;
+        }
+      } catch (_) {}
+
+      // 3. LRCLIB & Spotify (start Spotify in background so there is zero wait if LRCLIB misses)
       const spotifyPromise = this.providers.spotify.fetch(track).catch(() => null);
       try {
         const lrcRes = await this.providers.lrclib.fetch(track);
@@ -118,12 +155,11 @@ export const LyricsService = {
             this._cacheResult(trackKey, spRes);
             return spRes;
           }
-          // Hold Spotify unsynced at lower priority than Genius
           var spotifyUnsynced = spRes;
         }
       } catch (_) {}
 
-      // 3. Genius (unsynced lyrics — higher priority than Spotify unsynced)
+      // 4. Genius (unsynced lyrics — higher priority than Spotify unsynced)
       if (!unsyncedCandidate) {
         try {
           const genRes = await this.providers.genius.fetch(track);
@@ -133,7 +169,7 @@ export const LyricsService = {
         } catch (_) {}
       }
 
-      // 4. Fallback to unsynced candidate (Apple Music / LRCLIB / Genius) or Spotify unsynced
+      // 5. Fallback to unsynced candidate or Spotify unsynced
       const finalUnsynced = unsyncedCandidate || spotifyUnsynced || null;
       if (finalUnsynced) {
         this._cacheResult(trackKey, finalUnsynced);

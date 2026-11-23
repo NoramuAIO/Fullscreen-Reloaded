@@ -4,10 +4,12 @@
 import { el, iconBtn } from "../utils/dom.js";
 import { Icons } from "../utils/icons.js";
 import { SettingsModal } from "./SettingsModal.js";
+import { FullLyricsCreator } from "./FullLyricsCreator.js";
 
 export const TopBar = {
   root: null,
   lyricsBtn: null,
+  creatorBtn: null,
   pipBtn: null,
   pipImg: null,
 
@@ -17,20 +19,24 @@ export const TopBar = {
     // 1. Lyrics Toggle
     this.lyricsBtn = iconBtn(Icons.lyrics, () => app.toggleLyricsVisible());
 
-    // 2. Picture-in-Picture
+    // 2. FullLyrics Creator Studio
+    this.creatorBtn = iconBtn(Icons.creator, () => FullLyricsCreator.toggleOpen());
+    this.creatorBtn.title = "FullLyrics Creator Studio (E)";
+
+    // 3. Picture-in-Picture
     this.pipBtn = iconBtn(Icons.pip, async () => {
       await this.togglePiP(app);
     });
 
     const sep = el("div", "fr-topbar-sep");
 
-    // 3. Settings Gear
+    // 4. Settings Gear
     const gearBtn = iconBtn(Icons.gear, () => SettingsModal.toggleOpen());
 
-    // 4. Close Button
+    // 5. Close Button
     const closeBtn = iconBtn(Icons.close, () => app.close());
 
-    topbar.append(this.lyricsBtn, this.pipBtn, sep, gearBtn, closeBtn);
+    topbar.append(this.lyricsBtn, this.creatorBtn, this.pipBtn, sep, gearBtn, closeBtn);
     this.root = topbar;
     return topbar;
   },
