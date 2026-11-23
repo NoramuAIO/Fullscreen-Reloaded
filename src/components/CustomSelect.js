@@ -6,25 +6,45 @@ import { el } from "../utils/dom.js";
 
 // Global document click listener to close all dropdowns when clicking outside
 let initializedGlobalListener = false;
+let globalSelectAbortController = null;
 const activeSelects = new Set();
 
 function initGlobalListener() {
   if (initializedGlobalListener) return;
   initializedGlobalListener = true;
+  globalSelectAbortController = new AbortController();
+  const { signal } = globalSelectAbortController;
 
-  document.addEventListener("click", (e) => {
-    for (const closeMenu of activeSelects) {
-      closeMenu(e);
-    }
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+  document.addEventListener(
+    "click",
+    (e) => {
       for (const closeMenu of activeSelects) {
-        closeMenu(null, true);
+        closeMenu(e);
       }
-    }
-  });
+    },
+    { signal }
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") {
+        for (const closeMenu of activeSelects) {
+          closeMenu(null, true);
+        }
+      }
+    },
+    { signal }
+  );
+}
+
+export function destroyCustomSelects() {
+  activeSelects.clear();
+  if (globalSelectAbortController) {
+    globalSelectAbortController.abort();
+    globalSelectAbortController = null;
+  }
+  initializedGlobalListener = false;
 }
 
 /**
@@ -140,3 +160,8 @@ export function createCustomSelect({ options, value, onChange }) {
 
   return wrap;
 }
+
+export const CustomSelect = {
+  create: createCustomSelect,
+  destroyAll: destroyCustomSelects,
+};

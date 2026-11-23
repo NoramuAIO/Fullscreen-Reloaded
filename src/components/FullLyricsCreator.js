@@ -10,7 +10,7 @@
 import { el } from "../utils/dom.js";
 import { Icons } from "../utils/icons.js";
 import { t } from "../utils/i18n.js";
-import { SpicetifyBridge } from "../services/SpicetifyBridge.js";
+import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 import { LyricsService } from "../services/LyricsService.js";
 import { LyricsView } from "./LyricsView.js";
 import {
@@ -107,8 +107,14 @@ export const FullLyricsCreator = {
   _lastKnownTime: 0,
   _lastKnownPlaying: false,
   _scrubbing: false,
+  _abortController: null,
+  _dragAbortController: null,
 
   build(app) {
+    this._abortController?.abort();
+    this._abortController = new AbortController();
+    const { signal } = this._abortController;
+
     this.app = app;
     const backdrop = el("div", "fr-creator-backdrop");
     backdrop.addEventListener("mousedown", (e) => {
@@ -141,12 +147,17 @@ export const FullLyricsCreator = {
     this.toastEl = toastEl;
 
     // Listen to external or internal custom sync changes
-    window.addEventListener(CHANGE_EVENT, () => {
-      LyricsService.clearCache();
-      if (this.app?.currentTrack) {
-        LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
-      }
-    });
+    window.addEventListener(
+      CHANGE_EVENT,
+      () => {
+        if (!this.root || !this.app?._mounted || SpotiKitBridge.isStopped()) return;
+        LyricsService.clearCache();
+        if (this.app?.currentTrack) {
+          LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
+        }
+      },
+      { signal }
+    );
 
     return backdrop;
   },
@@ -162,7 +173,7 @@ export const FullLyricsCreator = {
   },
 
   getCurrentTrackInfo() {
-    const track = this.app?.currentTrack || SpicetifyBridge.getCurrentTrack() || {};
+    const track = this.app?.currentTrack || SpotiKitBridge.getCurrentTrack() || {};
     const meta = track.metadata || {};
     const trackUri = normalizeTrackUri(track.uri || "");
     const trackId = extractTrackId(trackUri || track.id || "");
@@ -171,7 +182,7 @@ export const FullLyricsCreator = {
       track.artists && track.artists.length
         ? track.artists.map((a) => a.name || a.displayName || "").filter(Boolean).join(", ")
         : meta.artist_name || t("unknownArtist");
-    const durationMs = Number(meta.duration) || SpicetifyBridge.getDuration() || 180000;
+    const durationMs = Number(meta.duration) || SpotiKitBridge.getDuration() || 180000;
     return { track, trackUri, trackId, title, artist, durationMs };
   },
 
@@ -762,8 +773,12 @@ export const FullLyricsCreator = {
     this._keyHandler = (e) => {
       if (!this.isOpen) return;
       const target = e.target;
+      const isElement =
+        typeof HTMLElement !== "undefined"
+          ? target instanceof HTMLElement
+          : target && typeof target.tagName === "string";
       const isInput =
-        target instanceof HTMLElement &&
+        isElement &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.isContentEditable);
@@ -795,7 +810,7 @@ export const FullLyricsCreator = {
       if (e.key === "p" || e.key === "P" || e.key === "k" || e.key === "K") {
         e.preventDefault();
         e.stopPropagation();
-        SpicetifyBridge.togglePlay();
+        SpotiKitBridge.togglePlay();
         return;
       }
 
@@ -2251,18 +2266,18 @@ export const FullLyricsCreator = {
     const safeMs = Math.max(0, Math.round(Number(ms) || 0));
     this._lastKnownProgress = safeMs;
     this._lastKnownTime = performance.now();
-    this._lastKnownPlaying = SpicetifyBridge.isPlaying() || autoPlay;
+    this._lastKnownPlaying = SpotiKitBridge.isPlaying() || autoPlay;
 
-    SpicetifyBridge.seek(safeMs);
+    SpotiKitBridge.seek(safeMs);
 
-    if (autoPlay && !SpicetifyBridge.isPlaying()) {
-      SpicetifyBridge.togglePlay();
+    if (autoPlay && !SpotiKitBridge.isPlaying()) {
+      SpotiKitBridge.togglePlay();
     }
 
     if (this.transportCurEl) {
       this.transportCurEl.textContent = formatTransportTime(safeMs);
     }
-    const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 1;
+    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
     if (this.transportFillEl && dur > 0) {
       const pct = Math.max(0, Math.min(100, (safeMs / dur) * 100));
       this.transportFillEl.style.width = `${pct.toFixed(2)}%`;
@@ -2281,8 +2296,8 @@ export const FullLyricsCreator = {
 
     const playBtn = el("button", "fr-creator-play-btn");
     playBtn.type = "button";
-    playBtn.innerHTML = SpicetifyBridge.isPlaying() ? Icons.pause : Icons.play;
-    playBtn.addEventListener("click", () => SpicetifyBridge.togglePlay());
+    playBtn.innerHTML = SpotiKitBridge.isPlaying() ? Icons.pause : Icons.play;
+    playBtn.addEventListener("click", () => SpotiKitBridge.togglePlay());
     this.transportPlayBtn = playBtn;
 
     const back5Btn = el("button", "fr-creator-mini-btn", "-3s");
@@ -2294,7 +2309,7 @@ export const FullLyricsCreator = {
     const fwd5Btn = el("button", "fr-creator-mini-btn", "+3s");
     fwd5Btn.type = "button";
     fwd5Btn.addEventListener("click", () => {
-      const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 180000;
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
       this.seek(Math.min(dur, this.getAccurateProgressMs() + 3000), false);
     });
 
@@ -2309,27 +2324,32 @@ export const FullLyricsCreator = {
     const seekFromMouse = (e) => {
       const rect = seekWrap.getBoundingClientRect();
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1)));
-      const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 180000;
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
       this.seek(Math.round(pct * dur), false);
     };
 
     seekWrap.addEventListener("mousedown", (e) => {
+      this._dragAbortController?.abort();
+      const ac = new AbortController();
+      this._dragAbortController = ac;
       this._scrubbing = true;
       seekFromMouse(e);
       const onMove = (ev) => seekFromMouse(ev);
       const onUp = () => {
         this._scrubbing = false;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
+        ac.abort();
+        if (this._dragAbortController === ac) {
+          this._dragAbortController = null;
+        }
       };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
+      window.addEventListener("mousemove", onMove, { signal: ac.signal });
+      window.addEventListener("mouseup", onUp, { signal: ac.signal });
     });
 
     const durTimeEl = el(
       "span",
       "fr-creator-transport-time",
-      formatTransportTime(SpicetifyBridge.getDuration() || this.draft?.durationMs || 0)
+      formatTransportTime(SpotiKitBridge.getDuration() || this.draft?.durationMs || 0)
     );
     this.transportDurEl = durTimeEl;
 
@@ -2338,8 +2358,8 @@ export const FullLyricsCreator = {
   },
 
   getAccurateProgressMs() {
-    const raw = SpicetifyBridge.getProgress();
-    const playing = SpicetifyBridge.isPlaying();
+    const raw = SpotiKitBridge.getProgress();
+    const playing = SpotiKitBridge.isPlaying();
     const now = performance.now();
 
     if (raw !== this._lastKnownProgress || playing !== this._lastKnownPlaying) {
@@ -2348,7 +2368,7 @@ export const FullLyricsCreator = {
       this._lastKnownPlaying = playing;
     }
 
-    const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || Infinity;
+    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || Infinity;
     return playing
       ? Math.min(dur, this._lastKnownProgress + (now - this._lastKnownTime))
       : raw;
@@ -2359,8 +2379,8 @@ export const FullLyricsCreator = {
     const tick = () => {
       if (!this.isOpen) return;
       const progress = this.getAccurateProgressMs();
-      const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 1;
-      const playing = SpicetifyBridge.isPlaying();
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
+      const playing = SpotiKitBridge.isPlaying();
 
       if (this.transportPlayBtn && this._wasTransportPlaying !== playing) {
         this._wasTransportPlaying = playing;
@@ -2392,5 +2412,38 @@ export const FullLyricsCreator = {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
     }
+  },
+
+  destroy() {
+    this.close();
+    this.stopTransportLoop();
+    this.unbindKeyHandler();
+
+    clearTimeout(this._toastTimer);
+    this._toastTimer = null;
+
+    this._abortController?.abort();
+    this._abortController = null;
+    this._dragAbortController?.abort();
+    this._dragAbortController = null;
+
+    this._scrubbing = false;
+    this._wasTransportPlaying = null;
+    this._previewLines = [];
+    this._previewLineEls = [];
+    this.draft = null;
+    this.app = null;
+
+    this.root?.remove();
+    this.root = null;
+    this.backdrop = null;
+    this.modal = null;
+    this.bodyEl = null;
+    this.fileInputEl = null;
+    this.toastEl = null;
+    this.transportPlayBtn = null;
+    this.transportCurEl = null;
+    this.transportDurEl = null;
+    this.transportFillEl = null;
   },
 };

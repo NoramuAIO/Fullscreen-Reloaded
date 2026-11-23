@@ -29,25 +29,45 @@ const DARK_PRESETS = [
 ];
 
 let initializedGlobalColorListener = false;
+let globalColorAbortController = null;
 const activeColorPickers = new Set();
 
 function initGlobalListener() {
   if (initializedGlobalColorListener) return;
   initializedGlobalColorListener = true;
+  globalColorAbortController = new AbortController();
+  const { signal } = globalColorAbortController;
 
-  document.addEventListener("click", (e) => {
-    for (const close of activeColorPickers) {
-      close(e);
-    }
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+  document.addEventListener(
+    "click",
+    (e) => {
       for (const close of activeColorPickers) {
-        close(null, true);
+        close(e);
       }
-    }
-  });
+    },
+    { signal }
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") {
+        for (const close of activeColorPickers) {
+          close(null, true);
+        }
+      }
+    },
+    { signal }
+  );
+}
+
+export function destroyCustomColorPickers() {
+  activeColorPickers.clear();
+  if (globalColorAbortController) {
+    globalColorAbortController.abort();
+    globalColorAbortController = null;
+  }
+  initializedGlobalColorListener = false;
 }
 
 function hslToHex(h, s, l) {
@@ -279,3 +299,8 @@ export function createCustomColorPicker({ value = "#101014", onChange }) {
 
   return wrap;
 }
+
+export const CustomColorPicker = {
+  create: createCustomColorPicker,
+  destroyAll: destroyCustomColorPickers,
+};

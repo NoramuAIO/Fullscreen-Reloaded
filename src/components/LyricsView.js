@@ -10,7 +10,7 @@ import { el } from "../utils/dom.js";
 import { t } from "../utils/i18n.js";
 import { Settings } from "../utils/settings.js";
 import { LyricsService } from "../services/LyricsService.js";
-import { SpicetifyBridge } from "../services/SpicetifyBridge.js";
+import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 import { AudioMoodEngine } from "../services/AudioMoodEngine.js";
 
 export const LyricsView = {
@@ -37,6 +37,9 @@ export const LyricsView = {
   _lastUnsyncedTime: null,
   _providerTimer: null,
   _shownStartBadgeForUri: null,
+  _resizeObserver: null,
+  _revealRafId: null,
+  _cascadeRafId: null,
 
   // Per-line cascade offset state
   _cascadeY: 0,
@@ -161,6 +164,7 @@ export const LyricsView = {
     this.userScrollTimer = setTimeout(() => {
       this.userScrolling = false;
       this._manualOffsetY = 0;
+      if (!this.scrollEl || !this.resumeBtn) return;
       this.scrollEl.classList.remove("fr-user-scrolling");
       this.resumeBtn.classList.remove("fr-show");
       this.applyCascadePosition(false);
@@ -169,16 +173,16 @@ export const LyricsView = {
 
   onUserScroll() {
     this.userScrolling = true;
-    this.resumeBtn.classList.add("fr-show");
+    this.resumeBtn?.classList.add("fr-show");
     clearTimeout(this.userScrollTimer);
     this.userScrollTimer = setTimeout(() => {
       this.userScrolling = false;
-      this.resumeBtn.classList.remove("fr-show");
+      this.resumeBtn?.classList.remove("fr-show");
     }, 8000);
   },
 
   async loadForTrack(track, app, force = false) {
-    if (!track) return;
+    if (!track || !this.scrollEl) return;
     if (!force && this._currentTrackUri === track.uri && this.lines.length > 0) {
       this.revealLyrics();
       if (app?.open) this.showProviderBadge(3000);
@@ -205,7 +209,7 @@ export const LyricsView = {
     this._lastUnsyncedTime = null;
 
     const data = await LyricsService.resolve(track);
-    if (myRequest !== this.requestId) return;
+    if (myRequest !== this.requestId || !this.scrollEl || SpotiKitBridge.isStopped()) return;
 
     this.scrollEl.innerHTML = "";
     this.scrollEl.classList.remove("fr-unsynced", "fr-mode-word", "fr-mode-line");
@@ -415,7 +419,7 @@ export const LyricsView = {
           this._manualOffsetY = 0;
           this.scrollEl.classList.remove("fr-user-scrolling");
           this.resumeBtn.classList.remove("fr-show");
-          SpicetifyBridge.seek(line.startMs);
+          SpotiKitBridge.seek(line.startMs);
         });
       }
 
@@ -429,11 +433,16 @@ export const LyricsView = {
       this._shownStartBadgeForUri = track.uri;
     }
 
-    this.update(SpicetifyBridge.getProgress(), true);
+    this.update(SpotiKitBridge.getProgress(), true);
   },
 
   revealLyrics() {
-    requestAnimationFrame(() => {
+    if (this._revealRafId) {
+      cancelAnimationFrame(this._revealRafId);
+      this._revealRafId = null;
+    }
+    this._revealRafId = requestAnimationFrame(() => {
+      this._revealRafId = null;
       if (this.scrollEl) this.scrollEl.classList.add("fr-ready");
     });
   },
@@ -490,7 +499,7 @@ export const LyricsView = {
 
       if (!this.userScrolling) {
         if (mode === "track") {
-          const bridgeDur = SpicetifyBridge.getDuration();
+          const bridgeDur = SpotiKitBridge.getDuration();
           const duration = bridgeDur > 15000 ? bridgeDur : this._currentTrackDurationMs || 180000;
           const rawPct = Math.max(0, Math.min(1, progressMs / duration));
           // Wait until 12% into the track before starting to scroll down, finishing around 90%
@@ -506,7 +515,7 @@ export const LyricsView = {
           const dt = this._lastUnsyncedTime ? Math.min(0.1, (now - this._lastUnsyncedTime) / 1000) : 0.016;
           this._lastUnsyncedTime = now;
 
-          if (SpicetifyBridge.isPlaying()) {
+          if (SpotiKitBridge.isPlaying()) {
             // Natural slow reading speeds in px/sec (slow: 3.5, normal: 6.0, fast: 10.5)
             const speed = mode === "slow" ? 3.5 : mode === "fast" ? 10.5 : 6.0;
             this._unsyncedScrollPos = Math.min(maxScroll, this._unsyncedScrollPos + speed * dt);
@@ -725,7 +734,12 @@ export const LyricsView = {
     }
 
     if (instant) {
-      requestAnimationFrame(() => {
+      if (this._cascadeRafId) {
+        cancelAnimationFrame(this._cascadeRafId);
+        this._cascadeRafId = null;
+      }
+      this._cascadeRafId = requestAnimationFrame(() => {
+        this._cascadeRafId = null;
         if (this.scrollEl) this.scrollEl.classList.remove("fr-no-transition");
       });
     }
@@ -733,5 +747,50 @@ export const LyricsView = {
 
   scrollActiveIntoView(instant = false) {
     this.applyCascadePosition(instant);
+  },
+
+  destroy() {
+    this.requestId++;
+    clearTimeout(this._providerTimer);
+    this._providerTimer = null;
+    clearTimeout(this.userScrollTimer);
+    this.userScrollTimer = null;
+
+    if (this._revealRafId) {
+      cancelAnimationFrame(this._revealRafId);
+      this._revealRafId = null;
+    }
+    if (this._cascadeRafId) {
+      cancelAnimationFrame(this._cascadeRafId);
+      this._cascadeRafId = null;
+    }
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+
+    this.lines = [];
+    this.lineEls = [];
+    this.activeIndex = -1;
+    this.syncType = "none";
+    this.providerSource = "";
+    this.hasLyrics = true;
+    this.userScrolling = false;
+    this._currentTrackUri = null;
+    this._lastUnsyncedTime = null;
+    this._shownStartBadgeForUri = null;
+    this._cascadeY = 0;
+    this._manualOffsetY = 0;
+    this._unsyncedScrollPos = 0;
+
+    this.panel?.remove();
+    this.panel = null;
+    this.scrollEl = null;
+    this.resumeBtn = null;
+    this.instrPanel = null;
+    this.providerBadge = null;
+    this.providerPrefixEl = null;
+    this.providerNameEl = null;
+    this.providerTagEl = null;
   },
 };

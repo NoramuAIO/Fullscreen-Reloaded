@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (SpotiKit ESM bundle)
 // A cinematic, modern fullscreen experience for Spotify.
-// Generated on: 2026-11-23T14:01:48.700Z
+// Generated on: 2026-11-23T14:25:24.486Z
 // ==========================================================================
 
 function __createRuntime() {
@@ -15,9 +15,10 @@ function __createRuntime() {
  */
 const {  el  } = require("./utils/dom.js");
 const {  resolveImageUrl, rgb, rgba  } = require("./utils/formatters.js");
+const {  Icons  } = require("./utils/icons.js");
 const {  t  } = require("./utils/i18n.js");
 const {  Settings  } = require("./utils/settings.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  BackgroundManager  } = require("./components/BackgroundManager.js");
 const {  AmbientManager  } = require("./components/AmbientManager.js");
 const {  Clock  } = require("./components/Clock.js");
@@ -27,6 +28,8 @@ const {  TopBar  } = require("./components/TopBar.js");
 const {  BottomDock  } = require("./components/BottomDock.js");
 const {  LyricsView  } = require("./components/LyricsView.js");
 const {  FullLyricsCreator  } = require("./components/FullLyricsCreator.js");
+const {  destroyCustomSelects  } = require("./components/CustomSelect.js");
+const {  destroyCustomColorPickers  } = require("./components/CustomColorPicker.js");
 const {  LyricsService  } = require("./services/LyricsService.js");
 const {  AudioMoodEngine  } = require("./services/AudioMoodEngine.js");
 
@@ -48,9 +51,20 @@ const App = exports.App = {
   currentTrack: null,
   currentImage: null,
   _metaGen: 0,
+  _metaTimer: null,
+  _rebuildGen: 0,
   idleTimer: null,
+  _ctx: null,
+  _mounted: false,
+  _abortController: null,
+  _onCtxAbort: null,
+  _songUnsub: null,
+  _settingsUnsub: null,
+  _profileMenuHandle: null,
+  _playbarHandle: null,
 
-  mount() {
+  _buildDomTree() {
+    this.artActiveIsImg = true;
     const root = el("div", "");
     root.id = "fullscreen-reloaded-root";
 
@@ -125,30 +139,213 @@ const App = exports.App = {
     this.root = root;
 
     this.applyLayoutSettings();
+  },
+
+  _teardownDomTree() {
+    clearTimeout(this._metaTimer);
+    this._metaTimer = null;
+    this._metaGen++;
+
+    this.stopTicking();
+    Clock.stop();
+
+    TopBar.destroy();
+    LyricsView.destroy();
+    FullLyricsCreator.destroy();
+    BottomDock.destroy();
+    UpNextCard.destroy();
+    SettingsModal.destroy();
+    destroyCustomSelects();
+    destroyCustomColorPickers();
+
+    AmbientManager._currentMood = "";
+    AmbientManager._isIdle = false;
+    BackgroundManager.activeIsA = true;
+
+    if (this.artImg) this.artImg.onload = null;
+    if (this.artImgAlt) this.artImgAlt.onload = null;
+
+    this.root?.remove();
+    this.root = null;
+    this.stage = null;
+    this.artImg = null;
+    this.artImgAlt = null;
+    this.artWrap = null;
+    this.ringRect = null;
+    this.metaWrap = null;
+    this.titleEl = null;
+    this.artistEl = null;
+    this.albumEl = null;
+    this.artActiveIsImg = true;
+  },
+
+  _disposeHandle(handle) {
+    if (!handle) return;
+    if (typeof handle === "function") {
+      handle();
+    } else if (typeof handle.remove === "function") {
+      handle.remove();
+    }
+  },
+
+  _syncPlaybarActive(isOpen) {
+    if (!this._playbarHandle) return;
+    if (typeof this._playbarHandle.setActive === "function") {
+      this._playbarHandle.setActive(Boolean(isOpen));
+    } else if ("active" in this._playbarHandle) {
+      this._playbarHandle.active = Boolean(isOpen);
+    }
+  },
+
+  mount(ctx) {
+    if (this._mounted) {
+      this.unmount();
+    }
+
+    this._ctx = ctx || null;
+    this._mounted = true;
+    this._rebuildGen = 0;
+    this._metaGen = 0;
+
+    this._abortController = new AbortController();
+    if (ctx?.signal) {
+      if (ctx.signal.aborted) {
+        this._abortController.abort(ctx.signal.reason);
+      } else {
+        this._onCtxAbort = () => this._abortController?.abort(ctx.signal.reason);
+        ctx.signal.addEventListener("abort", this._onCtxAbort, { once: true });
+      }
+    }
+
+    this._buildDomTree();
 
     // Listen to track changes
     this.songChangeListener = () => this.onTrackChange();
-    SpicetifyBridge.addPlayerListener("songchange", this.songChangeListener);
+    this._songUnsub = SpotiKitBridge.addPlayerListener("songchange", this.songChangeListener);
 
     // Listen to settings changes
-    Settings.onChange((key) => this.onSettingsChanged(key));
+    this._settingsUnsub = Settings.onChange((key) => this.onSettingsChanged(key));
+
+    // Register SpotiKit ProfileMenu launch item
+    if (typeof SpotiKit !== "undefined" && typeof SpotiKit.ProfileMenu?.add === "function") {
+      this._profileMenuHandle = SpotiKit.ProfileMenu.add({
+        label: "Fullscreen Reloaded",
+        icon: Icons.fullscreen,
+        onSelect: () => this.toggleOpen(),
+      });
+    }
+
+    // Register fallback Playbar button only when native fullscreen button is absent
+    const hasNativeFullscreen =
+      typeof document !== "undefined" &&
+      Boolean(document.querySelector('[data-testid="fullscreen-mode-button"]'));
+    if (
+      !hasNativeFullscreen &&
+      typeof SpotiKit !== "undefined" &&
+      typeof SpotiKit.Playbar?.add === "function"
+    ) {
+      this._playbarHandle = SpotiKit.Playbar.add({
+        label: "Fullscreen Reloaded",
+        icon: Icons.fullscreen,
+        active: this.open,
+        onClick: () => this.toggleOpen(),
+      });
+    }
 
     // Register idle and hotkeys
-    this.registerIdleTracker();
-    this.registerHotkeys();
+    const signal = this._abortController.signal;
+    this.registerIdleTracker(signal);
+    this.registerHotkeys(signal);
   },
 
-  registerIdleTracker() {
+  unmount() {
+    if (!this._mounted) return;
+    this._mounted = false;
+    this._rebuildGen++;
+    this._metaGen++;
+
+    this.close();
+
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+
+    if (this._songUnsub) {
+      this._songUnsub();
+      this._songUnsub = null;
+    }
+    this.songChangeListener = null;
+
+    if (this._settingsUnsub) {
+      this._settingsUnsub();
+      this._settingsUnsub = null;
+    }
+
+    this._disposeHandle(this._profileMenuHandle);
+    this._profileMenuHandle = null;
+
+    this._disposeHandle(this._playbarHandle);
+    this._playbarHandle = null;
+
+    if (this._ctx?.signal && this._onCtxAbort) {
+      this._ctx.signal.removeEventListener("abort", this._onCtxAbort);
+    }
+    this._onCtxAbort = null;
+
+    this._abortController?.abort();
+    this._abortController = null;
+
+    this._teardownDomTree();
+
+    this.currentTrack = null;
+    this.currentImage = null;
+    this._ctx = null;
+  },
+
+  async rebuildForLanguage() {
+    if (!this._mounted || !this.root) return;
+    const rebuildGen = ++this._rebuildGen;
+    const wasOpen = this.open;
+    const settingsWasOpen = Boolean(SettingsModal.root?.classList.contains("fr-show"));
+
+    this._teardownDomTree();
+    if (!this._mounted || SpotiKitBridge.isStopped()) return;
+
+    this._buildDomTree();
+    if (wasOpen) {
+      this.open = true;
+      this.root.classList.add("fr-open");
+    }
+    if (settingsWasOpen && SettingsModal.root) {
+      SettingsModal.root.classList.add("fr-show");
+    }
+    this.applyLayoutSettings();
+
+    this.currentTrack = null;
+    if (wasOpen) {
+      Clock.start();
+      await this.onTrackChange();
+      if (!this._mounted || !this.open || SpotiKitBridge.isStopped() || rebuildGen !== this._rebuildGen) {
+        return;
+      }
+      this.startTicking();
+    } else if (SpotiKitBridge.getCurrentTrack()) {
+      await this.onTrackChange();
+    }
+  },
+
+  registerIdleTracker(signal) {
+    const opts = signal ? { signal } : undefined;
     const reset = () => this.resetIdle();
-    window.addEventListener("mousemove", reset);
-    window.addEventListener("mousedown", reset);
-    window.addEventListener("keydown", reset);
-    window.addEventListener("wheel", reset);
-    window.addEventListener("mouseleave", () => this.setIdle(true));
+    const onLeave = () => this.setIdle(true);
+    window.addEventListener("mousemove", reset, opts);
+    window.addEventListener("mousedown", reset, opts);
+    window.addEventListener("keydown", reset, opts);
+    window.addEventListener("wheel", reset, opts);
+    window.addEventListener("mouseleave", onLeave, opts);
   },
 
   resetIdle() {
-    if (!this.open) return;
+    if (!this.open || !this._mounted) return;
     if (this.root && this.root.classList.contains("fr-idle")) {
       this.root.classList.remove("fr-idle");
     }
@@ -157,31 +354,35 @@ const App = exports.App = {
   },
 
   setIdle(isIdle) {
-    if (!this.root || !this.open) return;
+    if (!this.root || !this.open || !this._mounted) return;
     if (SettingsModal.root && SettingsModal.root.classList.contains("fr-show")) return;
     if (FullLyricsCreator.isOpen) return;
     this.root.classList.toggle("fr-idle", isIdle);
     AmbientManager.setIdle(isIdle);
   },
 
-  registerHotkeys() {
+  registerHotkeys(signal) {
+    const captureOpts = signal ? { capture: true, signal } : true;
+
     // Intercept clicks on Spotify's native fullscreen button
     document.addEventListener(
       "click",
       (e) => {
-        if (SpicetifyBridge.isSpotifyFullscreenButton(e.target)) {
+        if (!this._mounted || SpotiKitBridge.isStopped()) return;
+        if (SpotiKitBridge.isSpotifyFullscreenButton(e.target)) {
           e.preventDefault();
-          e.stopPropagation();
+          e.stopImmediatePropagation();
           this.toggleOpen();
         }
       },
-      true
+      captureOpts
     );
 
     // Keyboard shortcuts
     document.addEventListener(
       "keydown",
       (e) => {
+        if (!this._mounted || SpotiKitBridge.isStopped()) return;
         const target = e.target;
         const isTyping =
           target &&
@@ -213,12 +414,13 @@ const App = exports.App = {
           this.close();
         }
       },
-      true
+      captureOpts
     );
   },
 
   async onTrackChange() {
-    const track = SpicetifyBridge.getCurrentTrack();
+    if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+    const track = SpotiKitBridge.getCurrentTrack();
     if (!track) return;
 
     const isSameTrack = this.currentTrack && this.currentTrack.uri === track.uri;
@@ -231,6 +433,7 @@ const App = exports.App = {
         : meta.artist_name || track.name || t("unknownArtist");
 
     const updateMeta = () => {
+      if (!this.titleEl || !this.artistEl || !this.albumEl) return;
       this.titleEl.textContent = meta.title || track.name || t("unknownTitle");
       this.artistEl.textContent = artists;
       this.albumEl.textContent = meta.album_title || track.album?.name || "";
@@ -239,9 +442,11 @@ const App = exports.App = {
 
     if (!isSameTrack) {
       const gen = ++this._metaGen;
-      this.metaWrap.classList.add("fr-meta-animating");
-      setTimeout(() => {
-        if (gen !== this._metaGen) return;
+      this.metaWrap?.classList.add("fr-meta-animating");
+      clearTimeout(this._metaTimer);
+      this._metaTimer = setTimeout(() => {
+        this._metaTimer = null;
+        if (gen !== this._metaGen || !this._mounted || !this.metaWrap) return;
         updateMeta();
         this.metaWrap.classList.remove("fr-meta-animating");
       }, 150);
@@ -269,33 +474,41 @@ const App = exports.App = {
       // Crossfade album art between dual stacked layers
       const showing = this.artActiveIsImg ? this.artImg : this.artImgAlt;
       const incoming = this.artActiveIsImg ? this.artImgAlt : this.artImg;
-      incoming.src = image;
-      incoming.onload = () => {
-        incoming.classList.add("fr-art-active");
-        showing.classList.remove("fr-art-active");
-        this.artActiveIsImg = !this.artActiveIsImg;
-      };
+      if (incoming && showing) {
+        incoming.src = image;
+        incoming.onload = () => {
+          if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+          incoming.classList.add("fr-art-active");
+          showing.classList.remove("fr-art-active");
+          this.artActiveIsImg = !this.artActiveIsImg;
+        };
+      }
 
       const colors = await BackgroundManager.update(image);
+      if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
       AmbientManager.updateColors(colors);
       AudioMoodEngine.updateColors(colors);
       this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));
-      this.artWrap.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
+      this.artWrap?.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
     } else if (LyricsView._currentTrackUri !== track.uri) {
       LyricsView.loadForTrack(track, this);
     }
   },
 
   startTicking() {
-    if (this.tickHandle) return;
+    if (this.tickHandle || !this._mounted || !this.open) return;
     const loop = () => {
+      if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) {
+        this.tickHandle = null;
+        return;
+      }
       const progress = BottomDock.tick();
-      const duration = SpicetifyBridge.getDuration();
+      const duration = SpotiKitBridge.getDuration();
       if (typeof progress === "number") {
         LyricsView.update(progress);
         UpNextCard.update(duration, progress);
 
-        const moodFrame = AudioMoodEngine.sample(progress, SpicetifyBridge.isPlaying(), LyricsView);
+        const moodFrame = AudioMoodEngine.sample(progress, SpotiKitBridge.isPlaying(), LyricsView);
         AmbientManager.updateFrame(moodFrame, this.artWrap);
 
         if (duration && this.ringRect) {
@@ -316,39 +529,50 @@ const App = exports.App = {
   },
 
   async toggleOpen() {
+    if (!this._mounted) return;
     if (this.open) this.close();
     else await this.launch();
   },
 
   async launch() {
+    if (!this._mounted || !this.root) return;
     this.open = true;
     this.root.classList.add("fr-open");
     document.body.style.overflow = "hidden";
+    this._syncPlaybarActive(true);
     Clock.start();
 
     try {
-      if (!document.fullscreenElement) {
+      if (!document.fullscreenElement && typeof document.documentElement?.requestFullscreen === "function") {
         await document.documentElement.requestFullscreen();
       }
     } catch (e) {
       // browser may require user gesture
     }
 
+    if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) return;
+
     await this.onTrackChange();
+    if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) return;
+
     LyricsView.showProviderBadge(3000);
     this.startTicking();
   },
 
   close() {
     this.open = false;
-    this.root.classList.remove("fr-open");
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.root?.classList.remove("fr-open", "fr-idle");
+    AmbientManager.setIdle(false);
     SettingsModal.close();
     FullLyricsCreator.close();
     document.body.style.overflow = "";
+    this._syncPlaybarActive(false);
     Clock.stop();
 
     try {
-      if (document.fullscreenElement) {
+      if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
         document.exitFullscreen();
       }
     } catch (e) {
@@ -363,6 +587,11 @@ const App = exports.App = {
   },
 
   onSettingsChanged(key) {
+    if (!this._mounted) return;
+    if (key === "language") {
+      this.rebuildForLanguage();
+      return;
+    }
     if (
       [
         "showLyrics",
@@ -397,6 +626,7 @@ const App = exports.App = {
   },
 
   applyLayoutSettings() {
+    if (!this.root || !this.stage || !this.artWrap) return;
     const forceCenter = !Settings.get("showLyrics") || LyricsView.hasLyrics === false;
     this.stage.classList.toggle("fr-centered", forceCenter);
 
@@ -684,7 +914,7 @@ const BackgroundManager = exports.BackgroundManager = {
 const {  el, iconBtn  } = require("./utils/dom.js");
 const {  Icons  } = require("./utils/icons.js");
 const {  formatMs  } = require("./utils/formatters.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 const BottomDock = exports.BottomDock = {
   root: null,
@@ -699,6 +929,7 @@ const BottomDock = exports.BottomDock = {
   volHandle: null,
   seeking: false,
   volSeeking: false,
+  _dragAbortController: null,
 
   _lastKnownProgress: 0,
   _lastKnownTime: 0,
@@ -710,16 +941,56 @@ const BottomDock = exports.BottomDock = {
   _wasShuffle: null,
   _wasRepeat: null,
 
+  _resetSyncCache() {
+    this._lastKnownProgress = 0;
+    this._lastKnownTime = 0;
+    this._lastKnownPlaying = false;
+    this._lastKnownVolume = -1;
+    this._lastKnownCurSec = -1;
+    this._lastKnownDurSec = -1;
+    this._wasPlaying = null;
+    this._wasShuffle = null;
+    this._wasRepeat = null;
+  },
+
+  _bindDrag(bar, flagKey, onMoveSample) {
+    bar.addEventListener("mousedown", (e) => {
+      this._dragAbortController?.abort();
+      this.seeking = false;
+      this.volSeeking = false;
+      const ac = new AbortController();
+      this._dragAbortController = ac;
+
+      this[flagKey] = true;
+      onMoveSample(e, bar);
+
+      const move = (ev) => onMoveSample(ev, bar);
+      const up = () => {
+        this[flagKey] = false;
+        ac.abort();
+        if (this._dragAbortController === ac) {
+          this._dragAbortController = null;
+        }
+      };
+
+      window.addEventListener("mousemove", move, { signal: ac.signal });
+      window.addEventListener("mouseup", up, { signal: ac.signal });
+    });
+  },
+
   build(app) {
+    this._resetSyncCache();
+    this.seeking = false;
+    this.volSeeking = false;
     this.root = el("div", "fr-bottom-bar");
 
     // --- Left: Playback Controls ---
     const left = el("div", "fr-controls-left");
-    this.shuffleBtn = iconBtn(Icons.shuffle, () => SpicetifyBridge.toggleShuffle());
-    const prevBtn = iconBtn(Icons.prev, () => SpicetifyBridge.back());
-    this.playBtn = iconBtn(Icons.play, () => SpicetifyBridge.togglePlay(), "fr-btn-play");
-    const nextBtn = iconBtn(Icons.next, () => SpicetifyBridge.next());
-    this.repeatBtn = iconBtn(Icons.repeat, () => SpicetifyBridge.toggleRepeat());
+    this.shuffleBtn = iconBtn(Icons.shuffle, () => SpotiKitBridge.toggleShuffle());
+    const prevBtn = iconBtn(Icons.prev, () => SpotiKitBridge.back());
+    this.playBtn = iconBtn(Icons.play, () => SpotiKitBridge.togglePlay(), "fr-btn-play");
+    const nextBtn = iconBtn(Icons.next, () => SpotiKitBridge.next());
+    this.repeatBtn = iconBtn(Icons.repeat, () => SpotiKitBridge.toggleRepeat());
     left.append(this.shuffleBtn, prevBtn, this.playBtn, nextBtn, this.repeatBtn);
 
     // --- Center: Progress ---
@@ -732,48 +1003,26 @@ const BottomDock = exports.BottomDock = {
     this.timeDur = el("span", null, "0:00");
     center.append(this.timeCur, progBar, this.timeDur);
 
-    progBar.addEventListener("mousedown", (e) => {
-      this.seeking = true;
-      this.seekFromEvent(e, progBar);
-      const move = (ev) => this.seekFromEvent(ev, progBar);
-      const up = () => {
-        this.seeking = false;
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
-    });
+    this._bindDrag(progBar, "seeking", (ev, bar) => this.seekFromEvent(ev, bar));
 
     // --- Right: Volume & Queue ---
     const right = el("div", "fr-controls-right");
     const volRow = el("div", "fr-volume-row");
-    const volIcon = iconBtn(Icons.volume, () => SpicetifyBridge.toggleMute());
+    const volIcon = iconBtn(Icons.volume, () => SpotiKitBridge.toggleMute());
     const volBar = el("div", "fr-volume-bar");
     this.volFill = el("div", "fr-volume-fill");
     this.volHandle = el("div", "fr-volume-handle");
     volBar.append(this.volFill, this.volHandle);
     volRow.append(volIcon, volBar);
 
-    volBar.addEventListener("mousedown", (e) => {
-      this.volSeeking = true;
-      this.volFromEvent(e, volBar);
-      const move = (ev) => this.volFromEvent(ev, volBar);
-      const up = () => {
-        this.volSeeking = false;
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
-    });
+    this._bindDrag(volBar, "volSeeking", (ev, bar) => this.volFromEvent(ev, bar));
 
     volRow.addEventListener("wheel", (e) => {
       e.preventDefault();
       const dir = e.deltaY < 0 ? 1 : -1;
-      let vol = SpicetifyBridge.getVolume() + dir * 0.05;
+      let vol = SpotiKitBridge.getVolume() + dir * 0.05;
       vol = Math.max(0, Math.min(1, vol));
-      SpicetifyBridge.setVolume(vol);
+      SpotiKitBridge.setVolume(vol);
 
       this._lastKnownVolume = vol;
       const volPct = vol * 100;
@@ -783,7 +1032,7 @@ const BottomDock = exports.BottomDock = {
 
     const queueBtn = iconBtn(Icons.queue, () => {
       app.close();
-      SpicetifyBridge.openQueue();
+      SpotiKitBridge.openQueue();
     });
     right.append(volRow, queueBtn);
 
@@ -793,15 +1042,17 @@ const BottomDock = exports.BottomDock = {
 
   seekFromEvent(e, bar) {
     const rect = bar.getBoundingClientRect();
-    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    const duration = SpicetifyBridge.getDuration();
-    SpicetifyBridge.seek(pct * duration);
+    const width = rect.width || 1;
+    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / width));
+    const duration = SpotiKitBridge.getDuration();
+    SpotiKitBridge.seek(pct * duration);
   },
 
   volFromEvent(e, bar) {
     const rect = bar.getBoundingClientRect();
-    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    SpicetifyBridge.setVolume(pct);
+    const width = rect.width || 1;
+    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / width));
+    SpotiKitBridge.setVolume(pct);
 
     this._lastKnownVolume = pct;
     const volPct = pct * 100;
@@ -810,10 +1061,12 @@ const BottomDock = exports.BottomDock = {
   },
 
   tick() {
+    if (!this.root) return 0;
+
     // Progress Sync
-    const rawProgress = SpicetifyBridge.getProgress();
-    const duration = SpicetifyBridge.getDuration();
-    const isPlaying = SpicetifyBridge.isPlaying();
+    const rawProgress = SpotiKitBridge.getProgress();
+    const duration = SpotiKitBridge.getDuration();
+    const isPlaying = SpotiKitBridge.isPlaying();
     const now = Date.now();
 
     if (rawProgress !== this._lastKnownProgress || isPlaying !== this._lastKnownPlaying) {
@@ -851,22 +1104,25 @@ const BottomDock = exports.BottomDock = {
     }
 
     // Shuffle state sync
-    const shuffle = SpicetifyBridge.getShuffle();
+    const shuffle = SpotiKitBridge.getShuffle();
     if (this._wasShuffle !== shuffle) {
       this._wasShuffle = shuffle;
       this.shuffleBtn.classList.toggle("fr-active", shuffle);
     }
 
     // Repeat state sync
-    const repeat = SpicetifyBridge.getRepeat();
-    if (this._wasRepeat !== repeat) {
-      this._wasRepeat = repeat;
+    const repeatMode = SpotiKitBridge.getRepeatMode();
+    const repeat = SpotiKitBridge.getRepeat();
+    if (this._wasRepeat !== repeatMode) {
+      this._wasRepeat = repeatMode;
       this.repeatBtn.classList.toggle("fr-active", repeat);
+      this.repeatBtn.setAttribute("data-repeat", repeatMode);
+      this.repeatBtn.title = `Repeat: ${repeatMode}`;
     }
 
     // Volume state sync
     if (!this.volSeeking) {
-      const vol = SpicetifyBridge.getMute() ? 0 : SpicetifyBridge.getVolume();
+      const vol = SpotiKitBridge.getMute() ? 0 : SpotiKitBridge.getVolume();
       if (this._lastKnownVolume !== vol) {
         this._lastKnownVolume = vol;
         const volPct = vol * 100;
@@ -876,6 +1132,25 @@ const BottomDock = exports.BottomDock = {
     }
 
     return progress;
+  },
+
+  destroy() {
+    this._dragAbortController?.abort();
+    this._dragAbortController = null;
+    this.seeking = false;
+    this.volSeeking = false;
+    this._resetSyncCache();
+    this.root?.remove();
+    this.root = null;
+    this.progressFill = null;
+    this.progressHandle = null;
+    this.timeCur = null;
+    this.timeDur = null;
+    this.playBtn = null;
+    this.shuffleBtn = null;
+    this.repeatBtn = null;
+    this.volFill = null;
+    this.volHandle = null;
   },
 };
 
@@ -953,25 +1228,45 @@ const DARK_PRESETS = [
 ];
 
 let initializedGlobalColorListener = false;
+let globalColorAbortController = null;
 const activeColorPickers = new Set();
 
 function initGlobalListener() {
   if (initializedGlobalColorListener) return;
   initializedGlobalColorListener = true;
+  globalColorAbortController = new AbortController();
+  const { signal } = globalColorAbortController;
 
-  document.addEventListener("click", (e) => {
-    for (const close of activeColorPickers) {
-      close(e);
-    }
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+  document.addEventListener(
+    "click",
+    (e) => {
       for (const close of activeColorPickers) {
-        close(null, true);
+        close(e);
       }
-    }
-  });
+    },
+    { signal }
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") {
+        for (const close of activeColorPickers) {
+          close(null, true);
+        }
+      }
+    },
+    { signal }
+  );
+}
+
+function destroyCustomColorPickers() {
+  activeColorPickers.clear();
+  if (globalColorAbortController) {
+    globalColorAbortController.abort();
+    globalColorAbortController = null;
+  }
+  initializedGlobalColorListener = false;
 }
 
 function hslToHex(h, s, l) {
@@ -1204,7 +1499,13 @@ function createCustomColorPicker({ value = "#101014", onChange }) {
   return wrap;
 }
 
+const CustomColorPicker = exports.CustomColorPicker = {
+  create: createCustomColorPicker,
+  destroyAll: destroyCustomColorPickers,
+};
+
 // Exported functions
+exports.destroyCustomColorPickers = destroyCustomColorPickers;
 exports.createCustomColorPicker = createCustomColorPicker;
 
     },
@@ -1219,25 +1520,45 @@ const {  el  } = require("./utils/dom.js");
 
 // Global document click listener to close all dropdowns when clicking outside
 let initializedGlobalListener = false;
+let globalSelectAbortController = null;
 const activeSelects = new Set();
 
 function initGlobalListener() {
   if (initializedGlobalListener) return;
   initializedGlobalListener = true;
+  globalSelectAbortController = new AbortController();
+  const { signal } = globalSelectAbortController;
 
-  document.addEventListener("click", (e) => {
-    for (const closeMenu of activeSelects) {
-      closeMenu(e);
-    }
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+  document.addEventListener(
+    "click",
+    (e) => {
       for (const closeMenu of activeSelects) {
-        closeMenu(null, true);
+        closeMenu(e);
       }
-    }
-  });
+    },
+    { signal }
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") {
+        for (const closeMenu of activeSelects) {
+          closeMenu(null, true);
+        }
+      }
+    },
+    { signal }
+  );
+}
+
+function destroyCustomSelects() {
+  activeSelects.clear();
+  if (globalSelectAbortController) {
+    globalSelectAbortController.abort();
+    globalSelectAbortController = null;
+  }
+  initializedGlobalListener = false;
 }
 
 /**
@@ -1354,7 +1675,13 @@ function createCustomSelect({ options, value, onChange }) {
   return wrap;
 }
 
+const CustomSelect = exports.CustomSelect = {
+  create: createCustomSelect,
+  destroyAll: destroyCustomSelects,
+};
+
 // Exported functions
+exports.destroyCustomSelects = destroyCustomSelects;
 exports.createCustomSelect = createCustomSelect;
 
     },
@@ -1373,7 +1700,7 @@ exports.createCustomSelect = createCustomSelect;
 const {  el  } = require("./utils/dom.js");
 const {  Icons  } = require("./utils/icons.js");
 const {  t  } = require("./utils/i18n.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  LyricsService  } = require("./services/LyricsService.js");
 const {  LyricsView  } = require("./components/LyricsView.js");
 const { 
@@ -1470,8 +1797,14 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
   _lastKnownTime: 0,
   _lastKnownPlaying: false,
   _scrubbing: false,
+  _abortController: null,
+  _dragAbortController: null,
 
   build(app) {
+    this._abortController?.abort();
+    this._abortController = new AbortController();
+    const { signal } = this._abortController;
+
     this.app = app;
     const backdrop = el("div", "fr-creator-backdrop");
     backdrop.addEventListener("mousedown", (e) => {
@@ -1504,12 +1837,17 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
     this.toastEl = toastEl;
 
     // Listen to external or internal custom sync changes
-    window.addEventListener(CHANGE_EVENT, () => {
-      LyricsService.clearCache();
-      if (this.app?.currentTrack) {
-        LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
-      }
-    });
+    window.addEventListener(
+      CHANGE_EVENT,
+      () => {
+        if (!this.root || !this.app?._mounted || SpotiKitBridge.isStopped()) return;
+        LyricsService.clearCache();
+        if (this.app?.currentTrack) {
+          LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
+        }
+      },
+      { signal }
+    );
 
     return backdrop;
   },
@@ -1525,7 +1863,7 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
   },
 
   getCurrentTrackInfo() {
-    const track = this.app?.currentTrack || SpicetifyBridge.getCurrentTrack() || {};
+    const track = this.app?.currentTrack || SpotiKitBridge.getCurrentTrack() || {};
     const meta = track.metadata || {};
     const trackUri = normalizeTrackUri(track.uri || "");
     const trackId = extractTrackId(trackUri || track.id || "");
@@ -1534,7 +1872,7 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
       track.artists && track.artists.length
         ? track.artists.map((a) => a.name || a.displayName || "").filter(Boolean).join(", ")
         : meta.artist_name || t("unknownArtist");
-    const durationMs = Number(meta.duration) || SpicetifyBridge.getDuration() || 180000;
+    const durationMs = Number(meta.duration) || SpotiKitBridge.getDuration() || 180000;
     return { track, trackUri, trackId, title, artist, durationMs };
   },
 
@@ -2125,8 +2463,12 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
     this._keyHandler = (e) => {
       if (!this.isOpen) return;
       const target = e.target;
+      const isElement =
+        typeof HTMLElement !== "undefined"
+          ? target instanceof HTMLElement
+          : target && typeof target.tagName === "string";
       const isInput =
-        target instanceof HTMLElement &&
+        isElement &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.isContentEditable);
@@ -2158,7 +2500,7 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
       if (e.key === "p" || e.key === "P" || e.key === "k" || e.key === "K") {
         e.preventDefault();
         e.stopPropagation();
-        SpicetifyBridge.togglePlay();
+        SpotiKitBridge.togglePlay();
         return;
       }
 
@@ -3614,18 +3956,18 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
     const safeMs = Math.max(0, Math.round(Number(ms) || 0));
     this._lastKnownProgress = safeMs;
     this._lastKnownTime = performance.now();
-    this._lastKnownPlaying = SpicetifyBridge.isPlaying() || autoPlay;
+    this._lastKnownPlaying = SpotiKitBridge.isPlaying() || autoPlay;
 
-    SpicetifyBridge.seek(safeMs);
+    SpotiKitBridge.seek(safeMs);
 
-    if (autoPlay && !SpicetifyBridge.isPlaying()) {
-      SpicetifyBridge.togglePlay();
+    if (autoPlay && !SpotiKitBridge.isPlaying()) {
+      SpotiKitBridge.togglePlay();
     }
 
     if (this.transportCurEl) {
       this.transportCurEl.textContent = formatTransportTime(safeMs);
     }
-    const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 1;
+    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
     if (this.transportFillEl && dur > 0) {
       const pct = Math.max(0, Math.min(100, (safeMs / dur) * 100));
       this.transportFillEl.style.width = `${pct.toFixed(2)}%`;
@@ -3644,8 +3986,8 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
 
     const playBtn = el("button", "fr-creator-play-btn");
     playBtn.type = "button";
-    playBtn.innerHTML = SpicetifyBridge.isPlaying() ? Icons.pause : Icons.play;
-    playBtn.addEventListener("click", () => SpicetifyBridge.togglePlay());
+    playBtn.innerHTML = SpotiKitBridge.isPlaying() ? Icons.pause : Icons.play;
+    playBtn.addEventListener("click", () => SpotiKitBridge.togglePlay());
     this.transportPlayBtn = playBtn;
 
     const back5Btn = el("button", "fr-creator-mini-btn", "-3s");
@@ -3657,7 +3999,7 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
     const fwd5Btn = el("button", "fr-creator-mini-btn", "+3s");
     fwd5Btn.type = "button";
     fwd5Btn.addEventListener("click", () => {
-      const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 180000;
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
       this.seek(Math.min(dur, this.getAccurateProgressMs() + 3000), false);
     });
 
@@ -3672,27 +4014,32 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
     const seekFromMouse = (e) => {
       const rect = seekWrap.getBoundingClientRect();
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1)));
-      const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 180000;
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
       this.seek(Math.round(pct * dur), false);
     };
 
     seekWrap.addEventListener("mousedown", (e) => {
+      this._dragAbortController?.abort();
+      const ac = new AbortController();
+      this._dragAbortController = ac;
       this._scrubbing = true;
       seekFromMouse(e);
       const onMove = (ev) => seekFromMouse(ev);
       const onUp = () => {
         this._scrubbing = false;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
+        ac.abort();
+        if (this._dragAbortController === ac) {
+          this._dragAbortController = null;
+        }
       };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
+      window.addEventListener("mousemove", onMove, { signal: ac.signal });
+      window.addEventListener("mouseup", onUp, { signal: ac.signal });
     });
 
     const durTimeEl = el(
       "span",
       "fr-creator-transport-time",
-      formatTransportTime(SpicetifyBridge.getDuration() || this.draft?.durationMs || 0)
+      formatTransportTime(SpotiKitBridge.getDuration() || this.draft?.durationMs || 0)
     );
     this.transportDurEl = durTimeEl;
 
@@ -3701,8 +4048,8 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
   },
 
   getAccurateProgressMs() {
-    const raw = SpicetifyBridge.getProgress();
-    const playing = SpicetifyBridge.isPlaying();
+    const raw = SpotiKitBridge.getProgress();
+    const playing = SpotiKitBridge.isPlaying();
     const now = performance.now();
 
     if (raw !== this._lastKnownProgress || playing !== this._lastKnownPlaying) {
@@ -3711,7 +4058,7 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
       this._lastKnownPlaying = playing;
     }
 
-    const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || Infinity;
+    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || Infinity;
     return playing
       ? Math.min(dur, this._lastKnownProgress + (now - this._lastKnownTime))
       : raw;
@@ -3722,8 +4069,8 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
     const tick = () => {
       if (!this.isOpen) return;
       const progress = this.getAccurateProgressMs();
-      const dur = SpicetifyBridge.getDuration() || this.draft?.durationMs || 1;
-      const playing = SpicetifyBridge.isPlaying();
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
+      const playing = SpotiKitBridge.isPlaying();
 
       if (this.transportPlayBtn && this._wasTransportPlaying !== playing) {
         this._wasTransportPlaying = playing;
@@ -3756,6 +4103,39 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
       this._rafId = null;
     }
   },
+
+  destroy() {
+    this.close();
+    this.stopTransportLoop();
+    this.unbindKeyHandler();
+
+    clearTimeout(this._toastTimer);
+    this._toastTimer = null;
+
+    this._abortController?.abort();
+    this._abortController = null;
+    this._dragAbortController?.abort();
+    this._dragAbortController = null;
+
+    this._scrubbing = false;
+    this._wasTransportPlaying = null;
+    this._previewLines = [];
+    this._previewLineEls = [];
+    this.draft = null;
+    this.app = null;
+
+    this.root?.remove();
+    this.root = null;
+    this.backdrop = null;
+    this.modal = null;
+    this.bodyEl = null;
+    this.fileInputEl = null;
+    this.toastEl = null;
+    this.transportPlayBtn = null;
+    this.transportCurEl = null;
+    this.transportDurEl = null;
+    this.transportFillEl = null;
+  },
 };
 
     },
@@ -3774,7 +4154,7 @@ const {  el  } = require("./utils/dom.js");
 const {  t  } = require("./utils/i18n.js");
 const {  Settings  } = require("./utils/settings.js");
 const {  LyricsService  } = require("./services/LyricsService.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  AudioMoodEngine  } = require("./services/AudioMoodEngine.js");
 
 const LyricsView = exports.LyricsView = {
@@ -3801,6 +4181,9 @@ const LyricsView = exports.LyricsView = {
   _lastUnsyncedTime: null,
   _providerTimer: null,
   _shownStartBadgeForUri: null,
+  _resizeObserver: null,
+  _revealRafId: null,
+  _cascadeRafId: null,
 
   // Per-line cascade offset state
   _cascadeY: 0,
@@ -3925,6 +4308,7 @@ const LyricsView = exports.LyricsView = {
     this.userScrollTimer = setTimeout(() => {
       this.userScrolling = false;
       this._manualOffsetY = 0;
+      if (!this.scrollEl || !this.resumeBtn) return;
       this.scrollEl.classList.remove("fr-user-scrolling");
       this.resumeBtn.classList.remove("fr-show");
       this.applyCascadePosition(false);
@@ -3933,16 +4317,16 @@ const LyricsView = exports.LyricsView = {
 
   onUserScroll() {
     this.userScrolling = true;
-    this.resumeBtn.classList.add("fr-show");
+    this.resumeBtn?.classList.add("fr-show");
     clearTimeout(this.userScrollTimer);
     this.userScrollTimer = setTimeout(() => {
       this.userScrolling = false;
-      this.resumeBtn.classList.remove("fr-show");
+      this.resumeBtn?.classList.remove("fr-show");
     }, 8000);
   },
 
   async loadForTrack(track, app, force = false) {
-    if (!track) return;
+    if (!track || !this.scrollEl) return;
     if (!force && this._currentTrackUri === track.uri && this.lines.length > 0) {
       this.revealLyrics();
       if (app?.open) this.showProviderBadge(3000);
@@ -3969,7 +4353,7 @@ const LyricsView = exports.LyricsView = {
     this._lastUnsyncedTime = null;
 
     const data = await LyricsService.resolve(track);
-    if (myRequest !== this.requestId) return;
+    if (myRequest !== this.requestId || !this.scrollEl || SpotiKitBridge.isStopped()) return;
 
     this.scrollEl.innerHTML = "";
     this.scrollEl.classList.remove("fr-unsynced", "fr-mode-word", "fr-mode-line");
@@ -4179,7 +4563,7 @@ const LyricsView = exports.LyricsView = {
           this._manualOffsetY = 0;
           this.scrollEl.classList.remove("fr-user-scrolling");
           this.resumeBtn.classList.remove("fr-show");
-          SpicetifyBridge.seek(line.startMs);
+          SpotiKitBridge.seek(line.startMs);
         });
       }
 
@@ -4193,11 +4577,16 @@ const LyricsView = exports.LyricsView = {
       this._shownStartBadgeForUri = track.uri;
     }
 
-    this.update(SpicetifyBridge.getProgress(), true);
+    this.update(SpotiKitBridge.getProgress(), true);
   },
 
   revealLyrics() {
-    requestAnimationFrame(() => {
+    if (this._revealRafId) {
+      cancelAnimationFrame(this._revealRafId);
+      this._revealRafId = null;
+    }
+    this._revealRafId = requestAnimationFrame(() => {
+      this._revealRafId = null;
       if (this.scrollEl) this.scrollEl.classList.add("fr-ready");
     });
   },
@@ -4254,7 +4643,7 @@ const LyricsView = exports.LyricsView = {
 
       if (!this.userScrolling) {
         if (mode === "track") {
-          const bridgeDur = SpicetifyBridge.getDuration();
+          const bridgeDur = SpotiKitBridge.getDuration();
           const duration = bridgeDur > 15000 ? bridgeDur : this._currentTrackDurationMs || 180000;
           const rawPct = Math.max(0, Math.min(1, progressMs / duration));
           // Wait until 12% into the track before starting to scroll down, finishing around 90%
@@ -4270,7 +4659,7 @@ const LyricsView = exports.LyricsView = {
           const dt = this._lastUnsyncedTime ? Math.min(0.1, (now - this._lastUnsyncedTime) / 1000) : 0.016;
           this._lastUnsyncedTime = now;
 
-          if (SpicetifyBridge.isPlaying()) {
+          if (SpotiKitBridge.isPlaying()) {
             // Natural slow reading speeds in px/sec (slow: 3.5, normal: 6.0, fast: 10.5)
             const speed = mode === "slow" ? 3.5 : mode === "fast" ? 10.5 : 6.0;
             this._unsyncedScrollPos = Math.min(maxScroll, this._unsyncedScrollPos + speed * dt);
@@ -4489,7 +4878,12 @@ const LyricsView = exports.LyricsView = {
     }
 
     if (instant) {
-      requestAnimationFrame(() => {
+      if (this._cascadeRafId) {
+        cancelAnimationFrame(this._cascadeRafId);
+        this._cascadeRafId = null;
+      }
+      this._cascadeRafId = requestAnimationFrame(() => {
+        this._cascadeRafId = null;
         if (this.scrollEl) this.scrollEl.classList.remove("fr-no-transition");
       });
     }
@@ -4497,6 +4891,51 @@ const LyricsView = exports.LyricsView = {
 
   scrollActiveIntoView(instant = false) {
     this.applyCascadePosition(instant);
+  },
+
+  destroy() {
+    this.requestId++;
+    clearTimeout(this._providerTimer);
+    this._providerTimer = null;
+    clearTimeout(this.userScrollTimer);
+    this.userScrollTimer = null;
+
+    if (this._revealRafId) {
+      cancelAnimationFrame(this._revealRafId);
+      this._revealRafId = null;
+    }
+    if (this._cascadeRafId) {
+      cancelAnimationFrame(this._cascadeRafId);
+      this._cascadeRafId = null;
+    }
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+
+    this.lines = [];
+    this.lineEls = [];
+    this.activeIndex = -1;
+    this.syncType = "none";
+    this.providerSource = "";
+    this.hasLyrics = true;
+    this.userScrolling = false;
+    this._currentTrackUri = null;
+    this._lastUnsyncedTime = null;
+    this._shownStartBadgeForUri = null;
+    this._cascadeY = 0;
+    this._manualOffsetY = 0;
+    this._unsyncedScrollPos = 0;
+
+    this.panel?.remove();
+    this.panel = null;
+    this.scrollEl = null;
+    this.resumeBtn = null;
+    this.instrPanel = null;
+    this.providerBadge = null;
+    this.providerPrefixEl = null;
+    this.providerNameEl = null;
+    this.providerTagEl = null;
   },
 };
 
@@ -4747,7 +5186,6 @@ const SettingsModal = exports.SettingsModal = {
       value: Settings.get("language") || "auto",
       onChange: (val) => {
         Settings.set("language", val);
-        location.reload();
       },
     });
     langRow.append(el("label", null, t("language")), langSelect);
@@ -4814,6 +5252,11 @@ const SettingsModal = exports.SettingsModal = {
     if (this.root) {
       this.root.classList.remove("fr-show");
     }
+  },
+
+  destroy() {
+    this.root?.remove();
+    this.root = null;
   },
 };
 
@@ -4907,10 +5350,10 @@ const TopBar = exports.TopBar = {
         pipWindow.document.body.appendChild(img);
 
         pipWindow.addEventListener("pagehide", () => {
-          this.pipBtn.classList.remove("fr-active");
+          this.pipBtn?.classList.remove("fr-active");
           this.pipImg = null;
         });
-        this.pipBtn.classList.add("fr-active");
+        this.pipBtn?.classList.add("fr-active");
       }
       // Fallback for older Chromium versions: Legacy Canvas Video PiP
       else {
@@ -4922,6 +5365,7 @@ const TopBar = exports.TopBar = {
         img.crossOrigin = "anonymous";
         img.src = app.currentImage || "";
         img.onload = async () => {
+          if (!this.root) return;
           ctx.fillStyle = "#121212";
           ctx.fillRect(0, 0, 800, 800);
           ctx.drawImage(img, 0, 0, 800, 800);
@@ -4932,14 +5376,35 @@ const TopBar = exports.TopBar = {
           await video.play();
           await video.requestPictureInPicture();
           video.addEventListener("leavepictureinpicture", () => {
-            this.pipBtn.classList.remove("fr-active");
+            this.pipBtn?.classList.remove("fr-active");
           });
         };
-        this.pipBtn.classList.add("fr-active");
+        this.pipBtn?.classList.add("fr-active");
       }
     } catch (e) {
       console.warn("[Fullscreen Reloaded] PiP error:", e);
     }
+  },
+
+  destroy() {
+    try {
+      if (window?.documentPictureInPicture?.window) {
+        window.documentPictureInPicture.window.close();
+      }
+    } catch (_) {}
+
+    try {
+      if (document.pictureInPictureElement && typeof document.exitPictureInPicture === "function") {
+        Promise.resolve(document.exitPictureInPicture()).catch(() => {});
+      }
+    } catch (_) {}
+
+    this.pipImg = null;
+    this.root?.remove();
+    this.root = null;
+    this.lyricsBtn = null;
+    this.creatorBtn = null;
+    this.pipBtn = null;
   },
 };
 
@@ -4953,7 +5418,7 @@ const TopBar = exports.TopBar = {
 const {  el  } = require("./utils/dom.js");
 const {  t  } = require("./utils/i18n.js");
 const {  resolveImageUrl  } = require("./utils/formatters.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 const UpNextCard = exports.UpNextCard = {
   root: null,
@@ -4961,8 +5426,11 @@ const UpNextCard = exports.UpNextCard = {
   title: null,
   artist: null,
   shown: false,
+  _loading: false,
 
   build() {
+    this.shown = false;
+    this._loading = false;
     this.root = el("div", "fr-up-next");
     this.img = document.createElement("img");
     this.img.className = "fr-up-next-img";
@@ -4974,7 +5442,7 @@ const UpNextCard = exports.UpNextCard = {
     info.append(this.title, this.artist);
 
     this.root.append(this.img, info);
-    this.root.addEventListener("click", () => SpicetifyBridge.next());
+    this.root.addEventListener("click", () => SpotiKitBridge.next());
     return this.root;
   },
 
@@ -4983,18 +5451,26 @@ const UpNextCard = exports.UpNextCard = {
     const remaining = duration - progress;
     const shouldShow = duration > 40000 && remaining > 0 && remaining < 20000;
 
-    if (shouldShow && !this.shown) {
-      const nextTrack = await SpicetifyBridge.getNextTrack();
-      if (nextTrack) {
-        const meta = nextTrack.metadata || nextTrack.contextTrack?.metadata || {};
-        this.title.textContent = meta.title || nextTrack.name || t("unknownTitle");
-        this.artist.textContent =
-          meta.artist_name || (nextTrack.artists && nextTrack.artists[0]?.name) || t("unknownArtist");
-        this.img.src = resolveImageUrl(
-          meta.image_xlarge_url || meta.image_large_url || meta.image_url || nextTrack.album?.images?.[0]?.url
-        );
-        this.root.classList.add("fr-show");
-        this.shown = true;
+    if (shouldShow && !this.shown && !this._loading) {
+      this._loading = true;
+      try {
+        const nextTrack = await SpotiKitBridge.getNextTrack();
+        if (!this.root || !this.title || !this.artist || !this.img || SpotiKitBridge.isStopped()) {
+          return;
+        }
+        if (nextTrack) {
+          const meta = nextTrack.metadata || nextTrack.contextTrack?.metadata || {};
+          this.title.textContent = meta.title || nextTrack.name || t("unknownTitle");
+          this.artist.textContent =
+            meta.artist_name || (nextTrack.artists && nextTrack.artists[0]?.name) || t("unknownArtist");
+          this.img.src = resolveImageUrl(
+            meta.image_xlarge_url || meta.image_large_url || meta.image_url || nextTrack.album?.images?.[0]?.url
+          );
+          this.root.classList.add("fr-show");
+          this.shown = true;
+        }
+      } finally {
+        this._loading = false;
       }
     } else if (!shouldShow && this.shown) {
       this.root.classList.remove("fr-show");
@@ -5004,7 +5480,17 @@ const UpNextCard = exports.UpNextCard = {
 
   reset() {
     this.shown = false;
+    this._loading = false;
     if (this.root) this.root.classList.remove("fr-show");
+  },
+
+  destroy() {
+    this.reset();
+    this.root?.remove();
+    this.root = null;
+    this.img = null;
+    this.title = null;
+    this.artist = null;
   },
 };
 
@@ -5018,40 +5504,58 @@ const UpNextCard = exports.UpNextCard = {
  * Entry point & lifecycle initialization.
  */
 const {  Settings  } = require("./utils/settings.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  App  } = require("./App.js");
 
 // CSS placeholder replaced at build time with bundled styles from src/styles/*.css
 const STYLES = "\n/* --- variables.css --- */\n:root {\r\n  --fr-bg: #060607;\r\n  --fr-fg: #ffffff;\r\n  --fr-fg-dim: rgba(255, 255, 255, 0.78);\r\n  --fr-fg-faint: rgba(255, 255, 255, 0.52);\r\n  --fr-accent: #ffffff;\r\n  --fr-accent-2: #101014;\r\n  --fr-radius: 18px;\r\n  --fr-font: \"Spotify Circular\", \"Circular Std\", -apple-system, \"Segoe UI\", Helvetica, Arial, sans-serif;\r\n  --fr-transition: 900ms;\r\n}\r\n\r\n#fullscreen-reloaded-root {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 999999;\r\n  font-family: var(--fr-font);\r\n  color: var(--fr-fg);\r\n  visibility: hidden;\r\n  opacity: 0;\r\n  transition: opacity 600ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 600ms;\r\n  overflow: hidden;\r\n  user-select: none;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-open {\r\n  visibility: visible;\r\n  opacity: 1;\r\n}\r\n\r\n#fullscreen-reloaded-root * {\r\n  box-sizing: border-box;\r\n}\r\n\n/* --- background.css --- */\n/* ---------------- Background ---------------- */\r\n.fr-bg-root {\r\n  position: absolute;\r\n  inset: 0;\r\n  overflow: hidden;\r\n  z-index: 0;\r\n}\r\n\r\n.fr-bg-layer {\r\n  position: absolute;\r\n  inset: -5%;\r\n  width: 110%;\r\n  height: 110%;\r\n  background-position: center;\r\n  background-size: cover;\r\n  opacity: 0;\r\n  transition: opacity var(--fr-transition) ease;\r\n  will-change: opacity;\r\n}\r\n\r\n.fr-bg-layer.fr-bg-active {\r\n  opacity: 1;\r\n}\r\n\r\n.fr-bg-tint {\r\n  position: absolute;\r\n  inset: 0;\r\n  background: radial-gradient(ellipse at 30% 20%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 75%);\r\n  pointer-events: none;\r\n}\r\n\r\n.fr-bg-scrim {\r\n  position: absolute;\r\n  inset: 0;\r\n  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.05) 30%, rgba(0, 0, 0, 0.55) 100%);\r\n  pointer-events: none;\r\n}\r\n\n/* --- stage.css --- */\n/* ---------------- Layout & Album Art ---------------- */\r\n.fr-stage {\r\n  position: relative;\r\n  z-index: 2;\r\n  height: 100%;\r\n  display: grid;\r\n  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);\r\n  grid-template-rows: 1fr;\r\n  grid-template-areas: \"art lyrics\";\r\n  padding: clamp(24px, 3.2vw, 64px);\r\n  padding-bottom: clamp(100px, 14vh, 160px);\r\n  gap: clamp(16px, 2vw, 40px);\r\n  opacity: 0;\r\n  transform: translateY(24px) scale(0.98);\r\n  transition: grid-template-columns 0.8s cubic-bezier(0.2, 0.8, 0.2, 1), gap 0.8s, opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms, transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-open .fr-stage {\r\n  opacity: 1;\r\n  transform: translateY(0) scale(1);\r\n}\r\n\r\n.fr-stage.fr-centered {\r\n  grid-template-columns: 1fr;\r\n  grid-template-areas: \"art\";\r\n}\r\n\r\n.fr-stage.fr-centered .fr-lyrics-panel {\r\n  display: none;\r\n}\r\n\r\n/* ---------------- Album art ---------------- */\r\n.fr-art-panel {\r\n  grid-area: art;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  min-height: 0;\r\n  min-width: 0;\r\n}\r\n\r\n.fr-art-wrap {\r\n  --fr-art-beat: 0;\r\n  --fr-glow-beat: 0.55;\r\n  --fr-glow-spread: 0%;\r\n  position: relative;\r\n  width: min(58vh, 44vw, 640px);\r\n  aspect-ratio: 1 / 1;\r\n  transform: scale(calc(1 + var(--fr-art-beat, 0)));\r\n  transition: width 300ms ease, transform 75ms linear;\r\n  will-change: transform;\r\n}\r\n\r\n.fr-stage.fr-size-medium .fr-art-wrap { width: min(48vh, 35vw, 520px); }\r\n.fr-stage.fr-size-small .fr-art-wrap { width: min(38vh, 28vw, 420px); }\r\n.fr-stage.fr-centered .fr-art-wrap { width: min(62vh, 40vw, 720px); }\r\n\r\n.fr-art-img {\r\n  position: absolute;\r\n  inset: 0;\r\n  width: 100%;\r\n  height: 100%;\r\n  object-fit: cover;\r\n  border-radius: var(--fr-radius);\r\n  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.65);\r\n  opacity: 0;\r\n  transform: scale(0.985);\r\n  transition: opacity 520ms ease, transform 520ms cubic-bezier(.2, .8, .2, 1), box-shadow 300ms ease;\r\n}\r\n\r\n.fr-art-img.fr-art-active {\r\n  opacity: 1;\r\n  transform: scale(1);\r\n}\r\n\r\n.fr-art-wrap.fr-no-shadow .fr-art-img {\r\n  box-shadow: none;\r\n}\r\n\r\n.fr-art-wrap.fr-glow::after {\r\n  content: \"\";\r\n  position: absolute;\r\n  inset: calc(-6% - var(--fr-glow-spread, 0%));\r\n  border-radius: calc(var(--fr-radius) + 14px);\r\n  background: var(--fr-art-glow, transparent);\r\n  filter: blur(50px);\r\n  opacity: var(--fr-glow-beat, 0.55);\r\n  z-index: -1;\r\n  transition: background 700ms ease, opacity 85ms linear, inset 85ms linear;\r\n  will-change: opacity, inset;\r\n}\r\n\r\n.fr-art-wrap:hover .fr-art-img {\r\n  transform: scale(1.012);\r\n}\r\n\r\n.fr-meta {\r\n  margin-top: clamp(18px, 2vw, 32px);\r\n  text-align: left;\r\n  max-width: min(58vh, 44vw, 640px);\r\n  transition: opacity 300ms ease, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n.fr-meta.fr-meta-animating {\r\n  opacity: 0;\r\n  transform: translateY(8px);\r\n}\r\n\r\n.fr-stage.fr-centered .fr-meta {\r\n  text-align: center;\r\n  margin-left: auto;\r\n  margin-right: auto;\r\n}\r\n\r\n.fr-title {\r\n  font-size: clamp(22px, 2.4vw, 38px);\r\n  font-weight: 700;\r\n  letter-spacing: -0.01em;\r\n  line-height: 1.15;\r\n  margin: 0 0 6px 0;\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n\r\n.fr-artist {\r\n  font-size: clamp(14px, 1.2vw, 18px);\r\n  color: var(--fr-fg-dim);\r\n  margin: 0 0 2px 0;\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n\r\n.fr-album {\r\n  font-size: clamp(12px, 1vw, 15px);\r\n  color: var(--fr-fg-faint);\r\n  margin: 0;\r\n}\r\n\r\n/* ---------------- Progress Ring ---------------- */\r\n.fr-progress-ring {\r\n  position: absolute;\r\n  inset: 0;\r\n  width: 100%;\r\n  height: 100%;\r\n  overflow: visible;\r\n  pointer-events: none;\r\n  z-index: 3;\r\n  transform: rotate(-90deg);\r\n  transform-origin: center;\r\n  opacity: 0;\r\n  transition: opacity 400ms ease;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-open .fr-progress-ring {\r\n  opacity: 0.75;\r\n}\r\n\r\n.fr-progress-ring-rect {\r\n  fill: transparent;\r\n  stroke: var(--fr-word-accent, #fff);\r\n  stroke-width: 4;\r\n  stroke-linecap: round;\r\n  stroke-dasharray: 100;\r\n  stroke-dashoffset: 100;\r\n  transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;\r\n}\r\n\n/* --- lyrics.css --- */\n/* ---------------- Lyrics Panel (True Per-Line & Per-Word Waterfall Engine) ---------------- */\r\n.fr-lyrics-panel {\r\n  grid-area: lyrics;\r\n  position: relative;\r\n  min-height: 0;\r\n  display: flex;\r\n  flex-direction: column;\r\n}\r\n\r\n/* ---------------- \"Provided by\" 3-Second Startup Badge ---------------- */\r\n.fr-provider-badge {\r\n  position: absolute;\r\n  top: 10px;\r\n  left: 14px;\r\n  z-index: 8;\r\n  display: inline-flex;\r\n  align-items: center;\r\n  gap: 8px;\r\n  padding: 6px 14px;\r\n  border-radius: 999px;\r\n  background: rgba(18, 18, 24, 0.74);\r\n  backdrop-filter: blur(28px) saturate(1.8);\r\n  -webkit-backdrop-filter: blur(28px) saturate(1.8);\r\n  border: 1px solid rgba(255, 255, 255, 0.15);\r\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.16);\r\n  pointer-events: none;\r\n  opacity: 0;\r\n  transform: translate3d(0, -10px, 0) scale(0.96);\r\n  transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),\r\n              transform 400ms cubic-bezier(0.22, 1, 0.36, 1);\r\n}\r\n\r\n.fr-provider-badge.fr-show {\r\n  opacity: 1;\r\n  transform: translate3d(0, 0, 0) scale(1);\r\n}\r\n\r\n.fr-provider-dot {\r\n  width: 6px;\r\n  height: 6px;\r\n  border-radius: 50%;\r\n  background: #30d158;\r\n  box-shadow: 0 0 8px rgba(48, 209, 88, 0.85);\r\n  flex-shrink: 0;\r\n}\r\n\r\n.fr-provider-prefix {\r\n  font-size: 11.5px;\r\n  font-weight: 500;\r\n  color: rgba(255, 255, 255, 0.58);\r\n}\r\n\r\n.fr-provider-name {\r\n  font-size: 12px;\r\n  font-weight: 700;\r\n  color: #ffffff;\r\n}\r\n\r\n.fr-provider-tag {\r\n  font-size: 9.5px;\r\n  font-weight: 700;\r\n  text-transform: uppercase;\r\n  letter-spacing: 0.05em;\r\n  padding: 2px 7px;\r\n  border-radius: 999px;\r\n  background: rgba(255, 255, 255, 0.13);\r\n  color: rgba(255, 255, 255, 0.88);\r\n}\r\n\r\n/* ---------------- Scroll & Waterfall Viewport ---------------- */\r\n.fr-lyrics-scroll {\r\n  --fr-word-step: 120ms;\r\n  --fr-word-dur: 900ms;\r\n  --fr-line-dur: 820ms;\r\n  --fr-word-drop-future: -9px;\r\n  --fr-word-drop-past: 7px;\r\n  flex: 1;\r\n  overflow: hidden;\r\n  position: relative;\r\n  mask-image: linear-gradient(\r\n    180deg,\r\n    transparent 0%,\r\n    rgba(0, 0, 0, 0.45) 8%,\r\n    #000 20%,\r\n    #000 80%,\r\n    rgba(0, 0, 0, 0.45) 92%,\r\n    transparent 100%\r\n  );\r\n  -webkit-mask-image: linear-gradient(\r\n    180deg,\r\n    transparent 0%,\r\n    rgba(0, 0, 0, 0.45) 8%,\r\n    #000 20%,\r\n    #000 80%,\r\n    rgba(0, 0, 0, 0.45) 92%,\r\n    transparent 100%\r\n  );\r\n  padding: 6vh 14px 40vh 14px;\r\n  scrollbar-width: none;\r\n  opacity: 0;\r\n  transition: opacity 420ms ease;\r\n}\r\n\r\n.fr-lyrics-scroll[data-waterfall=\"intense\"] {\r\n  --fr-word-step: 165ms;\r\n  --fr-word-dur: 1150ms;\r\n  --fr-line-dur: 980ms;\r\n  --fr-word-drop-future: -13px;\r\n  --fr-word-drop-past: 10px;\r\n}\r\n\r\n.fr-lyrics-scroll[data-waterfall=\"off\"] {\r\n  --fr-word-step: 0ms;\r\n  --fr-word-dur: 450ms;\r\n  --fr-line-dur: 500ms;\r\n  --fr-word-drop-future: 0px;\r\n  --fr-word-drop-past: 0px;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-unsynced {\r\n  overflow-y: auto;\r\n  padding: 14vh 14px 28vh 14px;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-ready {\r\n  opacity: 1;\r\n}\r\n\r\n.fr-lyrics-scroll::-webkit-scrollbar {\r\n  display: none;\r\n}\r\n\r\n/* ---------------- Per-Line Staggered Spring Waterfall Positioning ---------------- */\r\n.fr-lyric-line {\r\n  --fr-scale: 0.935;\r\n  font-size: clamp(20px, 2.35vw, 31px);\r\n  font-weight: 600;\r\n  letter-spacing: -0.01em;\r\n  line-height: 1.48;\r\n  color: rgba(255, 255, 255, 0.32);\r\n  margin: 6px 0;\r\n  padding: 10px 14px;\r\n  border-radius: 16px;\r\n  transform-origin: left center;\r\n  transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));\r\n  filter: blur(0px);\r\n  transition:\r\n    transform var(--fr-line-dur, 820ms) cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\r\n    color 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\r\n    opacity 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\r\n    filter 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\r\n    background-color 250ms ease;\r\n  cursor: default;\r\n  -webkit-font-smoothing: antialiased;\r\n  -moz-osx-font-smoothing: grayscale;\r\n  will-change: transform, filter, opacity;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-line,\r\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word,\r\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-sentence {\r\n  transition: none !important;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-user-scrolling .fr-lyric-line {\r\n  transition:\r\n    transform 90ms linear 0ms,\r\n    color 300ms ease 0ms,\r\n    filter 300ms ease 0ms !important;\r\n}\r\n\r\n/* Depth-of-field distance classes */\r\n.fr-lyric-line.fr-near-1 {\r\n  --fr-scale: 0.965;\r\n  color: rgba(255, 255, 255, 0.44);\r\n  filter: blur(0.6px);\r\n}\r\n\r\n.fr-lyric-line.fr-near-2 {\r\n  --fr-scale: 0.935;\r\n  color: rgba(255, 255, 255, 0.28);\r\n  filter: blur(1.5px);\r\n}\r\n\r\n.fr-lyric-line.fr-far {\r\n  --fr-scale: 0.905;\r\n  color: rgba(255, 255, 255, 0.17);\r\n  filter: blur(2.4px);\r\n}\r\n\r\n.fr-lyrics-scroll[data-waterfall=\"off\"] .fr-lyric-line {\r\n  filter: none !important;\r\n}\r\n\r\n.fr-lyric-line.fr-active {\r\n  --fr-scale: 1.035;\r\n  color: #ffffff;\r\n  filter: blur(0px);\r\n}\r\n\r\n/* ---------------- Full-Sentence Sweep & Waterfall Flow (Line-Synced 'synced' Mode — NOT Word-by-Word) ---------------- */\r\n.fr-lyric-sentence {\r\n  display: inline-block;\r\n  white-space: pre-wrap;\r\n  color: inherit;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence {\r\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\r\n  opacity: 0.78;\r\n  transition:\r\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\r\n    opacity 680ms ease;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {\r\n  color: transparent;\r\n  background-image: linear-gradient(\r\n    100deg,\r\n    #ffffff 0%,\r\n    #ffffff calc(var(--bar-pct, 0%) - 18%),\r\n    rgba(255, 255, 255, 0.64) calc(var(--bar-pct, 0%) - 9%),\r\n    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, 0%)),\r\n    rgba(255, 255, 255, 0.32) 100%\r\n  );\r\n  -webkit-background-clip: text;\r\n  background-clip: text;\r\n  -webkit-text-fill-color: transparent;\r\n  transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);\r\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.32));\r\n  transition:\r\n    transform 80ms linear,\r\n    filter 280ms ease;\r\n  will-change: transform, background-image;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {\r\n  color: inherit;\r\n  -webkit-text-fill-color: currentColor;\r\n  background-image: none;\r\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\r\n  opacity: 0.72;\r\n  filter: none;\r\n  transition:\r\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\r\n    opacity 720ms ease,\r\n    filter 450ms ease;\r\n}\r\n\r\n/* ---------------- Per-Word Waterfall & Karaoke Sweep (ONLY on Word-Synced 'word-by-word' Mode) ---------------- */\r\n.fr-lyric-word {\r\n  display: inline-block;\r\n  white-space: pre-wrap;\r\n  color: inherit;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {\r\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\r\n  opacity: 0.74;\r\n  transition:\r\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\r\n    opacity 680ms ease;\r\n}\r\n\r\n/* Unsung word inside active line: poised above (-8px) in soft muted white, waiting for its timestamp */\r\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {\r\n  color: rgba(255, 255, 255, 0.34);\r\n  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);\r\n  background-image: none;\r\n  opacity: 1;\r\n  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0) scale(var(--w-scale, 0.985));\r\n  transform-origin: center baseline;\r\n  filter: none;\r\n  transition:\r\n    transform 75ms linear,\r\n    filter 180ms ease,\r\n    color 180ms ease;\r\n  will-change: transform, background-image, filter;\r\n}\r\n\r\n/* Word currently being sung: glides smoothly from top to 0px while sweeping white light left-to-right */\r\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {\r\n  color: transparent;\r\n  background-image: linear-gradient(\r\n    105deg,\r\n    #ffffff 0%,\r\n    #ffffff calc(var(--w-pct, -18%) - 14%),\r\n    rgba(255, 255, 255, 0.9) calc(var(--w-pct, -18%)),\r\n    rgba(255, 255, 255, 0.34) calc(var(--w-pct, -18%) + 14%),\r\n    rgba(255, 255, 255, 0.34) 100%\r\n  );\r\n  -webkit-background-clip: text;\r\n  background-clip: text;\r\n  -webkit-text-fill-color: transparent;\r\n  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.38));\r\n}\r\n\r\n/* Word finished being sung: rests cleanly at 0px in full bright white */\r\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {\r\n  color: #ffffff;\r\n  -webkit-text-fill-color: #ffffff;\r\n  background-image: none;\r\n  transform: translate3d(0, 0px, 0) scale(1);\r\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.28));\r\n}\r\n\r\n/* Past line: words cascade gently downward (+7px) with a left-to-right stagger */\r\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {\r\n  color: inherit;\r\n  -webkit-text-fill-color: currentColor;\r\n  background-image: none;\r\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\r\n  opacity: 0.72;\r\n  filter: none;\r\n  transition:\r\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1) calc(var(--w-idx, 0) * 55ms),\r\n    opacity 720ms ease calc(var(--w-idx, 0) * 55ms),\r\n    filter 450ms ease;\r\n}\r\n\r\n/* Interactive hover for synced lines */\r\n.fr-lyric-line.fr-synced {\r\n  cursor: pointer;\r\n}\r\n\r\n.fr-lyric-line.fr-synced:hover {\r\n  background-color: rgba(255, 255, 255, 0.05);\r\n  color: rgba(255, 255, 255, 0.85);\r\n  filter: blur(0px);\r\n}\r\n\r\n/* ---------------- Apple Music Duet (Right-Aligned Singer v2) & Background Vocals ---------------- */\r\n.fr-lyric-line.fr-duet-right {\r\n  text-align: right;\r\n  transform-origin: right center;\r\n}\r\n\r\n.fr-lyric-line.fr-duet-right .fr-interlude-dots {\r\n  justify-content: flex-end;\r\n  transform-origin: right center;\r\n}\r\n\r\n/* Standalone background vocal line (e.g. \"(Yeah, ooh)\" or full x-bg paragraph) */\r\n.fr-lyric-line.fr-bg-only-line {\r\n  font-size: clamp(16px, 1.85vw, 24px);\r\n  font-weight: 500;\r\n  font-style: italic;\r\n  letter-spacing: 0;\r\n  padding-top: 5px;\r\n  padding-bottom: 5px;\r\n}\r\n\r\n.fr-lyric-line.fr-bg-only-line.fr-active {\r\n  --fr-scale: 1.0;\r\n  opacity: 0.88;\r\n}\r\n\r\n/* Sub-line background vocal attached right below a main vocal line */\r\n.fr-bg-vocal-sub {\r\n  display: block;\r\n  margin-top: 3px;\r\n  font-size: 0.72em;\r\n  font-weight: 500;\r\n  font-style: italic;\r\n  line-height: 1.35;\r\n  letter-spacing: 0;\r\n  opacity: 0.82;\r\n}\r\n\r\n.fr-lyric-line.fr-future .fr-bg-vocal-sub {\r\n  opacity: 0.65;\r\n}\r\n\r\n.fr-lyric-line.fr-past .fr-bg-vocal-sub {\r\n  opacity: 0.58;\r\n}\r\n\r\n/* ---------------- Unsynced Teleprompter Mode ---------------- */\r\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-line {\r\n  font-size: clamp(19px, 2.2vw, 28px);\r\n  font-weight: 500;\r\n  line-height: 1.6;\r\n  color: rgba(255, 255, 255, 0.84);\r\n  transform: none !important;\r\n  filter: none !important;\r\n  padding: 8px 14px;\r\n}\r\n\r\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-word {\r\n  transform: none !important;\r\n  opacity: 1 !important;\r\n}\r\n\r\n/* ---------------- Instrumental Symbol & Apple Music Interlude Dots (• • •) ---------------- */\r\n.fr-lyric-line.fr-is-music {\r\n  padding: 16px 14px;\r\n}\r\n\r\n.fr-interlude-dots {\r\n  display: flex;\r\n  width: 100%;\r\n  align-items: center;\r\n  gap: 10px;\r\n  height: 0;\r\n  opacity: 0;\r\n  overflow: hidden;\r\n  margin-bottom: 0;\r\n  transform: translate3d(0, -6px, 0) scale(0.75);\r\n  transform-origin: left center;\r\n  pointer-events: none;\r\n  transition:\r\n    height 420ms cubic-bezier(0.22, 1, 0.36, 1),\r\n    margin-bottom 420ms cubic-bezier(0.22, 1, 0.36, 1),\r\n    opacity 380ms ease,\r\n    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);\r\n}\r\n\r\n.fr-interlude-dots.fr-inline-music-dots {\r\n  height: 28px;\r\n  opacity: 0.45;\r\n  overflow: visible;\r\n  transform: scale(0.9);\r\n}\r\n\r\n.fr-interlude-dots.fr-interlude-active {\r\n  height: 28px;\r\n  margin-bottom: 10px;\r\n  opacity: 1;\r\n  overflow: visible;\r\n  transform: translate3d(0, 0, 0) scale(1);\r\n}\r\n\r\n.fr-interlude-dot {\r\n  width: 11px;\r\n  height: 11px;\r\n  border-radius: 50%;\r\n  background: #ffffff;\r\n  opacity: 0.25;\r\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.55);\r\n  transition: opacity 150ms linear;\r\n  will-change: transform, opacity;\r\n}\r\n\r\n/* ---------------- Resume Sync Pill ---------------- */\r\n.fr-resume-sync {\r\n  position: absolute;\r\n  bottom: 12px;\r\n  left: 50%;\r\n  transform: translateX(-50%);\r\n  background: rgba(24, 24, 30, 0.78);\r\n  backdrop-filter: blur(20px);\r\n  -webkit-backdrop-filter: blur(20px);\r\n  border: 1px solid rgba(255, 255, 255, 0.16);\r\n  color: #ffffff;\r\n  padding: 8px 18px;\r\n  border-radius: 999px;\r\n  font-size: 12.5px;\r\n  font-weight: 600;\r\n  cursor: pointer;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 220ms ease, transform 220ms ease;\r\n  z-index: 9;\r\n}\r\n\r\n.fr-resume-sync.fr-show {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translateX(-50%) translateY(-4px);\r\n}\r\n\r\n.fr-resume-sync:hover {\r\n  background: rgba(255, 255, 255, 0.18);\r\n}\r\n\r\n/* ---------------- Instrumental / No-Lyrics Panel ---------------- */\r\n.fr-instrumental {\r\n  position: absolute;\r\n  top: 50%;\r\n  left: 50%;\r\n  transform: translate(-50%, -50%) scale(0.85);\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  gap: 20px;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);\r\n  z-index: 3;\r\n}\r\n\r\n.fr-instrumental.fr-show {\r\n  opacity: 1;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n.fr-instrumental-bars {\r\n  display: flex;\r\n  align-items: flex-end;\r\n  gap: 5px;\r\n  height: 44px;\r\n}\r\n\r\n.fr-instrumental-bar {\r\n  width: 5px;\r\n  border-radius: 999px;\r\n  background: rgba(255, 255, 255, 0.75);\r\n  animation: instrBar 1.2s ease-in-out infinite alternate;\r\n}\r\n\r\n.fr-instrumental-bar:nth-child(1) { animation-delay: 0s;    animation-duration: 0.9s; }\r\n.fr-instrumental-bar:nth-child(2) { animation-delay: 0.15s; animation-duration: 1.1s; }\r\n.fr-instrumental-bar:nth-child(3) { animation-delay: 0.3s;  animation-duration: 0.8s; }\r\n.fr-instrumental-bar:nth-child(4) { animation-delay: 0.1s;  animation-duration: 1.3s; }\r\n.fr-instrumental-bar:nth-child(5) { animation-delay: 0.25s; animation-duration: 1.0s; }\r\n.fr-instrumental-bar:nth-child(6) { animation-delay: 0.4s;  animation-duration: 0.85s; }\r\n.fr-instrumental-bar:nth-child(7) { animation-delay: 0.05s; animation-duration: 1.2s; }\r\n\r\n@keyframes instrBar {\r\n  0%   { height: 6px; opacity: 0.35; }\r\n  100% { height: 40px; opacity: 0.95; }\r\n}\r\n\r\n.fr-instrumental-label {\r\n  font-size: 12px;\r\n  font-weight: 600;\r\n  color: rgba(255, 255, 255, 0.48);\r\n  letter-spacing: 0.08em;\r\n  text-transform: uppercase;\r\n}\r\n\n/* --- controls.css --- */\n/* ---------------- Bottom Dock (Controls + Volume + Queue) ---------------- */\r\n.fr-bottom-bar {\r\n  position: absolute;\r\n  bottom: clamp(24px, 3.2vw, 40px);\r\n  left: 50%;\r\n  transform: translateX(-50%);\r\n  width: min(92vw, 1000px);\r\n  background: rgba(30, 30, 35, 0.35);\r\n  backdrop-filter: blur(60px) saturate(2.5);\r\n  border: none;\r\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\r\n  border-radius: 999px;\r\n  padding: 12px 28px;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 32px;\r\n  z-index: 5;\r\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle .fr-bottom-bar {\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transform: translate(-50%, 40px) scale(0.95);\r\n}\r\n\r\n.fr-controls-left,\r\n.fr-controls-right {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 8px;\r\n}\r\n\r\n.fr-controls-center {\r\n  flex: 1;\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 16px;\r\n  font-size: 12px;\r\n  color: var(--fr-fg-dim);\r\n  font-variant-numeric: tabular-nums;\r\n}\r\n\r\n.fr-progress-bar {\r\n  flex: 1;\r\n  height: 6px;\r\n  border-radius: 999px;\r\n  background: rgba(255, 255, 255, 0.12);\r\n  position: relative;\r\n  cursor: pointer;\r\n  overflow: hidden;\r\n}\r\n\r\n.fr-progress-bar:hover {\r\n  overflow: visible;\r\n}\r\n\r\n.fr-progress-fill {\r\n  position: absolute;\r\n  inset: 0 auto 0 0;\r\n  width: 0%;\r\n  border-radius: 999px;\r\n  background: var(--fr-fg);\r\n}\r\n\r\n.fr-progress-bar:hover .fr-progress-fill {\r\n  background: var(--fr-word-accent, #ffffff);\r\n}\r\n\r\n.fr-progress-handle {\r\n  position: absolute;\r\n  top: 50%;\r\n  width: 14px;\r\n  height: 14px;\r\n  border-radius: 50%;\r\n  background: var(--fr-fg);\r\n  left: 0%;\r\n  transform: translate(-50%, -50%) scale(0);\r\n  transition: transform 120ms ease;\r\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\r\n}\r\n\r\n.fr-progress-bar:hover .fr-progress-handle {\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n.fr-btn {\r\n  background: transparent;\r\n  border: none;\r\n  color: var(--fr-fg-dim);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  padding: 10px;\r\n  border-radius: 50%;\r\n  transition: color 150ms ease, transform 100ms ease, background 150ms ease;\r\n}\r\n\r\n.fr-btn:hover {\r\n  color: var(--fr-fg);\r\n  background: rgba(255, 255, 255, 0.08);\r\n}\r\n\r\n.fr-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n\r\n.fr-btn.fr-active {\r\n  color: var(--fr-word-accent, #1ed760);\r\n}\r\n\r\n.fr-btn-play {\r\n  width: 48px;\r\n  height: 48px;\r\n  background: var(--fr-fg);\r\n  color: #000;\r\n}\r\n\r\n.fr-btn-play:hover {\r\n  background: var(--fr-fg);\r\n  transform: scale(1.04);\r\n  color: #000;\r\n}\r\n\r\n.fr-btn svg {\r\n  width: 22px;\r\n  height: 22px;\r\n}\r\n\r\n.fr-btn-play svg {\r\n  width: 24px;\r\n  height: 24px;\r\n}\r\n\r\n.fr-volume-row {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 8px;\r\n  width: 140px;\r\n}\r\n\r\n.fr-volume-bar {\r\n  flex: 1;\r\n  height: 6px;\r\n  border-radius: 999px;\r\n  background: rgba(255, 255, 255, 0.12);\r\n  position: relative;\r\n  cursor: pointer;\r\n  overflow: hidden;\r\n}\r\n\r\n.fr-volume-bar:hover {\r\n  overflow: visible;\r\n}\r\n\r\n.fr-volume-fill {\r\n  position: absolute;\r\n  inset: 0 auto 0 0;\r\n  width: 100%;\r\n  border-radius: 999px;\r\n  background: var(--fr-fg);\r\n  transition: width 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n.fr-volume-bar:hover .fr-volume-fill {\r\n  background: var(--fr-word-accent, #ffffff);\r\n}\r\n\r\n.fr-volume-handle {\r\n  position: absolute;\r\n  top: 50%;\r\n  width: 14px;\r\n  height: 14px;\r\n  border-radius: 50%;\r\n  background: var(--fr-fg);\r\n  left: 100%;\r\n  transform: translate(-50%, -50%) scale(0);\r\n  transition: transform 150ms ease, left 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\r\n}\r\n\r\n.fr-volume-bar:hover .fr-volume-handle {\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\n/* --- topbar.css --- */\n/* ---------------- Top bar ---------------- */\r\n.fr-topbar {\r\n  position: absolute;\r\n  top: clamp(18px, 2.4vw, 36px);\r\n  right: clamp(18px, 2.4vw, 36px);\r\n  z-index: 14;\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  background: rgba(30, 30, 35, 0.35);\r\n  backdrop-filter: blur(60px) saturate(2.5);\r\n  border-radius: 999px;\r\n  padding: 6px 8px;\r\n  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\r\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle .fr-topbar {\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transform: translateY(-20px) scale(0.95);\r\n}\r\n\r\n.fr-topbar .fr-btn {\r\n  padding: 8px;\r\n  border-radius: 50%;\r\n  width: 36px;\r\n  height: 36px;\r\n}\r\n\r\n.fr-topbar .fr-btn svg {\r\n  width: 18px;\r\n  height: 18px;\r\n}\r\n\r\n.fr-topbar-sep {\r\n  width: 1px;\r\n  height: 20px;\r\n  background: rgba(255, 255, 255, 0.12);\r\n  margin: 0 2px;\r\n}\r\n\r\n.fr-topbar .fr-btn.fr-active {\r\n  color: var(--fr-word-accent, #1ed760);\r\n}\r\n\r\n.fr-topbar .fr-btn.fr-heart-active {\r\n  color: #ff4d6a;\r\n}\r\n\n/* --- settings.css --- */\n/* ---------------- Settings panel (Liquid Glass) ---------------- */\r\n.fr-settings-panel {\r\n  position: absolute;\r\n  top: clamp(60px, 6vw, 84px);\r\n  right: clamp(18px, 2.4vw, 36px);\r\n  z-index: 25;\r\n  width: min(360px, 92vw);\r\n  max-height: min(84vh, 700px);\r\n  overflow-y: auto;\r\n  overflow-x: hidden;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\r\n  background: rgba(24, 24, 30, 0.85);\r\n  backdrop-filter: blur(50px) saturate(2);\r\n  -webkit-backdrop-filter: blur(50px) saturate(2);\r\n  border: 1px solid rgba(255, 255, 255, 0.14);\r\n  border-radius: 28px;\r\n  padding: 22px 24px;\r\n  display: flex;\r\n  flex-direction: column;\r\n  gap: 16px;\r\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transform: translateY(-10px) scale(0.96);\r\n  transform-origin: top right;\r\n  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n.fr-settings-panel::-webkit-scrollbar {\r\n  width: 5px;\r\n}\r\n.fr-settings-panel::-webkit-scrollbar-track {\r\n  background: transparent;\r\n}\r\n.fr-settings-panel::-webkit-scrollbar-thumb {\r\n  background: rgba(255, 255, 255, 0.2);\r\n  border-radius: 999px;\r\n}\r\n.fr-settings-panel::-webkit-scrollbar-thumb:hover {\r\n  background: rgba(255, 255, 255, 0.35);\r\n}\r\n\r\n.fr-settings-panel.fr-show {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translateY(0) scale(1);\r\n}\r\n\r\n.fr-settings-section {\r\n  display: flex;\r\n  flex-direction: column;\r\n  gap: 12px;\r\n}\r\n\r\n.fr-settings-divider {\r\n  height: 1px;\r\n  background: rgba(255, 255, 255, 0.08);\r\n  margin: 2px 0;\r\n}\r\n\r\n.fr-settings-title {\r\n  font-size: 11px;\r\n  font-weight: 800;\r\n  color: rgba(255, 255, 255, 0.45);\r\n  text-transform: uppercase;\r\n  letter-spacing: 0.1em;\r\n  margin: 0 0 2px 0;\r\n}\r\n\r\n.fr-settings-row {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  min-height: 32px;\r\n}\r\n\r\n.fr-settings-row label {\r\n  font-size: 14px;\r\n  font-weight: 500;\r\n  color: rgba(255, 255, 255, 0.9);\r\n  user-select: none;\r\n}\r\n\r\n/* ---------------- Custom Liquid Glass Dropdown ---------------- */\r\n.fr-select-wrap {\r\n  position: relative;\r\n  display: inline-block;\r\n}\r\n\r\n.fr-select-btn {\r\n  background: rgba(255, 255, 255, 0.09);\r\n  backdrop-filter: blur(20px);\r\n  -webkit-backdrop-filter: blur(20px);\r\n  border: 1px solid rgba(255, 255, 255, 0.14);\r\n  color: var(--fr-fg);\r\n  border-radius: 999px;\r\n  padding: 6px 14px;\r\n  font-family: inherit;\r\n  font-size: 13px;\r\n  font-weight: 600;\r\n  cursor: pointer;\r\n  display: inline-flex;\r\n  align-items: center;\r\n  gap: 8px;\r\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n  user-select: none;\r\n  outline: none;\r\n  max-width: 170px;\r\n}\r\n\r\n.fr-select-btn:hover {\r\n  background: rgba(255, 255, 255, 0.16);\r\n  border-color: rgba(255, 255, 255, 0.28);\r\n  transform: scale(1.02);\r\n}\r\n\r\n.fr-select-btn:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n.fr-select-wrap.fr-open .fr-select-btn {\r\n  background: rgba(255, 255, 255, 0.18);\r\n  border-color: rgba(255, 255, 255, 0.38);\r\n  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);\r\n}\r\n\r\n.fr-select-label {\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n  white-space: nowrap;\r\n}\r\n\r\n.fr-select-arrow {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: currentColor;\r\n  flex-shrink: 0;\r\n  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n.fr-select-wrap.fr-open .fr-select-arrow {\r\n  transform: rotate(180deg);\r\n}\r\n\r\n.fr-select-menu {\r\n  position: absolute;\r\n  top: calc(100% + 6px);\r\n  right: 0;\r\n  width: max-content;\r\n  min-width: 190px;\r\n  max-width: 285px;\r\n  max-height: 260px;\r\n  overflow-y: auto;\r\n  overflow-x: hidden;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\r\n  background: rgba(20, 20, 26, 0.96);\r\n  backdrop-filter: blur(44px) saturate(2);\r\n  -webkit-backdrop-filter: blur(44px) saturate(2);\r\n  border: 1px solid rgba(255, 255, 255, 0.16);\r\n  border-radius: 18px;\r\n  padding: 6px;\r\n  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.18);\r\n  z-index: 100;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transform: translateY(-8px) scale(0.95);\r\n  transform-origin: top right;\r\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n.fr-select-menu::-webkit-scrollbar {\r\n  width: 4px;\r\n}\r\n.fr-select-menu::-webkit-scrollbar-thumb {\r\n  background: rgba(255, 255, 255, 0.25);\r\n  border-radius: 999px;\r\n}\r\n\r\n.fr-select-wrap.fr-open .fr-select-menu {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translateY(0) scale(1);\r\n}\r\n\r\n.fr-select-item {\r\n  padding: 8px 12px;\r\n  border-radius: 12px;\r\n  font-size: 13px;\r\n  font-weight: 500;\r\n  color: rgba(255, 255, 255, 0.86);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 14px;\r\n  transition: all 0.15s ease;\r\n  user-select: none;\r\n}\r\n\r\n.fr-select-item-left {\r\n  display: flex;\r\n  flex-direction: column;\r\n  gap: 2px;\r\n  min-width: 0;\r\n}\r\n\r\n.fr-select-item-title {\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n\r\n.fr-select-item-sub {\r\n  font-size: 10px;\r\n  font-weight: 500;\r\n  color: rgba(255, 255, 255, 0.45);\r\n  letter-spacing: 0.01em;\r\n  white-space: nowrap;\r\n}\r\n\r\n.fr-select-item-right {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 8px;\r\n  flex-shrink: 0;\r\n}\r\n\r\n.fr-select-item-badge {\r\n  font-size: 10px;\r\n  font-weight: 700;\r\n  letter-spacing: 0.04em;\r\n  text-transform: uppercase;\r\n  padding: 2px 7px;\r\n  border-radius: 999px;\r\n  background: rgba(255, 255, 255, 0.09);\r\n  border: 1px solid rgba(255, 255, 255, 0.12);\r\n  color: rgba(255, 255, 255, 0.72);\r\n}\r\n\r\n.fr-select-item:hover {\r\n  background: rgba(255, 255, 255, 0.11);\r\n  color: #ffffff;\r\n}\r\n\r\n.fr-select-item.fr-selected {\r\n  background: rgba(255, 255, 255, 0.16);\r\n  color: #ffffff;\r\n  font-weight: 600;\r\n}\r\n\r\n.fr-select-item.fr-selected .fr-select-item-badge {\r\n  background: rgba(255, 255, 255, 0.2);\r\n  border-color: rgba(255, 255, 255, 0.32);\r\n  color: #ffffff;\r\n}\r\n\r\n.fr-select-item .fr-check {\r\n  width: 14px;\r\n  height: 14px;\r\n  fill: #ffffff;\r\n  flex-shrink: 0;\r\n  opacity: 0;\r\n}\r\n\r\n.fr-select-item.fr-selected .fr-check {\r\n  opacity: 1;\r\n}\r\n\r\n/* ---------------- Custom Liquid Glass Color Picker ---------------- */\r\n.fr-color-picker-wrap {\r\n  position: relative;\r\n  display: inline-block;\r\n}\r\n\r\n.fr-color-swatch-btn {\r\n  background: rgba(255, 255, 255, 0.09);\r\n  backdrop-filter: blur(20px);\r\n  -webkit-backdrop-filter: blur(20px);\r\n  border: 1px solid rgba(255, 255, 255, 0.14);\r\n  color: var(--fr-fg, #ffffff);\r\n  border-radius: 999px;\r\n  padding: 5px 12px 5px 6px;\r\n  font-family: inherit;\r\n  font-size: 13px;\r\n  font-weight: 600;\r\n  cursor: pointer;\r\n  display: inline-flex;\r\n  align-items: center;\r\n  gap: 8px;\r\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n  user-select: none;\r\n  outline: none;\r\n}\r\n\r\n.fr-color-swatch-btn:hover {\r\n  background: rgba(255, 255, 255, 0.16);\r\n  border-color: rgba(255, 255, 255, 0.28);\r\n  transform: scale(1.03);\r\n}\r\n\r\n.fr-color-swatch-btn:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n.fr-color-picker-wrap.fr-open .fr-color-swatch-btn {\r\n  background: rgba(255, 255, 255, 0.22);\r\n  border-color: var(--fr-word-accent, #1ed760);\r\n  box-shadow: 0 0 16px rgba(30, 215, 96, 0.25);\r\n}\r\n\r\n.fr-color-swatch-inner {\r\n  width: 20px;\r\n  height: 20px;\r\n  border-radius: 50%;\r\n  border: 1.5px solid rgba(255, 255, 255, 0.35);\r\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\r\n  flex-shrink: 0;\r\n  transition: background-color 0.2s ease;\r\n}\r\n\r\n.fr-color-hex-label {\r\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\r\n  font-size: 12px;\r\n  letter-spacing: 0.04em;\r\n  color: rgba(255, 255, 255, 0.9);\r\n}\r\n\r\n.fr-color-popup {\r\n  position: absolute;\r\n  top: calc(100% + 8px);\r\n  right: 0;\r\n  width: 240px;\r\n  max-height: 480px;\r\n  overflow-y: auto;\r\n  scrollbar-width: none;\r\n  background: rgba(22, 22, 28, 0.96);\r\n  backdrop-filter: blur(40px) saturate(2);\r\n  -webkit-backdrop-filter: blur(40px) saturate(2);\r\n  border: 1px solid rgba(255, 255, 255, 0.16);\r\n  border-radius: 22px;\r\n  padding: 16px;\r\n  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.2);\r\n  z-index: 100;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transform: translateY(-8px) scale(0.95);\r\n  transform-origin: top right;\r\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n  display: flex;\r\n  flex-direction: column;\r\n  gap: 12px;\r\n}\r\n\r\n.fr-color-popup::-webkit-scrollbar {\r\n  display: none;\r\n}\r\n\r\n.fr-color-picker-wrap.fr-open .fr-color-popup {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translateY(0) scale(1);\r\n}\r\n\r\n.fr-color-popup-title {\r\n  font-size: 10px;\r\n  font-weight: 800;\r\n  color: rgba(255, 255, 255, 0.45);\r\n  text-transform: uppercase;\r\n  letter-spacing: 0.1em;\r\n  margin-top: 2px;\r\n}\r\n\r\n.fr-color-preset-grid {\r\n  display: grid;\r\n  grid-template-columns: repeat(4, 1fr);\r\n  gap: 10px;\r\n  justify-items: center;\r\n}\r\n\r\n.fr-color-preset-item {\r\n  width: 34px;\r\n  height: 34px;\r\n  border-radius: 50%;\r\n  border: 1.5px solid rgba(255, 255, 255, 0.2);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  padding: 0;\r\n  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);\r\n  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.15s ease, box-shadow 0.15s ease;\r\n  outline: none;\r\n}\r\n\r\n.fr-color-preset-item:hover {\r\n  transform: scale(1.18);\r\n  border-color: rgba(255, 255, 255, 0.7);\r\n  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);\r\n}\r\n\r\n.fr-color-preset-item.fr-selected {\r\n  border-color: #ffffff;\r\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.6);\r\n  transform: scale(1.12);\r\n}\r\n\r\n.fr-check-sm {\r\n  width: 14px;\r\n  height: 14px;\r\n  fill: #ffffff;\r\n  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));\r\n  opacity: 0;\r\n  transition: opacity 0.15s ease;\r\n}\r\n\r\n.fr-color-preset-item.fr-selected .fr-check-sm {\r\n  opacity: 1;\r\n}\r\n\r\n/* ---------------- Rainbow Hue Slider ---------------- */\r\n.fr-hue-slider-wrap {\r\n  display: flex;\r\n  flex-direction: column;\r\n  gap: 8px;\r\n  padding: 4px 0 2px 0;\r\n}\r\n\r\n.fr-hue-slider {\r\n  -webkit-appearance: none;\r\n  appearance: none;\r\n  width: 100%;\r\n  height: 12px;\r\n  border-radius: 999px;\r\n  background: linear-gradient(\r\n    to right,\r\n    #ff0000 0%,\r\n    #ffff00 17%,\r\n    #00ff00 33%,\r\n    #00ffff 50%,\r\n    #0000ff 67%,\r\n    #ff00ff 83%,\r\n    #ff0000 100%\r\n  );\r\n  outline: none;\r\n  cursor: pointer;\r\n  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);\r\n  border: 1px solid rgba(255, 255, 255, 0.15);\r\n}\r\n\r\n.fr-hue-slider::-webkit-slider-thumb {\r\n  -webkit-appearance: none;\r\n  appearance: none;\r\n  width: 18px;\r\n  height: 18px;\r\n  border-radius: 50%;\r\n  background: #ffffff;\r\n  border: 2px solid rgba(0, 0, 0, 0.4);\r\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);\r\n  cursor: pointer;\r\n  transition: transform 0.15s ease;\r\n}\r\n\r\n.fr-hue-slider::-webkit-slider-thumb:hover {\r\n  transform: scale(1.2);\r\n}\r\n\r\n.fr-color-custom-row {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 10px;\r\n  padding-top: 8px;\r\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\r\n}\r\n\r\n.fr-color-wheel-btn {\r\n  background: transparent;\r\n  border: none;\r\n  padding: 0;\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  outline: none;\r\n  border-radius: 50%;\r\n  transition: transform 0.2s ease;\r\n}\r\n\r\n.fr-color-wheel-btn:hover {\r\n  transform: scale(1.15);\r\n}\r\n\r\n.fr-color-wheel-btn:active {\r\n  transform: scale(0.95);\r\n}\r\n\r\n.fr-color-preview-circle {\r\n  width: 28px;\r\n  height: 28px;\r\n  border-radius: 50%;\r\n  border: 2px solid rgba(255, 255, 255, 0.4);\r\n  flex-shrink: 0;\r\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);\r\n}\r\n\r\n.fr-color-text-input {\r\n  flex: 1;\r\n  background: rgba(255, 255, 255, 0.08);\r\n  border: 1px solid rgba(255, 255, 255, 0.15);\r\n  border-radius: 10px;\r\n  padding: 6px 12px;\r\n  color: #ffffff;\r\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\r\n  font-size: 13px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.05em;\r\n  outline: none;\r\n  transition: border-color 0.2s ease, background 0.2s ease;\r\n}\r\n\r\n.fr-color-text-input:focus {\r\n  border-color: var(--fr-word-accent, #1ed760);\r\n  background: rgba(255, 255, 255, 0.14);\r\n}\r\n\r\n.fr-color-input {\r\n  -webkit-appearance: none;\r\n  appearance: none;\r\n  border: 2px solid rgba(255, 255, 255, 0.22);\r\n  width: 32px;\r\n  height: 32px;\r\n  border-radius: 50%;\r\n  cursor: pointer;\r\n  background: transparent;\r\n  padding: 0;\r\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);\r\n  transition: transform 0.2s ease, border-color 0.2s ease;\r\n  outline: none;\r\n}\r\n\r\n.fr-color-input:hover {\r\n  transform: scale(1.12);\r\n  border-color: rgba(255, 255, 255, 0.6);\r\n}\r\n\r\n.fr-color-input::-webkit-color-swatch-wrapper {\r\n  padding: 0;\r\n}\r\n\r\n.fr-color-input::-webkit-color-swatch {\r\n  border: none;\r\n  border-radius: 50%;\r\n}\r\n\r\n/* ---------------- Toggles ---------------- */\r\n.fr-toggle {\r\n  width: 48px;\r\n  height: 26px;\r\n  border-radius: 999px;\r\n  background: rgba(0, 0, 0, 0.3);\r\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(255, 255, 255, 0.05);\r\n  position: relative;\r\n  cursor: pointer;\r\n  border: none;\r\n  outline: none;\r\n  transition: background 0.3s ease;\r\n  flex-shrink: 0;\r\n}\r\n\r\n.fr-toggle::after {\r\n  content: \"\";\r\n  position: absolute;\r\n  top: 3px;\r\n  left: 3px;\r\n  width: 20px;\r\n  height: 20px;\r\n  border-radius: 50%;\r\n  background: #ffffff;\r\n  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);\r\n  transition: left 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n.fr-toggle.fr-on {\r\n  background: var(--fr-word-accent, #1ed760);\r\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(255, 255, 255, 0.05);\r\n}\r\n\r\n.fr-toggle.fr-on::after {\r\n  left: 25px;\r\n}\r\n\n/* --- ambient.css --- */\n/* ---------------- Mood-Adaptive & Beat-Reactive Atmosphere ---------------- */\r\n.fr-ambient {\r\n  --fr-beat: 0;\r\n  --fr-bar: 0;\r\n  --fr-energy: 0.5;\r\n  --fr-amb-dominant: #4a3f78;\r\n  --fr-amb-accent: #7b52ab;\r\n  --fr-amb-dark: #14121d;\r\n  --fr-amb-accent-soft: rgba(123, 82, 171, 0.55);\r\n  --fr-amb-dominant-soft: rgba(74, 63, 120, 0.5);\r\n  position: absolute;\r\n  inset: 0;\r\n  pointer-events: none;\r\n  z-index: 1;\r\n  overflow: hidden;\r\n  opacity: 0;\r\n  transition: opacity 1.2s ease;\r\n}\r\n\r\n.fr-ambient.fr-show {\r\n  opacity: 1;\r\n}\r\n\r\n.fr-ambient[data-mood=\"off\"] {\r\n  opacity: 0 !important;\r\n}\r\n\r\n/* ---------------- 1. Aurora Ribbons (Energetic & Dreamy) ---------------- */\r\n.fr-mood-aurora {\r\n  position: absolute;\r\n  inset: -15%;\r\n  pointer-events: none;\r\n  mix-blend-mode: screen;\r\n  opacity: calc(0.28 + var(--fr-energy, 0.5) * 0.35 + var(--fr-beat, 0) * 0.25);\r\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.045));\r\n  transition: opacity 450ms ease;\r\n  will-change: transform, opacity;\r\n}\r\n\r\n.fr-aurora-wave {\r\n  position: absolute;\r\n  inset: 0;\r\n  border-radius: 50%;\r\n  filter: blur(85px);\r\n}\r\n\r\n.fr-aurora-1 {\r\n  background: radial-gradient(\r\n    ellipse 68% 34% at 32% 28%,\r\n    var(--fr-amb-accent-soft) 0%,\r\n    transparent 72%\r\n  );\r\n  animation: auroraDrift1 16s ease-in-out infinite alternate;\r\n}\r\n\r\n.fr-aurora-2 {\r\n  background: radial-gradient(\r\n    ellipse 64% 38% at 68% 66%,\r\n    var(--fr-amb-dominant-soft) 0%,\r\n    transparent 74%\r\n  );\r\n  animation: auroraDrift2 21s ease-in-out infinite alternate;\r\n}\r\n\r\n@keyframes auroraDrift1 {\r\n  0%   { transform: translate3d(-6%, -4%, 0) rotate(-6deg) scale(1); }\r\n  100% { transform: translate3d(8%, 6%, 0) rotate(8deg) scale(1.14); }\r\n}\r\n\r\n@keyframes auroraDrift2 {\r\n  0%   { transform: translate3d(6%, 5%, 0) rotate(5deg) scale(1.08); }\r\n  100% { transform: translate3d(-8%, -6%, 0) rotate(-9deg) scale(0.96); }\r\n}\r\n\r\n.fr-ambient[data-mood=\"energetic\"] .fr-mood-aurora {\r\n  opacity: calc(0.42 + var(--fr-energy, 0.5) * 0.38 + var(--fr-beat, 0) * 0.35);\r\n}\r\n\r\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-aurora {\r\n  opacity: calc(0.14 + var(--fr-energy, 0.4) * 0.18);\r\n}\r\n\r\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-aurora {\r\n  opacity: calc(0.2 + var(--fr-energy, 0.4) * 0.22);\r\n}\r\n\r\n/* ---------------- 2. Beat-Reactive Light Orbs ---------------- */\r\n.fr-orbs-wrap {\r\n  position: absolute;\r\n  inset: 0;\r\n  mix-blend-mode: screen;\r\n  opacity: calc(0.38 + var(--fr-energy, 0.5) * 0.28 + var(--fr-beat, 0) * 0.22);\r\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.035 + var(--fr-bar, 0) * 0.02));\r\n  transform-origin: center center;\r\n  will-change: transform, opacity;\r\n}\r\n\r\n.fr-orb {\r\n  position: absolute;\r\n  border-radius: 50%;\r\n  filter: blur(88px);\r\n  opacity: 0.62;\r\n  animation: floatOrb 20s infinite alternate ease-in-out;\r\n  transition: background-color 900ms ease;\r\n}\r\n\r\n@keyframes floatOrb {\r\n  0%   { transform: translate3d(0, 0, 0) scale(1); }\r\n  100% { transform: translate3d(85px, -75px, 0) scale(1.18); }\r\n}\r\n\r\n/* ---------------- 3. Mood-Morphing Particle System ---------------- */\r\n.fr-particles-wrap {\r\n  position: absolute;\r\n  inset: 0;\r\n  overflow: hidden;\r\n  pointer-events: none;\r\n}\r\n\r\n.fr-particle {\r\n  position: absolute;\r\n  left: var(--p-x, 50%);\r\n  top: var(--p-y, 50%);\r\n  width: var(--p-size, 4px);\r\n  height: var(--p-size, 4px);\r\n  border-radius: 50%;\r\n  background: #ffffff;\r\n  opacity: 0;\r\n  will-change: transform, opacity;\r\n}\r\n\r\n/* --- Mood A: ENERGETIC ⚡ (Fast Rising Neon Sparks pulsing with the Beat) --- */\r\n.fr-ambient[data-mood=\"energetic\"] .fr-particle {\r\n  top: auto;\r\n  bottom: -5vh;\r\n  width: var(--p-size, 4px);\r\n  height: var(--p-size, 4px);\r\n  background: #ffffff;\r\n  box-shadow: 0 0 calc(8px + var(--fr-beat, 0) * 14px) var(--fr-amb-accent),\r\n              0 0 4px #ffffff;\r\n  animation: frSparkRise calc(var(--p-dur, 10s) * 0.58) linear infinite;\r\n  animation-delay: var(--p-delay, 0s);\r\n}\r\n\r\n@keyframes frSparkRise {\r\n  0% {\r\n    transform: translate3d(0, 5vh, 0) scale(0.5);\r\n    opacity: 0;\r\n  }\r\n  20% {\r\n    opacity: calc(0.38 + var(--fr-beat, 0) * 0.45);\r\n  }\r\n  80% {\r\n    opacity: calc(0.32 + var(--fr-beat, 0) * 0.45);\r\n  }\r\n  100% {\r\n    transform: translate3d(var(--p-drift, 20px), -110vh, 0) scale(1.35);\r\n    opacity: 0;\r\n  }\r\n}\r\n\r\n/* --- Mood B: MELANCHOLIC 🌧️ (Soft Falling Rain / Dew Streaks & Mist) --- */\r\n.fr-ambient[data-mood=\"melancholic\"] .fr-particle {\r\n  top: -8vh;\r\n  width: 1.5px;\r\n  height: calc(var(--p-size, 4px) * 5.2);\r\n  border-radius: 999px;\r\n  background: linear-gradient(\r\n    180deg,\r\n    rgba(255, 255, 255, 0) 0%,\r\n    rgba(255, 255, 255, 0.42) 70%,\r\n    rgba(255, 255, 255, 0.72) 100%\r\n  );\r\n  box-shadow: none;\r\n  animation: frRainFall calc(var(--p-dur, 10s) * 0.48) linear infinite;\r\n  animation-delay: var(--p-delay, 0s);\r\n}\r\n\r\n@keyframes frRainFall {\r\n  0% {\r\n    transform: translate3d(0, -10vh, 0) rotate(8deg);\r\n    opacity: 0;\r\n  }\r\n  15% {\r\n    opacity: 0.34;\r\n  }\r\n  85% {\r\n    opacity: 0.28;\r\n  }\r\n  100% {\r\n    transform: translate3d(-24px, 112vh, 0) rotate(8deg);\r\n    opacity: 0;\r\n  }\r\n}\r\n\r\n/* --- Mood C: LATE NIGHT 🌙 (Warm Hovering Fireflies & Analog Vibe) --- */\r\n.fr-ambient[data-mood=\"latenight\"] .fr-particle {\r\n  width: calc(var(--p-size, 4px) * 1.15);\r\n  height: calc(var(--p-size, 4px) * 1.15);\r\n  background: rgba(255, 232, 185, 0.92);\r\n  box-shadow: 0 0 12px rgba(255, 200, 120, 0.75), 0 0 22px var(--fr-amb-accent);\r\n  animation: frFireflyDrift calc(var(--p-dur, 12s) * 1.1) ease-in-out infinite alternate;\r\n  animation-delay: var(--p-delay, 0s);\r\n}\r\n\r\n@keyframes frFireflyDrift {\r\n  0% {\r\n    transform: translate3d(0, 0, 0) scale(0.65);\r\n    opacity: 0.08;\r\n  }\r\n  50% {\r\n    transform: translate3d(var(--p-drift, 18px), -26px, 0) scale(calc(1.1 + var(--fr-beat, 0) * 0.35));\r\n    opacity: calc(0.45 + var(--fr-beat, 0) * 0.35);\r\n  }\r\n  100% {\r\n    transform: translate3d(calc(var(--p-drift, 18px) * -0.7), 18px, 0) scale(0.8);\r\n    opacity: 0.12;\r\n  }\r\n}\r\n\r\n/* --- Mood D: DREAMY ✨ (Soft Out-of-Focus Bokeh Light Circles) --- */\r\n.fr-ambient[data-mood=\"dreamy\"] .fr-particle {\r\n  top: auto;\r\n  bottom: -10vh;\r\n  width: calc(var(--p-size, 4px) * 3.8);\r\n  height: calc(var(--p-size, 4px) * 3.8);\r\n  background: radial-gradient(\r\n    circle,\r\n    rgba(255, 255, 255, 0.45) 0%,\r\n    var(--fr-amb-accent-soft) 55%,\r\n    transparent 100%\r\n  );\r\n  filter: blur(2.5px);\r\n  animation: frBokehFloat calc(var(--p-dur, 12s) * 1.15) ease-in-out infinite;\r\n  animation-delay: var(--p-delay, 0s);\r\n}\r\n\r\n@keyframes frBokehFloat {\r\n  0% {\r\n    transform: translate3d(0, 8vh, 0) scale(0.7);\r\n    opacity: 0;\r\n  }\r\n  25% {\r\n    opacity: calc(0.24 + var(--fr-beat, 0) * 0.22);\r\n  }\r\n  75% {\r\n    opacity: calc(0.22 + var(--fr-beat, 0) * 0.22);\r\n  }\r\n  100% {\r\n    transform: translate3d(var(--p-drift, 24px), -108vh, 0) scale(1.25);\r\n    opacity: 0;\r\n  }\r\n}\r\n\r\n/* ---------------- 4. Atmospheric Mist & Cinematic Vignette ---------------- */\r\n.fr-mood-mist {\r\n  position: absolute;\r\n  inset: 0;\r\n  pointer-events: none;\r\n  opacity: 0;\r\n  background:\r\n    radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.52) 100%),\r\n    linear-gradient(180deg, transparent 55%, rgba(12, 14, 22, 0.48) 100%);\r\n  transition: opacity 900ms ease;\r\n}\r\n\r\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-mist {\r\n  opacity: 0.88;\r\n}\r\n\r\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-mist {\r\n  opacity: 0.72;\r\n}\r\n\r\n/* ---------------- 5. Late-Night Analog Film Grain ---------------- */\r\n.fr-mood-grain {\r\n  position: absolute;\r\n  inset: 0;\r\n  pointer-events: none;\r\n  opacity: 0;\r\n  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 0);\r\n  background-size: 3px 3px;\r\n  mix-blend-mode: overlay;\r\n  transition: opacity 900ms ease;\r\n}\r\n\r\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-grain {\r\n  opacity: 0.45;\r\n}\r\n\n/* --- upnext.css --- */\n/* ---------------- Up Next Card ---------------- */\r\n.fr-up-next {\r\n  position: absolute;\r\n  bottom: clamp(24px, 3.2vw, 64px);\r\n  right: clamp(24px, 3.2vw, 64px);\r\n  background: rgba(30, 30, 35, 0.35);\r\n  backdrop-filter: blur(60px) saturate(2.5);\r\n  border: none;\r\n  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\r\n  border-radius: 999px;\r\n  padding: 12px 24px 12px 12px;\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 16px;\r\n  z-index: 10;\r\n  transform: translateX(120%);\r\n  opacity: 0;\r\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.6s ease;\r\n  pointer-events: auto;\r\n  cursor: pointer;\r\n}\r\n\r\n.fr-up-next.fr-show {\r\n  transform: translateX(0);\r\n  opacity: 1;\r\n}\r\n\r\n.fr-up-next-img {\r\n  width: 48px;\r\n  height: 48px;\r\n  border-radius: 50%;\r\n  object-fit: cover;\r\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\r\n}\r\n\r\n.fr-up-next-info {\r\n  display: flex;\r\n  flex-direction: column;\r\n  max-width: 200px;\r\n}\r\n\r\n.fr-up-next-label {\r\n  font-size: 10px;\r\n  font-weight: 700;\r\n  color: var(--fr-fg-dim);\r\n  text-transform: uppercase;\r\n  letter-spacing: 0.05em;\r\n  margin-bottom: 2px;\r\n}\r\n\r\n.fr-up-next-title {\r\n  font-size: 14px;\r\n  font-weight: 700;\r\n  color: var(--fr-fg);\r\n  margin: 0 0 2px 0;\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n\r\n.fr-up-next-artist {\r\n  font-size: 12px;\r\n  color: var(--fr-fg-faint);\r\n  margin: 0;\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle .fr-up-next {\r\n  opacity: 0;\r\n  pointer-events: none;\r\n}\r\n\n/* --- idle.css --- */\n/* ---------------- Idle Mode & Clock ---------------- */\r\n#fullscreen-reloaded-root.fr-idle,\r\n#fullscreen-reloaded-root.fr-idle * {\r\n  cursor: none !important;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle .fr-controls,\r\n#fullscreen-reloaded-root.fr-idle .fr-topbar,\r\n#fullscreen-reloaded-root.fr-idle .fr-side-controls,\r\n#fullscreen-reloaded-root.fr-idle .fr-settings-panel,\r\n#fullscreen-reloaded-root.fr-idle .fr-resume-sync {\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transform: translateY(12px);\r\n}\r\n\r\n.fr-controls,\r\n.fr-topbar,\r\n.fr-side-controls,\r\n.fr-settings-panel,\r\n.fr-resume-sync {\r\n  transition: opacity 400ms ease, transform 400ms ease;\r\n}\r\n\r\n/* ---------------- Clock & Idle Cinema Mode ---------------- */\r\n.fr-clock {\r\n  position: absolute;\r\n  left: 50%;\r\n  font-size: clamp(50px, 6vw, 80px);\r\n  font-weight: 700;\r\n  color: rgba(255, 255, 255, 0.9);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  z-index: 10;\r\n  letter-spacing: 0.02em;\r\n  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.7);\r\n  font-variant-numeric: tabular-nums;\r\n  line-height: 1;\r\n}\r\n\r\n.fr-clock.fr-pos-top {\r\n  top: clamp(24px, 4.5vh, 48px);\r\n  bottom: auto;\r\n  transform: translateX(-50%) translateY(-20px);\r\n  transition: opacity 0.8s ease, transform 0.8s ease, top 0.4s;\r\n}\r\n\r\n.fr-clock.fr-pos-bottom {\r\n  bottom: clamp(28px, 5vh, 56px);\r\n  top: auto;\r\n  transform: translateX(-50%) translateY(20px);\r\n  transition: opacity 0.8s ease, transform 0.8s ease, bottom 0.4s;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-top,\r\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-bottom {\r\n  opacity: 1;\r\n  transform: translateX(-50%) translateY(0);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\r\n  grid-template-columns: 1fr 0px;\r\n  gap: 0;\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-lyrics-panel {\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.8s ease;\r\n}\r\n\r\n/* Gracefully scale artwork in idle mode to prevent clock collision */\r\n#fullscreen-reloaded-root.fr-idle .fr-art-wrap {\r\n  width: min(48vh, 38vw, 520px);\r\n  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n/* Shift artwork cleanly away from clock */\r\n#fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\r\n  transform: translateY(clamp(45px, 7vh, 80px));\r\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\r\n  transform: translateY(clamp(-45px, -7vh, -80px));\r\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-meta {\r\n  text-align: center;\r\n  margin-left: auto;\r\n  margin-right: auto;\r\n  margin-top: clamp(20px, 2.8vh, 36px);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-title {\r\n  font-size: clamp(28px, 3.2vw, 44px);\r\n}\r\n\r\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-artist {\r\n  font-size: clamp(16px, 1.6vw, 22px);\r\n}\r\n\r\n/* ---------------- Responsive Styles ---------------- */\r\n@media (max-aspect-ratio: 5/4), (max-width: 900px) {\r\n  .fr-stage {\r\n    grid-template-columns: 1fr;\r\n    grid-template-rows: auto 1fr;\r\n    grid-template-areas: \"art\" \"lyrics\";\r\n    gap: clamp(10px, 1.5vh, 20px);\r\n    padding-top: clamp(88px, 9.5vh, 145px);\r\n    padding-bottom: clamp(84px, 10vh, 125px);\r\n    transition: padding-top 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\r\n      padding-bottom 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\r\n      opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms,\r\n      transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\r\n  }\r\n\r\n  .fr-stage.fr-centered {\r\n    grid-template-rows: 1fr;\r\n    padding-top: clamp(40px, 5vh, 80px);\r\n  }\r\n\r\n  .fr-clock.fr-pos-top {\r\n    top: clamp(22px, 2.8vh, 42px);\r\n    font-size: clamp(38px, 6.2vw, 58px);\r\n  }\r\n\r\n  .fr-clock.fr-pos-bottom {\r\n    bottom: clamp(22px, 3vh, 42px);\r\n    font-size: clamp(38px, 6.2vw, 58px);\r\n  }\r\n\r\n  .fr-lyrics-panel {\r\n    display: flex;\r\n    min-height: 0;\r\n  }\r\n\r\n  .fr-lyrics-scroll {\r\n    padding: 1vh 8px 18vh 8px;\r\n    mask-image: linear-gradient(\r\n      180deg,\r\n      transparent 0%,\r\n      rgba(0, 0, 0, 0.65) 4%,\r\n      #000 10%,\r\n      #000 82%,\r\n      rgba(0, 0, 0, 0.45) 93%,\r\n      transparent 100%\r\n    );\r\n    -webkit-mask-image: linear-gradient(\r\n      180deg,\r\n      transparent 0%,\r\n      rgba(0, 0, 0, 0.65) 4%,\r\n      #000 10%,\r\n      #000 82%,\r\n      rgba(0, 0, 0, 0.45) 93%,\r\n      transparent 100%\r\n    );\r\n  }\r\n\r\n  /* Balanced artwork in portrait mode when lyrics are visible */\r\n  .fr-stage .fr-art-wrap,\r\n  #fullscreen-reloaded-root.fr-idle .fr-stage .fr-art-wrap {\r\n    width: min(26vh, 54vw, 340px);\r\n    margin: 0 auto;\r\n  }\r\n\r\n  .fr-stage.fr-size-medium .fr-art-wrap,\r\n  #fullscreen-reloaded-root.fr-idle .fr-stage.fr-size-medium .fr-art-wrap {\r\n    width: min(22vh, 46vw, 290px);\r\n  }\r\n\r\n  .fr-stage.fr-size-small .fr-art-wrap,\r\n  #fullscreen-reloaded-root.fr-idle .fr-stage.fr-size-small .fr-art-wrap {\r\n    width: min(18vh, 38vw, 240px);\r\n  }\r\n\r\n  /* Larger artwork when lyrics are hidden in portrait mode */\r\n  .fr-stage.fr-centered .fr-art-wrap,\r\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage .fr-art-wrap {\r\n    width: min(38vh, 68vw, 420px);\r\n  }\r\n\r\n  .fr-meta {\r\n    text-align: center;\r\n    margin-top: clamp(12px, 1.5vh, 20px);\r\n    margin-left: auto;\r\n    margin-right: auto;\r\n    max-width: 86vw;\r\n  }\r\n\r\n  .fr-title {\r\n    font-size: clamp(20px, 4.2vw, 28px);\r\n    margin-bottom: 3px;\r\n  }\r\n\r\n  .fr-artist {\r\n    font-size: clamp(13px, 2.8vw, 16px);\r\n  }\r\n\r\n  .fr-album {\r\n    font-size: clamp(11px, 2.2vw, 13px);\r\n  }\r\n\r\n  /* Make bottom dock more compact */\r\n  .fr-bottom-bar {\r\n    gap: 12px;\r\n    padding: 12px 16px;\r\n    width: 94vw;\r\n  }\r\n\r\n  .fr-volume-row {\r\n    width: 90px;\r\n  }\r\n\r\n  /* Override idle grid & clock clearance for portrait without overlapping lyrics */\r\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\r\n    grid-template-columns: 1fr;\r\n    grid-template-rows: 1fr;\r\n  }\r\n\r\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel,\r\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\r\n    transform: none;\r\n  }\r\n\r\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-stage {\r\n    padding-top: clamp(110px, 11.5vh, 175px);\r\n  }\r\n\r\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-stage {\r\n    padding-bottom: clamp(96px, 11.5vh, 145px);\r\n  }\r\n}\r\n\r\n@media (max-width: 600px) {\r\n  .fr-controls-center {\r\n    display: none; /* Hide progress bar on small screens */\r\n  }\r\n}\r\n\r\n@media (max-height: 500px) {\r\n  .fr-stage {\r\n    grid-template-columns: 1fr;\r\n    grid-template-rows: 1fr;\r\n    grid-template-areas: \"art\";\r\n  }\r\n\r\n  .fr-lyrics-panel {\r\n    display: none !important;\r\n  }\r\n\r\n  .fr-art-wrap {\r\n    width: min(46vh, 60vw, 420px);\r\n  }\r\n}\r\n\n/* --- creator.css --- */\n/* ==========================================================================\n   FullLyrics Creator Studio (Liquid Glass Modal & Word/Line Synchronizer)\n   ========================================================================== */\n\n.fr-creator-backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 10020;\n  background: rgba(6, 8, 14, 0.72);\n  backdrop-filter: blur(22px) saturate(150%);\n  -webkit-backdrop-filter: blur(22px) saturate(150%);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: clamp(12px, 2.5vw, 32px);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.25s cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-creator-backdrop.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n}\n\n.fr-creator-modal {\n  position: relative;\n  width: min(1140px, 96vw);\n  height: min(840px, 90vh);\n  background: linear-gradient(\n    155deg,\n    rgba(28, 32, 44, 0.92) 0%,\n    rgba(16, 18, 26, 0.95) 100%\n  );\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 24px;\n  box-shadow:\n    0 32px 80px rgba(0, 0, 0, 0.65),\n    inset 0 1px 0 rgba(255, 255, 255, 0.18);\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n  color: #f5f7fa;\n  font-family: inherit;\n}\n\n/* Toast Notification */\n.fr-creator-toast {\n  position: absolute;\n  bottom: 74px;\n  left: 50%;\n  transform: translate(-50%, 14px);\n  background: rgba(20, 24, 34, 0.95);\n  border: 1px solid rgba(255, 255, 255, 0.22);\n  color: #fff;\n  padding: 9px 18px;\n  border-radius: 999px;\n  font-size: 13px;\n  font-weight: 600;\n  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 50;\n  transition: all 0.22s ease;\n}\n\n.fr-creator-toast.fr-show {\n  opacity: 1;\n  transform: translate(-50%, 0);\n}\n\n/* Header */\n.fr-creator-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  padding: 16px 22px;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(255, 255, 255, 0.02);\n  flex-wrap: wrap;\n}\n\n.fr-creator-title-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 3px;\n  min-width: 180px;\n}\n\n.fr-creator-title-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.fr-creator-title {\n  margin: 0;\n  font-size: 18px;\n  font-weight: 700;\n  letter-spacing: -0.02em;\n  color: #fff;\n}\n\n.fr-creator-saved-pill {\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 9px;\n  border-radius: 999px;\n  background: rgba(52, 211, 153, 0.18);\n  border: 1px solid rgba(52, 211, 153, 0.45);\n  color: #6ee7b7;\n}\n\n.fr-creator-sub {\n  font-size: 12.5px;\n  color: rgba(255, 255, 255, 0.62);\n  max-width: 340px;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* Mode Switcher */\n.fr-creator-mode-switch {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.35);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 12px;\n  padding: 3px;\n  gap: 3px;\n}\n\n.fr-creator-mode-btn {\n  background: transparent;\n  border: none;\n  color: rgba(255, 255, 255, 0.68);\n  font-size: 12.5px;\n  font-weight: 600;\n  padding: 6px 13px;\n  border-radius: 9px;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-mode-btn:hover {\n  color: #fff;\n}\n\n.fr-creator-mode-btn.fr-active {\n  background: rgba(255, 255, 255, 0.16);\n  color: #fff;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);\n}\n\n/* Header Actions */\n.fr-creator-header-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-creator-btn {\n  display: inline-flex;\n  align-items: center;\n  gap: 7px;\n  height: 36px;\n  padding: 0 14px;\n  border-radius: 10px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  transition: all 0.18s ease;\n}\n\n.fr-creator-btn svg {\n  width: 15px;\n  height: 15px;\n}\n\n.fr-creator-btn-ghost {\n  background: rgba(255, 255, 255, 0.06);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n.fr-creator-btn-ghost:hover,\n.fr-creator-btn-ghost.fr-active {\n  background: rgba(255, 255, 255, 0.14);\n  color: #fff;\n}\n\n.fr-creator-btn-primary {\n  background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);\n  border-color: rgba(255, 255, 255, 0.25);\n  color: #fff;\n  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);\n}\n\n.fr-creator-btn-primary:hover {\n  filter: brightness(1.1);\n  transform: translateY(-1px);\n}\n\n.fr-creator-icon-btn {\n  width: 36px;\n  height: 36px;\n  border-radius: 10px;\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  background: rgba(255, 255, 255, 0.06);\n  color: rgba(255, 255, 255, 0.85);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-icon-btn svg {\n  width: 17px;\n  height: 17px;\n}\n\n.fr-creator-icon-btn:hover,\n.fr-creator-icon-btn.fr-active {\n  background: rgba(255, 255, 255, 0.16);\n  color: #fff;\n}\n\n/* More Dropdown */\n.fr-creator-more-wrap {\n  position: relative;\n}\n\n.fr-creator-dropdown {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  min-width: 255px;\n  background: rgba(20, 23, 33, 0.98);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 14px;\n  padding: 6px;\n  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.6);\n  z-index: 40;\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n}\n\n.fr-creator-dropdown-item {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  width: 100%;\n  padding: 9px 12px;\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.88);\n  font-size: 12.5px;\n  font-weight: 500;\n  border-radius: 9px;\n  cursor: pointer;\n  text-align: left;\n}\n\n.fr-creator-dropdown-item svg {\n  width: 15px;\n  height: 15px;\n  opacity: 0.85;\n}\n\n.fr-creator-dropdown-item:hover {\n  background: rgba(255, 255, 255, 0.1);\n  color: #fff;\n}\n\n.fr-creator-dropdown-item.fr-danger {\n  color: #f87171;\n}\n\n.fr-creator-dropdown-item.fr-danger:hover {\n  background: rgba(248, 113, 113, 0.14);\n}\n\n/* Step Tabs */\n.fr-creator-steps {\n  display: flex;\n  gap: 8px;\n  padding: 10px 22px;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.08);\n  background: rgba(0, 0, 0, 0.2);\n}\n\n.fr-creator-step-btn {\n  background: transparent;\n  border: 1px solid transparent;\n  color: rgba(255, 255, 255, 0.6);\n  padding: 7px 16px;\n  border-radius: 10px;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-step-btn:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.05);\n}\n\n.fr-creator-step-btn.fr-active {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n  border-color: rgba(255, 255, 255, 0.16);\n}\n\n/* Local DB Library Drawer */\n.fr-creator-library {\n  padding: 12px 22px;\n  background: rgba(10, 12, 18, 0.72);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.1);\n  max-height: 210px;\n  overflow-y: auto;\n}\n\n.fr-creator-library-head {\n  margin-bottom: 8px;\n}\n\n.fr-creator-library-title {\n  font-size: 12px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  color: rgba(255, 255, 255, 0.55);\n}\n\n.fr-creator-library-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n}\n\n.fr-creator-library-item {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  padding: 8px 12px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.08);\n  border-radius: 10px;\n}\n\n.fr-creator-library-song {\n  font-size: 13px;\n  font-weight: 600;\n  color: #fff;\n}\n\n.fr-creator-library-artist {\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-creator-library-actions {\n  display: flex;\n  gap: 6px;\n}\n\n/* Body Container */\n.fr-creator-body {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}\n\n/* ==========================================================================\n   STEP 1: Text & Visual Builder\n   ========================================================================== */\n\n.fr-creator-text-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 14px 22px;\n  gap: 12px;\n}\n\n.fr-creator-subtoolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-subswitch {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 10px;\n  padding: 3px;\n  gap: 3px;\n}\n\n.fr-creator-subbtn {\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.65);\n  font-size: 12px;\n  font-weight: 600;\n  padding: 5px 12px;\n  border-radius: 7px;\n  cursor: pointer;\n}\n\n.fr-creator-subbtn.fr-active {\n  background: rgba(255, 255, 255, 0.15);\n  color: #fff;\n}\n\n.fr-creator-quick-actions {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-chip-btn {\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: #fff;\n  font-size: 12px;\n  font-weight: 600;\n  padding: 6px 12px;\n  border-radius: 999px;\n  cursor: pointer;\n  transition: all 0.16s ease;\n}\n\n.fr-creator-chip-btn:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n.fr-creator-textarea {\n  flex: 1;\n  min-height: 0;\n  width: 100%;\n  resize: none;\n  background: rgba(0, 0, 0, 0.28);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 14px;\n  padding: 14px 16px;\n  color: #fff;\n  font-size: 14px;\n  line-height: 1.65;\n  font-family: inherit;\n  outline: none;\n}\n\n.fr-creator-textarea:focus {\n  border-color: rgba(99, 102, 241, 0.65);\n}\n\n/* Visual Builder Cards */\n.fr-creator-builder-list {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  padding-right: 4px;\n}\n\n.fr-creator-line-card {\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 14px;\n  padding: 10px 14px;\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n\n.fr-creator-line-card.fr-is-duet {\n  border-color: rgba(168, 85, 247, 0.45);\n  background: rgba(168, 85, 247, 0.06);\n}\n\n.fr-creator-line-card.fr-is-interlude {\n  border-style: dashed;\n  border-color: rgba(255, 255, 255, 0.22);\n  background: rgba(255, 255, 255, 0.02);\n}\n\n.fr-creator-line-card-top {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-line-num {\n  font-size: 11.5px;\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.48);\n  min-width: 28px;\n}\n\n.fr-creator-interlude-title {\n  flex: 1;\n  font-size: 13px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.75);\n}\n\n.fr-creator-line-input {\n  flex: 1;\n  min-width: 200px;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 9px;\n  padding: 7px 11px;\n  color: #fff;\n  font-size: 13.5px;\n  font-weight: 500;\n  outline: none;\n}\n\n.fr-creator-line-input:focus {\n  border-color: rgba(99, 102, 241, 0.65);\n}\n\n.fr-creator-line-card-controls {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  flex-wrap: wrap;\n}\n\n/* Word Pills inside Visual Builder */\n.fr-creator-word-pills {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  padding-left: 36px;\n}\n\n.fr-creator-word-pill {\n  display: inline-flex;\n  align-items: center;\n  background: rgba(255, 255, 255, 0.07);\n  border: 1px solid rgba(255, 255, 255, 0.13);\n  border-radius: 8px;\n  padding: 2px 6px;\n  gap: 4px;\n}\n\n.fr-creator-word-pill-input {\n  background: transparent;\n  border: none;\n  color: #fff;\n  font-size: 12.5px;\n  font-weight: 500;\n  outline: none;\n  min-width: 22px;\n}\n\n.fr-creator-word-pill-del {\n  background: transparent;\n  border: none;\n  color: rgba(255, 255, 255, 0.45);\n  cursor: pointer;\n  font-size: 13px;\n  padding: 0 2px;\n}\n\n.fr-creator-word-pill-del:hover {\n  color: #f87171;\n}\n\n/* Background Vocal Row inside Visual Builder */\n.fr-creator-bg-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  padding-left: 36px;\n}\n\n.fr-creator-bg-edit-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-creator-bg-badge {\n  font-size: 11px;\n  font-weight: 600;\n  color: #93c5fd;\n  background: rgba(59, 130, 246, 0.16);\n  padding: 3px 8px;\n  border-radius: 6px;\n}\n\n.fr-creator-bg-input {\n  flex: 1;\n  background: rgba(0, 0, 0, 0.28);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 8px;\n  padding: 5px 10px;\n  color: rgba(255, 255, 255, 0.9);\n  font-size: 12.5px;\n  outline: none;\n}\n\n.fr-creator-credit-row {\n  display: flex;\n}\n\n.fr-creator-credit-input {\n  width: 100%;\n  background: rgba(0, 0, 0, 0.25);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 10px;\n  padding: 8px 12px;\n  color: #fff;\n  font-size: 12.5px;\n  outline: none;\n}\n\n/* ==========================================================================\n   STEP 2: Sync Studio\n   ========================================================================== */\n\n.fr-creator-sync-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 12px 22px;\n  gap: 10px;\n}\n\n.fr-creator-sync-toolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-cue-btn {\n  background: linear-gradient(135deg, #10b981 0%, #059669 100%);\n  border: 1px solid rgba(255, 255, 255, 0.28);\n  color: #fff;\n  font-size: 13px;\n  font-weight: 700;\n  padding: 9px 18px;\n  border-radius: 11px;\n  cursor: pointer;\n  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35);\n  transition: all 0.15s ease;\n}\n\n.fr-creator-cue-btn:hover {\n  filter: brightness(1.08);\n}\n\n.fr-creator-cue-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-creator-shift-group {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.08);\n  padding: 4px 8px;\n  border-radius: 10px;\n}\n\n.fr-creator-shift-label {\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.6);\n  margin-right: 4px;\n}\n\n.fr-creator-sync-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-sync-progress {\n  font-size: 12px;\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.78);\n  background: rgba(255, 255, 255, 0.08);\n  padding: 5px 11px;\n  border-radius: 999px;\n}\n\n.fr-creator-shortcuts-bar {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  flex-wrap: wrap;\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.56);\n  padding: 4px 2px;\n}\n\n.fr-creator-shortcuts-bar kbd {\n  background: rgba(255, 255, 255, 0.12);\n  border: 1px solid rgba(255, 255, 255, 0.2);\n  border-radius: 5px;\n  padding: 1px 6px;\n  font-size: 11px;\n  color: #fff;\n  font-family: inherit;\n}\n\n.fr-creator-sync-list {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding-right: 4px;\n}\n\n.fr-creator-sync-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 14px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.09);\n  border-radius: 13px;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.fr-creator-sync-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.fr-creator-sync-row.fr-done {\n  border-color: rgba(52, 211, 153, 0.28);\n}\n\n.fr-creator-sync-row.fr-active {\n  background: rgba(59, 130, 246, 0.13);\n  border-color: rgba(96, 165, 250, 0.75);\n  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35);\n}\n\n.fr-creator-sync-row.fr-is-duet {\n  border-left: 3px solid #c084fc;\n}\n\n.fr-creator-word-row {\n  flex-direction: column;\n  align-items: stretch;\n  cursor: default;\n}\n\n.fr-creator-word-row-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-word-row-meta {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: pointer;\n  border-radius: 8px;\n  padding: 2px 4px;\n  transition: opacity 0.15s ease;\n}\n\n.fr-creator-word-row-meta:hover .fr-creator-time-pill {\n  border-color: rgba(96, 165, 250, 0.6);\n  background: rgba(59, 130, 246, 0.18);\n  color: #fff;\n}\n\n.fr-creator-time-pill {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 12px;\n  font-weight: 600;\n  color: #93c5fd;\n  background: rgba(0, 0, 0, 0.35);\n  padding: 3px 9px;\n  border-radius: 7px;\n  border: 1px solid rgba(255, 255, 255, 0.09);\n}\n\n.fr-creator-row-text {\n  flex: 1;\n  font-size: 14px;\n  font-weight: 600;\n  color: #fff;\n}\n\n.fr-creator-row-bgsub {\n  font-size: 12px;\n  color: rgba(255, 255, 255, 0.58);\n  margin-top: 2px;\n}\n\n.fr-creator-row-actions {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-mini-btn {\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: rgba(255, 255, 255, 0.88);\n  font-size: 11.5px;\n  font-weight: 600;\n  padding: 4px 9px;\n  border-radius: 7px;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.fr-creator-mini-btn:hover:not(:disabled) {\n  background: rgba(255, 255, 255, 0.18);\n  color: #fff;\n}\n\n.fr-creator-mini-btn:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n.fr-creator-mini-btn.fr-active-duet {\n  background: rgba(168, 85, 247, 0.28);\n  border-color: rgba(192, 132, 252, 0.65);\n  color: #e9d5ff;\n}\n\n.fr-creator-mini-btn.fr-danger,\n.fr-creator-mini-icon-btn.fr-danger {\n  color: #fca5a5;\n}\n\n.fr-creator-mini-icon-btn {\n  width: 26px;\n  height: 26px;\n  border-radius: 7px;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: rgba(255, 255, 255, 0.88);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n}\n\n.fr-creator-mini-icon-btn svg {\n  width: 13px;\n  height: 13px;\n}\n\n.fr-creator-mini-icon-btn:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n/* Word Token Chips */\n.fr-creator-tokens-wrap {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 7px;\n  padding-top: 4px;\n}\n\n.fr-creator-bg-tokens {\n  margin-top: 4px;\n  padding-top: 8px;\n  border-top: 1px dashed rgba(255, 255, 255, 0.1);\n  align-items: center;\n}\n\n.fr-creator-bg-tag {\n  font-size: 11px;\n  font-weight: 700;\n  color: #93c5fd;\n  background: rgba(59, 130, 246, 0.15);\n  padding: 3px 8px;\n  border-radius: 6px;\n}\n\n.fr-creator-token {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  padding: 6px 11px;\n  border-radius: 10px;\n  background: rgba(0, 0, 0, 0.34);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: #fff;\n  cursor: pointer;\n  transition: all 0.14s ease;\n}\n\n.fr-creator-token:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.fr-creator-token.fr-done {\n  border-color: rgba(52, 211, 153, 0.45);\n  background: rgba(16, 185, 129, 0.12);\n}\n\n.fr-creator-token.fr-active {\n  border-color: #60a5fa;\n  background: rgba(59, 130, 246, 0.28);\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.4);\n  transform: translateY(-1px);\n}\n\n.fr-creator-token-word {\n  font-size: 13.5px;\n  font-weight: 700;\n  color: #fff;\n}\n\n.fr-creator-token-time {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 10.5px;\n  color: rgba(255, 255, 255, 0.62);\n}\n\n.fr-creator-token-end {\n  flex-direction: row;\n  align-items: center;\n  gap: 5px;\n  padding: 6px 10px;\n  opacity: 0.85;\n}\n\n.fr-creator-token-flag svg {\n  width: 12px;\n  height: 12px;\n}\n\n/* Quick Add Bar at Bottom of Sync Step */\n.fr-creator-sync-quickadd {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding-top: 6px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-creator-sync-quickinput {\n  flex: 1;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 9px;\n  padding: 7px 12px;\n  color: #fff;\n  font-size: 12.5px;\n  outline: none;\n}\n\n/* ==========================================================================\n   STEP 3: Live Preview\n   ========================================================================== */\n\n.fr-creator-preview-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 18px 28px;\n}\n\n.fr-creator-preview-scroll {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 18px;\n  padding: 40px 16px;\n}\n\n.fr-creator-preview-line {\n  font-size: 24px;\n  font-weight: 700;\n  line-height: 1.35;\n  color: rgba(255, 255, 255, 0.32);\n  cursor: pointer;\n  transition: all 0.25s ease;\n}\n\n.fr-creator-preview-line.fr-duet-right {\n  text-align: right;\n}\n\n.fr-creator-preview-line.fr-past {\n  color: rgba(255, 255, 255, 0.45);\n}\n\n.fr-creator-preview-line.fr-active {\n  color: rgba(255, 255, 255, 0.65);\n  transform: scale(1.02);\n  transform-origin: left center;\n}\n\n.fr-creator-preview-line.fr-duet-right.fr-active {\n  transform-origin: right center;\n}\n\n.fr-creator-preview-word {\n  transition: color 0.12s ease, text-shadow 0.12s ease;\n}\n\n.fr-creator-preview-word.fr-w-done,\n.fr-creator-preview-word.fr-w-active {\n  color: #fff;\n  text-shadow: 0 0 18px rgba(255, 255, 255, 0.45);\n}\n\n.fr-creator-preview-bg {\n  font-size: 16px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.5);\n  margin-top: 4px;\n}\n\n.fr-creator-empty-box {\n  padding: 36px 24px;\n  text-align: center;\n  color: rgba(255, 255, 255, 0.58);\n  font-size: 13.5px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px dashed rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  margin: auto 0;\n}\n\n/* ==========================================================================\n   Bottom Transport Bar\n   ========================================================================== */\n\n.fr-creator-transport {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 12px 22px;\n  background: rgba(0, 0, 0, 0.38);\n  border-top: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.fr-creator-play-btn {\n  width: 36px;\n  height: 36px;\n  border-radius: 50%;\n  background: #fff;\n  color: #090b10;\n  border: none;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n}\n\n.fr-creator-play-btn svg {\n  width: 17px;\n  height: 17px;\n}\n\n.fr-creator-transport-time {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.78);\n  min-width: 48px;\n}\n\n.fr-creator-seek-bar {\n  flex: 1;\n  height: 7px;\n  background: rgba(255, 255, 255, 0.14);\n  border-radius: 999px;\n  cursor: pointer;\n  overflow: hidden;\n  position: relative;\n}\n\n.fr-creator-seek-fill {\n  height: 100%;\n  width: 0%;\n  background: linear-gradient(90deg, #60a5fa, #a78bfa);\n  border-radius: 999px;\n}\n";
 
-function injectStyles() {
-  const ID = "fullscreen-reloaded-styles";
-  if (document.getElementById(ID)) return;
-  const style = document.createElement("style");
-  style.id = ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+function cleanupStyle(removeStyle) {
+  try {
+    if (typeof removeStyle === "function") {
+      removeStyle();
+    } else if (removeStyle && typeof removeStyle.remove === "function") {
+      removeStyle.remove();
+    }
+  } catch (_) {}
 }
 
-async function bootstrap() {
-  // 1. Wait for Spicetify Player & Platform APIs (Spotify 1.3.6 compatible)
-  await SpicetifyBridge.waitForReady();
+exports.default = async function start(ctx) {
+  if (ctx?.signal?.aborted) {
+    return () => {};
+  }
 
-  // 2. Load stored user settings
+  // 1. Wait for SpotiKit APIs
+  await SpotiKitBridge.waitForReady();
+  if (ctx?.signal?.aborted) {
+    return () => {};
+  }
+
+  // 2. Bind SpotiKit context & load stored user settings
+  SpotiKitBridge.init(ctx);
   Settings.load();
 
-  // 3. Inject Liquid Glass styles
-  injectStyles();
+  // 3. Register Liquid Glass styles via SpotiKit
+  const removeStyle = ctx?.style?.(STYLES);
+  if (ctx?.signal?.aborted) {
+    cleanupStyle(removeStyle);
+    return () => {};
+  }
 
   // 4. Mount application overlay
-  App.mount();
+  App.mount(ctx);
 
-  console.log("[Fullscreen Reloaded] v1.3.6 initialized successfully");
+  let stopped = false;
+  const teardown = () => {
+    if (stopped) return;
+    stopped = true;
+    cleanupStyle(removeStyle);
+    App.unmount();
+  };
+
+  ctx?.onStop?.(teardown);
+  return teardown;
 }
-
-bootstrap().catch((err) => {
-  console.error("[Fullscreen Reloaded] Failed to bootstrap:", err);
-});
 
     },
 
@@ -5061,6 +5565,8 @@ bootstrap().catch((err) => {
  * Apple Music authorization & developer token manager.
  */
 const {  Settings  } = require("./utils/settings.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
+const {  t  } = require("./utils/i18n.js");
 
 const AppleMusicAuth = exports.AppleMusicAuth = {
   storefront: "us",
@@ -5081,10 +5587,8 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
     try {
       const proxyUrl =
         "https://corsproxy.io/?url=" + encodeURIComponent("https://music.apple.com/us/browse");
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1500);
-      const html = await fetch(proxyUrl, { signal: controller.signal }).then((r) => (r.ok ? r.text() : ""));
-      clearTimeout(timer);
+      const signal = SpotiKitBridge.createTimeoutSignal(1500);
+      const html = await fetch(proxyUrl, { signal }).then((r) => (r.ok ? r.text() : ""));
       const token = this._extractFromMetaTag(html) || this._extractFromRawJwt(html);
       if (!token) return null;
 
@@ -5115,12 +5619,26 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
     return match ? match[0] : null;
   },
 
+  _getScope() {
+    return typeof SpotiKit !== "undefined" ? SpotiKit.Storage?.scope?.("fullscreen-reloaded") || null : null;
+  },
+
   _readCache() {
     try {
-      const raw = window.localStorage.getItem("fullscreen-reloaded:apple-dev-token");
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (parsed.expires < Date.now()) return null;
+      const scope = this._getScope();
+      let parsed = null;
+      if (scope && typeof scope.get === "function") {
+        const raw = scope.get("apple-dev-token", null);
+        if (!raw) return null;
+        parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      } else if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem("fullscreen-reloaded:apple-dev-token");
+        if (!raw) return null;
+        parsed = JSON.parse(raw);
+      }
+      if (!parsed || typeof parsed !== "object" || !parsed.token || parsed.expires < Date.now()) {
+        return null;
+      }
       return parsed;
     } catch (e) {
       return null;
@@ -5129,10 +5647,15 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
 
   _writeCache(token, expires) {
     try {
-      window.localStorage.setItem(
-        "fullscreen-reloaded:apple-dev-token",
-        JSON.stringify({ token, expires })
-      );
+      const payload = { token, expires };
+      const scope = this._getScope();
+      if (scope && typeof scope.set === "function") {
+        scope.set("apple-dev-token", payload);
+        return;
+      }
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("fullscreen-reloaded:apple-dev-token", JSON.stringify(payload));
+      }
     } catch (e) {
       /* ignore */
     }
@@ -5167,9 +5690,7 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
   async connect() {
     const devToken = await this.getDeveloperToken();
     if (!devToken) {
-      if (typeof Spicetify !== "undefined" && Spicetify.showNotification) {
-        Spicetify.showNotification("Apple Music'e ulaşılamadı, tekrar deneyin.");
-      }
+      SpotiKitBridge.notify(t("appleConnectError"), { type: "error" });
       return false;
     }
     try {
@@ -5181,14 +5702,10 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
       const instance = MusicKit.getInstance();
       const userToken = await instance.authorize();
       Settings.set("appleMusicUserToken", userToken);
-      if (typeof Spicetify !== "undefined" && Spicetify.showNotification) {
-        Spicetify.showNotification("Apple Music bağlandı.");
-      }
+      SpotiKitBridge.notify(t("appleConnected"), { type: "default" });
       return true;
     } catch (e) {
-      if (typeof Spicetify !== "undefined" && Spicetify.showNotification) {
-        Spicetify.showNotification("Apple Music bağlantısı başarısız oldu.");
-      }
+      SpotiKitBridge.notify(t("appleConnectFailed"), { type: "error" });
       return false;
     }
   },
@@ -5200,13 +5717,14 @@ const AppleMusicAuth = exports.AppleMusicAuth = {
 // --- ./services/AudioMoodEngine.js ---
 /**
  * Real-time Audio Analysis & Mood Atmosphere Engine.
- * - Uses Spicetify.getAudioData() `segments` (loudness_start, loudness_max, loudness_max_time, timbre)
+ * - Uses SpotiKitBridge.getAudioData() `segments` (loudness_start, loudness_max, loudness_max_time, timbre)
  *   with true logarithmic decibel-to-amplitude conversion (10^(dB/20)) and transient onset detection.
  * - Never fires fake metronome pulses during quiet sections or when audio analysis is unavailable.
  * - Automatically classifies each track into one of 4 atmospheric moods:
  *   "energetic" | "melancholic" | "latenight" | "dreamy"
  */
 const {  Settings  } = require("./utils/settings.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 const MELANCHOLIC_KEYWORDS = [
   "ağla", "agla", "veda", "yalnız", "yalniz", "hüzün", "huzun", "gözyaş", "gozyas",
@@ -5487,14 +6005,17 @@ const AudioMoodEngine = exports.AudioMoodEngine = {
     if (this._audioCache.has(uri)) {
       return this._audioCache.get(uri);
     }
-    if (typeof Spicetify === "undefined" || typeof Spicetify.getAudioData !== "function") {
+    if (SpotiKitBridge.isStopped()) {
       return null;
     }
 
+    let timer = null;
     try {
       const result = await Promise.race([
-        Spicetify.getAudioData(uri),
-        new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+        SpotiKitBridge.getAudioData(uri),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(null), 2500);
+        }),
       ]);
       if (result && Array.isArray(result.segments) && result.segments.length > 0) {
         if (this._audioCache.size > 30) {
@@ -5506,6 +6027,8 @@ const AudioMoodEngine = exports.AudioMoodEngine = {
       }
     } catch (_) {
       // Ignore audio-analysis errors gracefully
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
     return null;
   },
@@ -7221,6 +7744,7 @@ const LyricsService = exports.LyricsService = {
  */
 const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvider.js");
 const {  AppleMusicAuth  } = require("./services/AppleMusicAuth.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  parseTTML  } = require("./utils/parsers.js");
 
 function normText(s) {
@@ -7258,13 +7782,13 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
     }
 
     // 2. Fallback to authenticated Apple Music API if user configured Music-User-Token
-    if (!AppleMusicAuth.isConnected()) return null;
+    if (SpotiKitBridge.isStopped() || !AppleMusicAuth.isConnected()) return null;
 
     const devToken = await AppleMusicAuth.getDeveloperToken();
-    if (!devToken) return null;
+    if (!devToken || SpotiKitBridge.isStopped()) return null;
 
     const songId = await this.findSongId(devToken, targetTitle, artist, durationMs);
-    if (!songId) return null;
+    if (!songId || SpotiKitBridge.isStopped()) return null;
 
     const userToken = AppleMusicAuth.getUserToken();
     const headers = {
@@ -7277,13 +7801,10 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
 
     let res = null;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1800);
       res = await fetch(
         `https://amp-api.music.apple.com/v1/catalog/${AppleMusicAuth.storefront}/songs/${songId}/lyrics`,
-        { headers, signal: controller.signal }
+        { headers, signal: SpotiKitBridge.createTimeoutSignal(1800) }
       ).then((r) => (r.ok ? r.json() : null));
-      clearTimeout(timeoutId);
     } catch (e) {
       return null;
     }
@@ -7306,11 +7827,11 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
   async _fetchPublicTTML(title, artist, durationSec = 0) {
     try {
       let results = await this._queryBinimum(title, artist);
-      if (!results.length && title.includes(" - ")) {
+      if (!results.length && !SpotiKitBridge.isStopped() && title.includes(" - ")) {
         const shortTitle = title.split(" - ")[0].trim();
         if (shortTitle) results = await this._queryBinimum(shortTitle, artist);
       }
-      if (!results.length) return null;
+      if (!results.length || SpotiKitBridge.isStopped()) return null;
 
       const normArtist = normText(artist);
       const normTitle = normText(title);
@@ -7346,10 +7867,10 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
       });
 
       const best = pool[0];
-      const ttmlCtrl = new AbortController();
-      const ttmlTimer = setTimeout(() => ttmlCtrl.abort(), 2400);
-      const ttmlRes = await fetch(best.lyricsUrl, { signal: ttmlCtrl.signal });
-      clearTimeout(ttmlTimer);
+      if (SpotiKitBridge.isStopped()) return null;
+      const ttmlRes = await fetch(best.lyricsUrl, {
+        signal: SpotiKitBridge.createTimeoutSignal(2400),
+      });
       if (!ttmlRes.ok) return null;
 
       const ttmlText = await ttmlRes.text();
@@ -7376,12 +7897,9 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
         track: title,
         artist: artist,
       });
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2400);
       const r = await fetch(`https://lyrics-api.binimum.org/?${params.toString()}`, {
-        signal: controller.signal,
+        signal: SpotiKitBridge.createTimeoutSignal(2400),
       });
-      clearTimeout(timer);
       if (!r.ok) return [];
       const data = await r.json();
       return Array.isArray(data?.results) ? data.results : [];
@@ -7394,13 +7912,13 @@ class AppleMusicLyricsProvider extends BaseLyricsProvider {
     const term = encodeURIComponent(`${title} ${artist}`);
     let res = null;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1500);
       res = await fetch(
         `https://amp-api.music.apple.com/v1/catalog/${AppleMusicAuth.storefront}/search?term=${term}&types=songs&limit=5`,
-        { headers: { Authorization: `Bearer ${devToken}`, Origin: "https://music.apple.com" }, signal: controller.signal }
+        {
+          headers: { Authorization: `Bearer ${devToken}`, Origin: "https://music.apple.com" },
+          signal: SpotiKitBridge.createTimeoutSignal(1500),
+        }
       ).then((r) => (r.ok ? r.json() : null));
-      clearTimeout(timer);
     } catch (e) {
       return null;
     }
@@ -7465,28 +7983,27 @@ exports.BaseLyricsProvider = BaseLyricsProvider;
  * Fetches unsynced lyrics through a CORS proxy to bypass Spotify CEF cross-origin restrictions.
  */
 const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvider.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 async function safeProxyFetch(targetUrl, timeoutMs = 1800) {
   const proxies = [
     (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
   ];
 
-  for (const getProxyUrl of proxies) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  for (let i = 0; i < proxies.length; i++) {
+    if (i > 0 && SpotiKitBridge.isStopped()) return null;
     try {
-      const proxyUrl = getProxyUrl(targetUrl);
+      const proxyUrl = proxies[i](targetUrl);
       const res = await fetch(proxyUrl, {
-        signal: controller.signal,
+        signal: SpotiKitBridge.createTimeoutSignal(timeoutMs),
       });
-      clearTimeout(timer);
       if (res && res.ok) {
         return res;
       }
     } catch (e) {
-      clearTimeout(timer);
-      // Try next proxy
+      // Try next proxy if not stopped
     }
+    if (SpotiKitBridge.isStopped()) return null;
   }
   return null;
 }
@@ -7524,6 +8041,7 @@ class GeniusLyricsProvider extends BaseLyricsProvider {
       if (!hit?.url) return null;
 
       // Fetch the song page through CORS proxy
+      if (SpotiKitBridge.isStopped()) return null;
       const pageRes = await safeProxyFetch(hit.url, 2500);
       if (!pageRes) return null;
 
@@ -7590,6 +8108,7 @@ exports.GeniusLyricsProvider = GeniusLyricsProvider;
  * Free, open, no API key required. Line-synced and plain lyrics with 503 retry and cleaned search fallback.
  */
 const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvider.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  parseLRC  } = require("./utils/parsers.js");
 
 class LrclibLyricsProvider extends BaseLyricsProvider {
@@ -7616,6 +8135,8 @@ class LrclibLyricsProvider extends BaseLyricsProvider {
       return searchRes;
     }
 
+    if (SpotiKitBridge.isStopped()) return null;
+
     // 2. Fallback to free-text query search only if structured search returned nothing
     const qRes = await this._searchQuery(`${targetTitle} ${artist}`, durationSec);
     if (qRes && qRes.lines?.length) {
@@ -7640,18 +8161,19 @@ class LrclibLyricsProvider extends BaseLyricsProvider {
 
   async _fetchJsonWithRetry(url) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0 && SpotiKitBridge.isStopped()) {
+        return null;
+      }
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2200);
-        const r = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        const r = await fetch(url, { signal: SpotiKitBridge.createTimeoutSignal(2200) });
 
         if (r.ok) {
           return await r.json();
         }
         // Retry once on 503 Service Unavailable
-        if (r.status === 503 && attempt === 0) {
+        if (r.status === 503 && attempt === 0 && !SpotiKitBridge.isStopped()) {
           await new Promise((res) => setTimeout(res, 450));
+          if (SpotiKitBridge.isStopped()) return null;
           continue;
         }
         return null;
@@ -7727,6 +8249,7 @@ exports.LrclibLyricsProvider = LrclibLyricsProvider;
  * using the exact Liquid Lyrics / Spicy Lyrics protocol (`SpicyLyrics-WebAuth` + `SLObjPack` unpacker).
  */
 const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvider.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  extractTrackId, spicyLyricsToFullscreenLines  } = require("./services/CustomSyncStorage.js");
 
 const SPICY_API_BASE = "https://api.spicylyrics.org";
@@ -7734,8 +8257,6 @@ const DEFAULT_SPICY_VERSION = "6.3.12";
 
 let _cachedVersion = null;
 let _versionPromise = null;
-let _cachedToken = null;
-let _tokenPromise = null;
 
 const PACK_LIMITS = {
   depth: 512,
@@ -7878,10 +8399,9 @@ async function getSpicyVersion() {
   if (!_versionPromise) {
     _versionPromise = (async () => {
       try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 1800);
-        const res = await fetch(`${SPICY_API_BASE}/version`, { signal: ctrl.signal });
-        clearTimeout(timer);
+        const res = await fetch(`${SPICY_API_BASE}/version`, {
+          signal: SpotiKitBridge.createTimeoutSignal(1800),
+        });
         if (res.ok) {
           const txt = (await res.text()).trim();
           if (/^\d+\.\d+\.\d+$/.test(txt)) {
@@ -7894,58 +8414,6 @@ async function getSpicyVersion() {
   }
   await _versionPromise;
   return _cachedVersion || DEFAULT_SPICY_VERSION;
-}
-
-function isTokenFresh(tokObj) {
-  if (!tokObj?.accessToken) return false;
-  if (!Number.isFinite(tokObj.expiresAtTime)) return true;
-  return tokObj.expiresAtTime - Date.now() > 2000;
-}
-
-async function getSpotifyAccessToken() {
-  try {
-    const authApi = Spicetify?.Platform?.AuthorizationAPI;
-    if (typeof authApi?.getState === "function") {
-      const state = authApi.getState();
-      if (state?.isAuthorized !== false && state?.token?.accessToken) {
-        return state.token.accessToken;
-      }
-    }
-  } catch (_) {}
-
-  if (isTokenFresh(_cachedToken)) return _cachedToken.accessToken;
-  _cachedToken = null;
-
-  if (_tokenPromise) return _tokenPromise;
-
-  _tokenPromise = (async () => {
-    try {
-      if (Spicetify?.CosmosAsync?.get) {
-        const res = await Spicetify.CosmosAsync.get("sp://oauth/v2/token");
-        if (res?.accessToken) {
-          _cachedToken = {
-            accessToken: res.accessToken,
-            expiresAtTime: Number(res.expiresAtTime),
-          };
-          return res.accessToken;
-        }
-      }
-    } catch (_) {}
-
-    const session = Spicetify?.Platform?.Session;
-    if (session?.accessToken) {
-      _cachedToken = {
-        accessToken: session.accessToken,
-        expiresAtTime: Number(session.accessTokenExpirationTimestampMs),
-      };
-      return session.accessToken;
-    }
-    return null;
-  })().finally(() => {
-    _tokenPromise = null;
-  });
-
-  return _tokenPromise;
 }
 
 function convertSpicyTimesToMs(data) {
@@ -7991,11 +8459,8 @@ class SpicyLyricsProvider extends BaseLyricsProvider {
 
     try {
       const version = await getSpicyVersion();
-      const token = await getSpotifyAccessToken();
+      const token = await SpotiKitBridge.getAccessToken();
       const authHeader = token ? `Bearer ${token}` : null;
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3200);
 
       const res = await fetch(`${SPICY_API_BASE}/query`, {
         method: "POST",
@@ -8017,9 +8482,8 @@ class SpicyLyricsProvider extends BaseLyricsProvider {
           ],
           client: { version },
         }),
-        signal: controller.signal,
+        signal: SpotiKitBridge.createTimeoutSignal(3200),
       });
-      clearTimeout(timer);
 
       if (!res.ok) return null;
       const body = await res.json();
@@ -8072,10 +8536,10 @@ exports.SpicyLyricsProvider = SpicyLyricsProvider;
 // --- ./services/providers/SpotifyLyricsProvider.js ---
 /**
  * Spotify native lyrics provider.
- * Updated for Spotify 1.3.6: supports both Spicetify.CosmosAsync and native fetch with session token.
+ * Updated for Spotify 1.3.6: supports both SpotiKit.Http.get and native fetch with session token.
  */
 const {  BaseLyricsProvider  } = require("./services/providers/BaseLyricsProvider.js");
-const {  SpicetifyBridge  } = require("./services/SpicetifyBridge.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  splitParentheticalBg  } = require("./utils/parsers.js");
 
 class SpotifyLyricsProvider extends BaseLyricsProvider {
@@ -8088,37 +8552,39 @@ class SpotifyLyricsProvider extends BaseLyricsProvider {
     const url = `https://spclient.wg.spotify.com/color-lyrics/v2/track/${id}?format=json&vocalRemoval=false&market=from_token`;
     let res = null;
 
-    // Strategy 1: CosmosAsync in Spicetify
-    if (typeof Spicetify !== "undefined" && Spicetify.CosmosAsync?.get) {
+    // Strategy 1: SpotiKit.Http.get
+    if (!SpotiKitBridge.isStopped()) {
+      let timer = null;
       try {
-        const cosmosPromise = Spicetify.CosmosAsync.get(url);
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500));
-        res = await Promise.race([cosmosPromise, timeoutPromise]);
+        const httpPromise = SpotiKitBridge.httpGet(url);
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("timeout")), 1500);
+        });
+        res = await Promise.race([httpPromise, timeoutPromise]);
         if (typeof res === "string") {
           try { res = JSON.parse(res); } catch (_) {}
         } else if (res && !res.lyrics && res.body) {
           res = typeof res.body === "string" ? JSON.parse(res.body) : res.body;
         }
       } catch (e) {
-        // CosmosAsync failed or timed out, continue to Strategy 2
+        // SpotiKit.Http.get failed or timed out, continue to Strategy 2
+      } finally {
+        if (timer !== null) clearTimeout(timer);
       }
     }
 
     // Strategy 2: Direct HTTP fetch with session access token (Spotify 1.3.6 compatible)
-    if (!res || !res.lyrics) {
+    if ((!res || !res.lyrics) && !SpotiKitBridge.isStopped()) {
       try {
-        const token = await SpicetifyBridge.getAccessToken();
-        if (token) {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 1800);
+        const token = await SpotiKitBridge.getAccessToken();
+        if (token && !SpotiKitBridge.isStopped()) {
           const response = await fetch(url, {
             headers: {
               Authorization: `Bearer ${token}`,
               "app-platform": "WebPlayer",
             },
-            signal: controller.signal,
+            signal: SpotiKitBridge.createTimeoutSignal(1800),
           });
-          clearTimeout(timeoutId);
           if (response.ok) {
             res = await response.json();
           }
@@ -8223,242 +8689,417 @@ exports.SpotifyLyricsProvider = SpotifyLyricsProvider;
 
     },
 
-    "./services/SpicetifyBridge.js": function(require, exports, module) {
-// --- ./services/SpicetifyBridge.js ---
+    "./services/SpotiKitBridge.js": function(require, exports, module) {
+// --- ./services/SpotiKitBridge.js ---
 /**
- * Bridge layer for interacting with Spicetify and Spotify Desktop 1.3.6.
- * Provides safe wrappers, token resolution, queue fetching, and event management.
+ * Bridge layer for interacting with SpotiKit and Spotify Desktop.
+ * Provides safe wrappers, lifecycle signals, token resolution, queue normalization, and event management.
  */
 
-const SpicetifyBridge = exports.SpicetifyBridge = {
-  REQUIRED_APIS: ["Player", "Platform"],
+const PLAYER_EVENT_MAP = {
+  songchange: "track",
+  playpause: "playpause",
+  progress: "progress",
+  state: "state",
+};
+
+function _normalizeQueueEntry(entry) {
+  if (!entry) return null;
+  if (entry.metadata || entry.contextTrack?.metadata) {
+    return entry;
+  }
+
+  const title = entry.title || entry.name || "";
+  const artistName =
+    typeof entry.artist === "string"
+      ? entry.artist
+      : entry.artist?.name || (Array.isArray(entry.artists) ? entry.artists[0]?.name || "" : "");
+  const albumName =
+    typeof entry.album === "string"
+      ? entry.album
+      : entry.album?.name || "";
+  const imageUrl = entry.image || entry.album?.images?.[0]?.url || "";
+
+  return {
+    uri: entry.uri || "",
+    ...(entry.uid !== undefined ? { uid: entry.uid } : {}),
+    name: title,
+    metadata: {
+      title,
+      artist_name: artistName,
+      album_title: albumName,
+      image_xlarge_url: imageUrl,
+    },
+    artists: artistName ? [{ name: artistName }] : [],
+    album: {
+      name: albumName,
+      images: imageUrl ? [{ url: imageUrl }] : [],
+    },
+  };
+}
+
+const SpotiKitBridge = exports.SpotiKitBridge = {
+  _ctx: null,
 
   /**
-   * Safeguards Spicetify.showNotification in Spotify 1.3.6 against
-   * "Error: enqueueSnackbar called with invalid argument" when webpack
-   * modules (React / Snackbar.simpleLayout) are not yet initialized or
-   * when third-party extensions (e.g. Marketplace / Spicy Lyrics) pass invalid args.
+   * Stores the SpotiKit extension context for lifecycle signals.
    */
-  patchShowNotification() {
-    if (typeof Spicetify === "undefined") return;
-    if (typeof Spicetify.showNotification === "function" && !Spicetify.showNotification._frPatched) {
-      const origShow = Spicetify.showNotification.bind(Spicetify);
-      const patched = function (message, isError = false, msTimeout = 3000) {
-        if (message === undefined || message === null || message === "") return;
-        try {
-          return origShow(message, isError, msTimeout);
-        } catch (err) {
-          try {
-            const plainText =
-              typeof message === "string"
-                ? message.replace(/<[^>]*>/g, "").trim()
-                : String(message);
-            if (plainText && typeof Spicetify.Snackbar?.enqueueSnackbar === "function") {
-              return Spicetify.Snackbar.enqueueSnackbar(plainText, {
-                variant: isError ? "error" : "default",
-                autoHideDuration: msTimeout,
-              });
-            }
-          } catch (_) {
-            // Suppress secondary enqueueSnackbar error in Spotify 1.3.6
-          }
+  init(ctx) {
+    this._ctx = ctx || null;
+    return this._ctx;
+  },
+
+  getSignal() {
+    return this._ctx?.signal || null;
+  },
+
+  isStopped() {
+    return Boolean(this._ctx?.signal?.aborted);
+  },
+
+  /**
+   * Creates an AbortSignal that aborts after `ms` milliseconds OR when `ctx.signal` aborts.
+   * Cleans up timers and parent listeners once aborted.
+   */
+  createTimeoutSignal(ms) {
+    const controller = new AbortController();
+    const parentSignal = this.getSignal();
+
+    if (parentSignal?.aborted) {
+      controller.abort(parentSignal.reason);
+      return controller.signal;
+    }
+
+    let timer = null;
+    let onParentAbort = null;
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (parentSignal && onParentAbort) {
+        parentSignal.removeEventListener("abort", onParentAbort);
+        onParentAbort = null;
+      }
+    };
+
+    if (parentSignal) {
+      onParentAbort = () => {
+        cleanup();
+        if (!controller.signal.aborted) {
+          controller.abort(parentSignal.reason);
         }
       };
-      patched._frPatched = true;
-      Spicetify.showNotification = patched;
+      parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    }
+
+    if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) {
+      timer = setTimeout(() => {
+        cleanup();
+        if (!controller.signal.aborted) {
+          const reason =
+            typeof DOMException !== "undefined"
+              ? new DOMException("The operation was aborted due to timeout", "TimeoutError")
+              : new Error("TimeoutError");
+          controller.abort(reason);
+        }
+      }, ms);
+    }
+
+    controller.signal.addEventListener("abort", cleanup, { once: true });
+    return controller.signal;
+  },
+
+  /**
+   * Awaits SpotiKit readiness without legacy polling loops.
+   */
+  async waitForReady() {
+    if (typeof SpotiKit === "undefined" || !SpotiKit) return null;
+    try {
+      if (SpotiKit.ready) {
+        await SpotiKit.ready;
+      }
+      return SpotiKit;
+    } catch (_) {
+      return SpotiKit;
     }
   },
 
   /**
-   * Waits for Spicetify and core APIs to become ready.
-   * Unlike older versions, this does NOT block on deprecated APIs like CosmosAsync or Keyboard.
-   */
-  waitForReady(maxWaitMs = 15000) {
-    const start = Date.now();
-    this.patchShowNotification();
-    return new Promise((resolve, reject) => {
-      const check = () => {
-        this.patchShowNotification();
-        if (
-          typeof Spicetify !== "undefined" &&
-          this.REQUIRED_APIS.every((k) => typeof Spicetify[k] !== "undefined")
-        ) {
-          resolve(Spicetify);
-          return;
-        }
-        if (Date.now() - start > maxWaitMs) {
-          console.warn("[Fullscreen Reloaded] Timed out waiting for Spicetify APIs. Attempting launch anyway...");
-          resolve(typeof Spicetify !== "undefined" ? Spicetify : null);
-          return;
-        }
-        setTimeout(check, 50);
-      };
-      check();
-    });
-  },
-
-  /**
-   * Retrieves Spotify session access token in Spotify 1.3.6.
-   * Checks multiple fallback surfaces (Platform.Session, AuthorizationAPI).
+   * Retrieves Spotify session access token across Platform & Http surfaces.
    */
   async getAccessToken() {
+    if (typeof SpotiKit === "undefined" || !SpotiKit) return null;
+
     try {
-      if (typeof Spicetify === "undefined") return null;
-
-      if (typeof Spicetify.Platform?.Session?.accessToken === "string" && Spicetify.Platform.Session.accessToken) {
-        return Spicetify.Platform.Session.accessToken;
+      const authApi = SpotiKit.Platform?.AuthorizationAPI;
+      if (typeof authApi?.getState === "function") {
+        const state = authApi.getState();
+        if (
+          state?.isAuthorized !== false &&
+          typeof state?.token?.accessToken === "string" &&
+          state.token.accessToken
+        ) {
+          return state.token.accessToken;
+        }
       }
+    } catch (_) {}
 
-      if (Spicetify.Platform?.Session?.getAccessToken) {
-        const res = await Spicetify.Platform.Session.getAccessToken();
+    try {
+      const authApi = SpotiKit.Platform?.AuthorizationAPI;
+      if (typeof authApi?.getAccessToken === "function") {
+        const res = await authApi.getAccessToken();
         const token = typeof res === "string" ? res : res?.accessToken;
         if (token) return token;
       }
+    } catch (_) {}
 
-      if (Spicetify.Platform?.AuthorizationAPI?.getAccessToken) {
-        const res = await Spicetify.Platform.AuthorizationAPI.getAccessToken();
+    try {
+      const session = SpotiKit.Platform?.Session;
+      if (typeof session?.accessToken === "string" && session.accessToken) {
+        return session.accessToken;
+      }
+      if (typeof session?.getAccessToken === "function") {
+        const res = await session.getAccessToken();
         const token = typeof res === "string" ? res : res?.accessToken;
         if (token) return token;
       }
-    } catch (e) {
-      console.warn("[Fullscreen Reloaded] Could not retrieve session access token:", e);
-    }
+    } catch (_) {}
+
+    try {
+      if (typeof SpotiKit.Http?.get === "function") {
+        const res = await SpotiKit.Http.get("sp://oauth/v2/token");
+        const parsed = typeof res === "string" ? JSON.parse(res) : res;
+        const token = parsed?.accessToken || parsed?.token?.accessToken;
+        if (typeof token === "string" && token) return token;
+      }
+    } catch (_) {}
+
     return null;
   },
 
+  async httpGet(url, options) {
+    if (typeof SpotiKit === "undefined" || typeof SpotiKit.Http?.get !== "function") {
+      return null;
+    }
+    return options !== undefined
+      ? SpotiKit.Http.get(url, options)
+      : SpotiKit.Http.get(url);
+  },
+
+  async getAudioData(uri) {
+    if (!uri || typeof SpotiKit === "undefined" || typeof SpotiKit.Audio?.analysis !== "function") {
+      return null;
+    }
+    try {
+      return await SpotiKit.Audio.analysis(uri);
+    } catch (_) {
+      return null;
+    }
+  },
+
   /**
-   * Fetches the upcoming queue tracks. Supports Spotify 1.3.6 PlayerAPI & legacy Spicetify.Queue.
+   * Fetches and normalizes the next upcoming track in queue.
    */
   async getNextTrack() {
+    if (typeof SpotiKit === "undefined" || !SpotiKit) return null;
+
     try {
-      if (typeof Spicetify === "undefined") return null;
-
-      // 1. Spicetify.Queue synchronous object
-      if (Spicetify.Queue?.nextTracks?.length) {
-        return Spicetify.Queue.nextTracks[0];
+      if (SpotiKit.Queue?.next?.length) {
+        return _normalizeQueueEntry(SpotiKit.Queue.next[0]);
       }
+    } catch (_) {}
 
-      // 2. Spicetify.Platform.PlayerAPI synchronous internal queue
-      if (Spicetify.Platform?.PlayerAPI?._queue?.nextTracks?.length) {
-        return Spicetify.Platform.PlayerAPI._queue.nextTracks[0];
+    try {
+      if (SpotiKit.Platform?.PlayerAPI?._queue?.nextTracks?.length) {
+        return _normalizeQueueEntry(SpotiKit.Platform.PlayerAPI._queue.nextTracks[0]);
       }
+    } catch (_) {}
 
-      // 3. Spicetify.Platform.PlayerAPI asynchronous getter
-      if (Spicetify.Platform?.PlayerAPI?.getQueue) {
-        const q = await Spicetify.Platform.PlayerAPI.getQueue();
-        if (q?.nextTracks?.length) return q.nextTracks[0];
+    try {
+      if (typeof SpotiKit.Platform?.PlayerAPI?.getQueue === "function") {
+        const q = await SpotiKit.Platform.PlayerAPI.getQueue();
+        if (q?.nextTracks?.length) {
+          return _normalizeQueueEntry(q.nextTracks[0]);
+        }
       }
-    } catch (e) {
-      // silently fallback
-    }
+    } catch (_) {}
+
     return null;
   },
 
-  /**
-   * Gets current playback data / track metadata.
-   */
   getCurrentTrack() {
-    if (typeof Spicetify === "undefined" || !Spicetify.Player) return null;
-    const data = Spicetify.Player.data;
-    if (!data) return null;
-    return data.track || data.item || null;
+    if (typeof SpotiKit === "undefined" || !SpotiKit.Player) return null;
+    return SpotiKit.Player.track || SpotiKit.Player.state?.item || null;
   },
 
   getDuration() {
-    return (typeof Spicetify !== "undefined" && Spicetify.Player?.getDuration()) || 0;
+    return Number(typeof SpotiKit !== "undefined" ? SpotiKit.Player?.duration : 0) || 0;
   },
 
   getProgress() {
-    return (typeof Spicetify !== "undefined" && Spicetify.Player?.getProgress()) || 0;
+    return Number(typeof SpotiKit !== "undefined" ? SpotiKit.Player?.position : 0) || 0;
   },
 
   isPlaying() {
-    return !!(typeof Spicetify !== "undefined" && Spicetify.Player?.isPlaying());
+    return Boolean(typeof SpotiKit !== "undefined" && SpotiKit.Player?.isPlaying);
   },
 
   seek(ms) {
-    if (typeof Spicetify !== "undefined" && Spicetify.Player?.seek) {
-      Spicetify.Player.seek(Math.max(0, ms));
+    if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Player?.seek === "function") {
+      SpotiKit.Player.seek(Math.max(0, Number(ms) || 0));
     }
   },
 
   togglePlay() {
-    Spicetify?.Player?.togglePlay?.();
+    if (typeof SpotiKit !== "undefined") {
+      SpotiKit.Player?.toggle?.();
+    }
   },
 
   next() {
-    Spicetify?.Player?.next?.();
+    if (typeof SpotiKit !== "undefined") {
+      SpotiKit.Player?.next?.();
+    }
   },
 
   back() {
-    Spicetify?.Player?.back?.();
+    if (typeof SpotiKit !== "undefined") {
+      SpotiKit.Player?.previous?.();
+    }
   },
 
   toggleShuffle() {
-    Spicetify?.Player?.toggleShuffle?.();
+    if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Player?.setShuffle === "function") {
+      SpotiKit.Player.setShuffle(!this.getShuffle());
+    }
   },
 
   getShuffle() {
-    return !!Spicetify?.Player?.getShuffle?.();
+    return Boolean(typeof SpotiKit !== "undefined" && SpotiKit.Player?.shuffle);
   },
 
-  toggleRepeat() {
-    Spicetify?.Player?.toggleRepeat?.();
+  getRepeatMode() {
+    const mode = typeof SpotiKit !== "undefined" ? SpotiKit.Player?.repeat : "off";
+    return mode === "context" || mode === "track" || mode === "off" ? mode : "off";
   },
 
   getRepeat() {
-    return !!Spicetify?.Player?.getRepeat?.();
+    return this.getRepeatMode() !== "off";
+  },
+
+  toggleRepeat() {
+    const current = this.getRepeatMode();
+    const nextMode = current === "off" ? "context" : current === "context" ? "track" : "off";
+    if (typeof SpotiKit !== "undefined") {
+      SpotiKit.Player?.setRepeat?.(nextMode);
+    }
+    return nextMode;
   },
 
   getVolume() {
-    const v = Spicetify?.Player?.getVolume?.();
-    return typeof v === "number" && !isNaN(v) ? Math.max(0, Math.min(1, v)) : 1;
+    const v = typeof SpotiKit !== "undefined" ? SpotiKit.Player?.volume : 1;
+    return typeof v === "number" && !Number.isNaN(v) ? Math.max(0, Math.min(1, v)) : 1;
   },
 
   setVolume(vol) {
-    const clamped = Math.max(0, Math.min(1, vol));
-    Spicetify?.Player?.setMute?.(false);
-    Spicetify?.Player?.setVolume?.(clamped);
+    const n = Number(vol);
+    const clamped = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+    if (typeof SpotiKit !== "undefined") {
+      SpotiKit.Player?.setMuted?.(false);
+      SpotiKit.Player?.setVolume?.(clamped);
+    }
   },
 
   getMute() {
-    return !!Spicetify?.Player?.getMute?.();
+    return Boolean(typeof SpotiKit !== "undefined" && SpotiKit.Player?.muted);
   },
 
   toggleMute() {
-    Spicetify?.Player?.toggleMute?.();
+    this.setMute(!this.getMute());
   },
 
   setMute(mute) {
-    Spicetify?.Player?.setMute?.(!!mute);
+    if (typeof SpotiKit !== "undefined") {
+      SpotiKit.Player?.setMuted?.(Boolean(mute));
+    }
   },
 
-  addPlayerListener(event, callback) {
-    Spicetify?.Player?.addEventListener?.(event, callback);
-    return () => Spicetify?.Player?.removeEventListener?.(event, callback);
+  addPlayerListener(event, cb) {
+    const mappedEvent = PLAYER_EVENT_MAP[event] || event;
+    if (typeof SpotiKit === "undefined" || typeof SpotiKit.Player?.on !== "function") {
+      return () => {};
+    }
+    const unsub = SpotiKit.Player.on(mappedEvent, cb);
+    return typeof unsub === "function"
+      ? unsub
+      : () => {
+          if (typeof SpotiKit !== "undefined") {
+            SpotiKit.Player?.off?.(mappedEvent, cb);
+          }
+        };
   },
 
-  /**
-   * Safely opens Spotify Queue view.
-   */
   openQueue() {
-    if (Spicetify?.Platform?.History?.push) {
-      Spicetify.Platform.History.push("/queue");
-    } else if (Spicetify?.Player?.toggleQueue) {
-      Spicetify.Player.toggleQueue();
-    } else {
+    try {
+      if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Navigation?.go === "function") {
+        SpotiKit.Navigation.go("/queue");
+        return;
+      }
+      if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Platform?.History?.push === "function") {
+        SpotiKit.Platform.History.push("/queue");
+        return;
+      }
+    } catch (_) {}
+
+    if (typeof window !== "undefined" && window.location) {
       window.location.hash = "/queue";
     }
   },
 
+  notify(message, options) {
+    if (message === undefined || message === null || message === "") return;
+    const plainText =
+      typeof message === "string"
+        ? message.replace(/<[^>]*>/g, "").trim()
+        : String(message);
+    if (!plainText) return;
+    try {
+      if (typeof SpotiKit !== "undefined" && typeof SpotiKit.notify === "function") {
+        SpotiKit.notify(plainText, options);
+      }
+    } catch (_) {}
+  },
+
+  getLocale() {
+    try {
+      if (typeof SpotiKit !== "undefined") {
+        if (typeof SpotiKit.Locale?.language === "string" && SpotiKit.Locale.language) {
+          return SpotiKit.Locale.language;
+        }
+        const platformLocale = SpotiKit.Platform?.Translations?.getLocale?.();
+        if (typeof platformLocale === "string" && platformLocale) {
+          return platformLocale;
+        }
+      }
+    } catch (_) {}
+
+    if (typeof navigator !== "undefined" && navigator.language) {
+      return navigator.language;
+    }
+    return "en";
+  },
+
   /**
    * Determines whether a DOM element is Spotify's native fullscreen button.
-   * Matches Spotify 1.3.6 selectors, aria-labels, and testids.
    */
   isSpotifyFullscreenButton(target) {
-    if (!target || !(target instanceof Element)) return false;
+    if (!target || typeof target.closest !== "function") return false;
+    if (typeof Element !== "undefined" && !(target instanceof Element)) return false;
 
     const selectors = [
+      '[data-testid="fullscreen-mode-button"]',
       'button[data-testid="fullscreen-button"]',
       'button[data-testid="control-button-fullscreen"]',
       'button[data-testid="fullscreen-control"]',
@@ -8470,20 +9111,29 @@ const SpicetifyBridge = exports.SpicetifyBridge = {
       'button[aria-label*="tam ekran" i]',
     ];
 
-    const btn = target.closest(selectors.join(", "));
-    if (btn) return true;
+    if (target.closest(selectors.join(", "))) {
+      return true;
+    }
 
-    // Check if element is inside nowPlayingBar extra controls and has fullscreen SVG icon
-    const extraControls = target.closest(
-      '.main-nowPlayingBar-extraControls, [data-testid="now-playing-bar"], .now-playing-bar'
-    );
-    if (extraControls) {
-      const button = target.closest("button");
-      if (button) {
-        const label = (button.getAttribute("aria-label") || "").toLowerCase();
-        if (label.includes("screen") || label.includes("ekran") || label.includes("full")) {
-          return true;
-        }
+    const button = target.closest("button");
+    if (button) {
+      const label = (button.getAttribute("aria-label") || "").toLowerCase();
+      if (
+        label.includes("fullscreen") ||
+        label.includes("full screen") ||
+        label.includes("tam ekran")
+      ) {
+        return true;
+      }
+
+      const extraControls = target.closest(
+        '.now-playing-bar-extra-controls, .main-nowPlayingBar-extraControls, [data-testid="now-playing-bar"], .now-playing-bar'
+      );
+      if (
+        extraControls &&
+        (label.includes("screen") || label.includes("ekran") || label.includes("full"))
+      ) {
+        return true;
       }
     }
 
@@ -8591,6 +9241,7 @@ exports.rgba = rgba;
  * Internationalization (i18n) and translations.
  */
 const {  Settings  } = require("./utils/settings.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 const Locales = exports.Locales = {
   en: {
@@ -8705,6 +9356,9 @@ const Locales = exports.Locales = {
     creatorCreditPlaceholder: "Credit (optional) — e.g. Synced by Mustafa",
     creatorTextPlaceholder:
       "Paste or type lyrics here, one line per row.\n\n• Type #interlude for an instrumental break (• • •)\n• Type [background vocal] on the line below a lyric to attach sub-vocals\n• Prefix a line with v2: for right-aligned Duet singer",
+    appleConnectError: "Could not reach Apple Music, please try again.",
+    appleConnected: "Apple Music connected.",
+    appleConnectFailed: "Apple Music connection failed.",
   },
   tr: {
     appearance: "Görünüm",
@@ -8818,17 +9472,16 @@ const Locales = exports.Locales = {
     creatorCreditPlaceholder: "Hazırlayan notu (isteğe bağlı) — örn. Synced by Mustafa",
     creatorTextPlaceholder:
       "Şarkı sözlerini her satıra bir cümle gelecek şekilde yazın veya yapıştırın.\n\n• Enstrümantal ara için #interlude yazın\n• Arka vokal eklemek için cümlenin hemen alt satırına [arka vokal] yazın\n• Sağ hizalı Düet şarkıcı için satır başına v2: ekleyin",
+    appleConnectError: "Apple Music'e ulaşılamadı, tekrar deneyin.",
+    appleConnected: "Apple Music bağlandı.",
+    appleConnectFailed: "Apple Music bağlantısı başarısız oldu.",
   },
 };
 
 function t(key) {
   let lang = Settings.get("language") || "auto";
   if (lang === "auto") {
-    const spLocale =
-      (typeof Spicetify !== "undefined" && Spicetify.Locale && Spicetify.Locale.getLocale()) ||
-      (typeof Spicetify !== "undefined" && Spicetify.Platform?.Translations?.getLocale?.()) ||
-      navigator.language ||
-      "en";
+    const spLocale = SpotiKitBridge.getLocale() || "en";
     lang = spLocale.split("-")[0].toLowerCase();
   }
   const dict = Locales[lang] || Locales.en;
@@ -8874,6 +9527,7 @@ const Icons = exports.Icons = {
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
   up: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`,
   down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
+  fullscreen: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>`,
 };
 
     },
@@ -9342,6 +9996,7 @@ exports.parseLRC = parseLRC;
 
 const Settings = exports.Settings = {
   KEY: "fullscreen-reloaded:settings",
+  SETTINGS_KEY: "settings",
   defaults: {
     backgroundMode: "dynamic-gradient", // solid | gradient | dynamic-gradient | blurred-artwork | artwork | darkened-artwork | custom-color
     customColor: "#101014",
@@ -9371,32 +10026,56 @@ const Settings = exports.Settings = {
   data: {},
   _listeners: new Set(),
 
+  _getScope() {
+    return typeof SpotiKit !== "undefined" ? SpotiKit.Storage?.scope?.("fullscreen-reloaded") || null : null;
+  },
+
   load() {
     let stored = null;
+    let migratedFromLocalStorage = false;
+    const scope = this._getScope();
     try {
-      const raw =
-        (typeof Spicetify !== "undefined" && Spicetify.LocalStorage && Spicetify.LocalStorage.get(this.KEY)) ||
-        window.localStorage.getItem(this.KEY);
-      if (raw) stored = JSON.parse(raw);
+      const scopeValue = scope && typeof scope.get === "function" ? scope.get(this.SETTINGS_KEY, null) : null;
+      if (scopeValue !== null && scopeValue !== undefined) {
+        const parsed = typeof scopeValue === "string" ? JSON.parse(scopeValue) : scopeValue;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          stored = parsed;
+        }
+      } else if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem(this.KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            stored = parsed;
+            if (scope) migratedFromLocalStorage = true;
+          }
+        }
+      }
     } catch (e) {
       /* ignore corrupt settings */
     }
     this.data = Object.assign({}, this.defaults, stored || {});
+    let needsSave = migratedFromLocalStorage;
     if (!this.data._migratedIdleLyricsV2) {
       this.data.idleLyrics = true;
       this.data.showLyrics = true;
       this.data._migratedIdleLyricsV2 = true;
+      needsSave = true;
+    }
+    if (needsSave) {
       this.save();
     }
   },
 
   save() {
-    const raw = JSON.stringify(this.data);
     try {
-      if (typeof Spicetify !== "undefined" && Spicetify.LocalStorage) {
-        Spicetify.LocalStorage.set(this.KEY, raw);
-      } else {
-        window.localStorage.setItem(this.KEY, raw);
+      const scope = this._getScope();
+      if (scope && typeof scope.set === "function") {
+        scope.set(this.SETTINGS_KEY, { ...this.data });
+        return;
+      }
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(this.KEY, JSON.stringify(this.data));
       }
     } catch (e) {
       /* storage unavailable */

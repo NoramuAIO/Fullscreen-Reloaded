@@ -3,9 +3,10 @@
  */
 import { el } from "./utils/dom.js";
 import { resolveImageUrl, rgb, rgba } from "./utils/formatters.js";
+import { Icons } from "./utils/icons.js";
 import { t } from "./utils/i18n.js";
 import { Settings } from "./utils/settings.js";
-import { SpicetifyBridge } from "./services/SpicetifyBridge.js";
+import { SpotiKitBridge } from "./services/SpotiKitBridge.js";
 import { BackgroundManager } from "./components/BackgroundManager.js";
 import { AmbientManager } from "./components/AmbientManager.js";
 import { Clock } from "./components/Clock.js";
@@ -15,6 +16,8 @@ import { TopBar } from "./components/TopBar.js";
 import { BottomDock } from "./components/BottomDock.js";
 import { LyricsView } from "./components/LyricsView.js";
 import { FullLyricsCreator } from "./components/FullLyricsCreator.js";
+import { destroyCustomSelects } from "./components/CustomSelect.js";
+import { destroyCustomColorPickers } from "./components/CustomColorPicker.js";
 import { LyricsService } from "./services/LyricsService.js";
 import { AudioMoodEngine } from "./services/AudioMoodEngine.js";
 
@@ -36,9 +39,20 @@ export const App = {
   currentTrack: null,
   currentImage: null,
   _metaGen: 0,
+  _metaTimer: null,
+  _rebuildGen: 0,
   idleTimer: null,
+  _ctx: null,
+  _mounted: false,
+  _abortController: null,
+  _onCtxAbort: null,
+  _songUnsub: null,
+  _settingsUnsub: null,
+  _profileMenuHandle: null,
+  _playbarHandle: null,
 
-  mount() {
+  _buildDomTree() {
+    this.artActiveIsImg = true;
     const root = el("div", "");
     root.id = "fullscreen-reloaded-root";
 
@@ -113,30 +127,213 @@ export const App = {
     this.root = root;
 
     this.applyLayoutSettings();
+  },
+
+  _teardownDomTree() {
+    clearTimeout(this._metaTimer);
+    this._metaTimer = null;
+    this._metaGen++;
+
+    this.stopTicking();
+    Clock.stop();
+
+    TopBar.destroy();
+    LyricsView.destroy();
+    FullLyricsCreator.destroy();
+    BottomDock.destroy();
+    UpNextCard.destroy();
+    SettingsModal.destroy();
+    destroyCustomSelects();
+    destroyCustomColorPickers();
+
+    AmbientManager._currentMood = "";
+    AmbientManager._isIdle = false;
+    BackgroundManager.activeIsA = true;
+
+    if (this.artImg) this.artImg.onload = null;
+    if (this.artImgAlt) this.artImgAlt.onload = null;
+
+    this.root?.remove();
+    this.root = null;
+    this.stage = null;
+    this.artImg = null;
+    this.artImgAlt = null;
+    this.artWrap = null;
+    this.ringRect = null;
+    this.metaWrap = null;
+    this.titleEl = null;
+    this.artistEl = null;
+    this.albumEl = null;
+    this.artActiveIsImg = true;
+  },
+
+  _disposeHandle(handle) {
+    if (!handle) return;
+    if (typeof handle === "function") {
+      handle();
+    } else if (typeof handle.remove === "function") {
+      handle.remove();
+    }
+  },
+
+  _syncPlaybarActive(isOpen) {
+    if (!this._playbarHandle) return;
+    if (typeof this._playbarHandle.setActive === "function") {
+      this._playbarHandle.setActive(Boolean(isOpen));
+    } else if ("active" in this._playbarHandle) {
+      this._playbarHandle.active = Boolean(isOpen);
+    }
+  },
+
+  mount(ctx) {
+    if (this._mounted) {
+      this.unmount();
+    }
+
+    this._ctx = ctx || null;
+    this._mounted = true;
+    this._rebuildGen = 0;
+    this._metaGen = 0;
+
+    this._abortController = new AbortController();
+    if (ctx?.signal) {
+      if (ctx.signal.aborted) {
+        this._abortController.abort(ctx.signal.reason);
+      } else {
+        this._onCtxAbort = () => this._abortController?.abort(ctx.signal.reason);
+        ctx.signal.addEventListener("abort", this._onCtxAbort, { once: true });
+      }
+    }
+
+    this._buildDomTree();
 
     // Listen to track changes
     this.songChangeListener = () => this.onTrackChange();
-    SpicetifyBridge.addPlayerListener("songchange", this.songChangeListener);
+    this._songUnsub = SpotiKitBridge.addPlayerListener("songchange", this.songChangeListener);
 
     // Listen to settings changes
-    Settings.onChange((key) => this.onSettingsChanged(key));
+    this._settingsUnsub = Settings.onChange((key) => this.onSettingsChanged(key));
+
+    // Register SpotiKit ProfileMenu launch item
+    if (typeof SpotiKit !== "undefined" && typeof SpotiKit.ProfileMenu?.add === "function") {
+      this._profileMenuHandle = SpotiKit.ProfileMenu.add({
+        label: "Fullscreen Reloaded",
+        icon: Icons.fullscreen,
+        onSelect: () => this.toggleOpen(),
+      });
+    }
+
+    // Register fallback Playbar button only when native fullscreen button is absent
+    const hasNativeFullscreen =
+      typeof document !== "undefined" &&
+      Boolean(document.querySelector('[data-testid="fullscreen-mode-button"]'));
+    if (
+      !hasNativeFullscreen &&
+      typeof SpotiKit !== "undefined" &&
+      typeof SpotiKit.Playbar?.add === "function"
+    ) {
+      this._playbarHandle = SpotiKit.Playbar.add({
+        label: "Fullscreen Reloaded",
+        icon: Icons.fullscreen,
+        active: this.open,
+        onClick: () => this.toggleOpen(),
+      });
+    }
 
     // Register idle and hotkeys
-    this.registerIdleTracker();
-    this.registerHotkeys();
+    const signal = this._abortController.signal;
+    this.registerIdleTracker(signal);
+    this.registerHotkeys(signal);
   },
 
-  registerIdleTracker() {
+  unmount() {
+    if (!this._mounted) return;
+    this._mounted = false;
+    this._rebuildGen++;
+    this._metaGen++;
+
+    this.close();
+
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+
+    if (this._songUnsub) {
+      this._songUnsub();
+      this._songUnsub = null;
+    }
+    this.songChangeListener = null;
+
+    if (this._settingsUnsub) {
+      this._settingsUnsub();
+      this._settingsUnsub = null;
+    }
+
+    this._disposeHandle(this._profileMenuHandle);
+    this._profileMenuHandle = null;
+
+    this._disposeHandle(this._playbarHandle);
+    this._playbarHandle = null;
+
+    if (this._ctx?.signal && this._onCtxAbort) {
+      this._ctx.signal.removeEventListener("abort", this._onCtxAbort);
+    }
+    this._onCtxAbort = null;
+
+    this._abortController?.abort();
+    this._abortController = null;
+
+    this._teardownDomTree();
+
+    this.currentTrack = null;
+    this.currentImage = null;
+    this._ctx = null;
+  },
+
+  async rebuildForLanguage() {
+    if (!this._mounted || !this.root) return;
+    const rebuildGen = ++this._rebuildGen;
+    const wasOpen = this.open;
+    const settingsWasOpen = Boolean(SettingsModal.root?.classList.contains("fr-show"));
+
+    this._teardownDomTree();
+    if (!this._mounted || SpotiKitBridge.isStopped()) return;
+
+    this._buildDomTree();
+    if (wasOpen) {
+      this.open = true;
+      this.root.classList.add("fr-open");
+    }
+    if (settingsWasOpen && SettingsModal.root) {
+      SettingsModal.root.classList.add("fr-show");
+    }
+    this.applyLayoutSettings();
+
+    this.currentTrack = null;
+    if (wasOpen) {
+      Clock.start();
+      await this.onTrackChange();
+      if (!this._mounted || !this.open || SpotiKitBridge.isStopped() || rebuildGen !== this._rebuildGen) {
+        return;
+      }
+      this.startTicking();
+    } else if (SpotiKitBridge.getCurrentTrack()) {
+      await this.onTrackChange();
+    }
+  },
+
+  registerIdleTracker(signal) {
+    const opts = signal ? { signal } : undefined;
     const reset = () => this.resetIdle();
-    window.addEventListener("mousemove", reset);
-    window.addEventListener("mousedown", reset);
-    window.addEventListener("keydown", reset);
-    window.addEventListener("wheel", reset);
-    window.addEventListener("mouseleave", () => this.setIdle(true));
+    const onLeave = () => this.setIdle(true);
+    window.addEventListener("mousemove", reset, opts);
+    window.addEventListener("mousedown", reset, opts);
+    window.addEventListener("keydown", reset, opts);
+    window.addEventListener("wheel", reset, opts);
+    window.addEventListener("mouseleave", onLeave, opts);
   },
 
   resetIdle() {
-    if (!this.open) return;
+    if (!this.open || !this._mounted) return;
     if (this.root && this.root.classList.contains("fr-idle")) {
       this.root.classList.remove("fr-idle");
     }
@@ -145,31 +342,35 @@ export const App = {
   },
 
   setIdle(isIdle) {
-    if (!this.root || !this.open) return;
+    if (!this.root || !this.open || !this._mounted) return;
     if (SettingsModal.root && SettingsModal.root.classList.contains("fr-show")) return;
     if (FullLyricsCreator.isOpen) return;
     this.root.classList.toggle("fr-idle", isIdle);
     AmbientManager.setIdle(isIdle);
   },
 
-  registerHotkeys() {
+  registerHotkeys(signal) {
+    const captureOpts = signal ? { capture: true, signal } : true;
+
     // Intercept clicks on Spotify's native fullscreen button
     document.addEventListener(
       "click",
       (e) => {
-        if (SpicetifyBridge.isSpotifyFullscreenButton(e.target)) {
+        if (!this._mounted || SpotiKitBridge.isStopped()) return;
+        if (SpotiKitBridge.isSpotifyFullscreenButton(e.target)) {
           e.preventDefault();
-          e.stopPropagation();
+          e.stopImmediatePropagation();
           this.toggleOpen();
         }
       },
-      true
+      captureOpts
     );
 
     // Keyboard shortcuts
     document.addEventListener(
       "keydown",
       (e) => {
+        if (!this._mounted || SpotiKitBridge.isStopped()) return;
         const target = e.target;
         const isTyping =
           target &&
@@ -201,12 +402,13 @@ export const App = {
           this.close();
         }
       },
-      true
+      captureOpts
     );
   },
 
   async onTrackChange() {
-    const track = SpicetifyBridge.getCurrentTrack();
+    if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+    const track = SpotiKitBridge.getCurrentTrack();
     if (!track) return;
 
     const isSameTrack = this.currentTrack && this.currentTrack.uri === track.uri;
@@ -219,6 +421,7 @@ export const App = {
         : meta.artist_name || track.name || t("unknownArtist");
 
     const updateMeta = () => {
+      if (!this.titleEl || !this.artistEl || !this.albumEl) return;
       this.titleEl.textContent = meta.title || track.name || t("unknownTitle");
       this.artistEl.textContent = artists;
       this.albumEl.textContent = meta.album_title || track.album?.name || "";
@@ -227,9 +430,11 @@ export const App = {
 
     if (!isSameTrack) {
       const gen = ++this._metaGen;
-      this.metaWrap.classList.add("fr-meta-animating");
-      setTimeout(() => {
-        if (gen !== this._metaGen) return;
+      this.metaWrap?.classList.add("fr-meta-animating");
+      clearTimeout(this._metaTimer);
+      this._metaTimer = setTimeout(() => {
+        this._metaTimer = null;
+        if (gen !== this._metaGen || !this._mounted || !this.metaWrap) return;
         updateMeta();
         this.metaWrap.classList.remove("fr-meta-animating");
       }, 150);
@@ -257,33 +462,41 @@ export const App = {
       // Crossfade album art between dual stacked layers
       const showing = this.artActiveIsImg ? this.artImg : this.artImgAlt;
       const incoming = this.artActiveIsImg ? this.artImgAlt : this.artImg;
-      incoming.src = image;
-      incoming.onload = () => {
-        incoming.classList.add("fr-art-active");
-        showing.classList.remove("fr-art-active");
-        this.artActiveIsImg = !this.artActiveIsImg;
-      };
+      if (incoming && showing) {
+        incoming.src = image;
+        incoming.onload = () => {
+          if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+          incoming.classList.add("fr-art-active");
+          showing.classList.remove("fr-art-active");
+          this.artActiveIsImg = !this.artActiveIsImg;
+        };
+      }
 
       const colors = await BackgroundManager.update(image);
+      if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
       AmbientManager.updateColors(colors);
       AudioMoodEngine.updateColors(colors);
       this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));
-      this.artWrap.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
+      this.artWrap?.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
     } else if (LyricsView._currentTrackUri !== track.uri) {
       LyricsView.loadForTrack(track, this);
     }
   },
 
   startTicking() {
-    if (this.tickHandle) return;
+    if (this.tickHandle || !this._mounted || !this.open) return;
     const loop = () => {
+      if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) {
+        this.tickHandle = null;
+        return;
+      }
       const progress = BottomDock.tick();
-      const duration = SpicetifyBridge.getDuration();
+      const duration = SpotiKitBridge.getDuration();
       if (typeof progress === "number") {
         LyricsView.update(progress);
         UpNextCard.update(duration, progress);
 
-        const moodFrame = AudioMoodEngine.sample(progress, SpicetifyBridge.isPlaying(), LyricsView);
+        const moodFrame = AudioMoodEngine.sample(progress, SpotiKitBridge.isPlaying(), LyricsView);
         AmbientManager.updateFrame(moodFrame, this.artWrap);
 
         if (duration && this.ringRect) {
@@ -304,39 +517,50 @@ export const App = {
   },
 
   async toggleOpen() {
+    if (!this._mounted) return;
     if (this.open) this.close();
     else await this.launch();
   },
 
   async launch() {
+    if (!this._mounted || !this.root) return;
     this.open = true;
     this.root.classList.add("fr-open");
     document.body.style.overflow = "hidden";
+    this._syncPlaybarActive(true);
     Clock.start();
 
     try {
-      if (!document.fullscreenElement) {
+      if (!document.fullscreenElement && typeof document.documentElement?.requestFullscreen === "function") {
         await document.documentElement.requestFullscreen();
       }
     } catch (e) {
       // browser may require user gesture
     }
 
+    if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) return;
+
     await this.onTrackChange();
+    if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) return;
+
     LyricsView.showProviderBadge(3000);
     this.startTicking();
   },
 
   close() {
     this.open = false;
-    this.root.classList.remove("fr-open");
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.root?.classList.remove("fr-open", "fr-idle");
+    AmbientManager.setIdle(false);
     SettingsModal.close();
     FullLyricsCreator.close();
     document.body.style.overflow = "";
+    this._syncPlaybarActive(false);
     Clock.stop();
 
     try {
-      if (document.fullscreenElement) {
+      if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
         document.exitFullscreen();
       }
     } catch (e) {
@@ -351,6 +575,11 @@ export const App = {
   },
 
   onSettingsChanged(key) {
+    if (!this._mounted) return;
+    if (key === "language") {
+      this.rebuildForLanguage();
+      return;
+    }
     if (
       [
         "showLyrics",
@@ -385,6 +614,7 @@ export const App = {
   },
 
   applyLayoutSettings() {
+    if (!this.root || !this.stage || !this.artWrap) return;
     const forceCenter = !Settings.get("showLyrics") || LyricsView.hasLyrics === false;
     this.stage.classList.toggle("fr-centered", forceCenter);
 

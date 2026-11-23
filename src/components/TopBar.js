@@ -84,10 +84,10 @@ export const TopBar = {
         pipWindow.document.body.appendChild(img);
 
         pipWindow.addEventListener("pagehide", () => {
-          this.pipBtn.classList.remove("fr-active");
+          this.pipBtn?.classList.remove("fr-active");
           this.pipImg = null;
         });
-        this.pipBtn.classList.add("fr-active");
+        this.pipBtn?.classList.add("fr-active");
       }
       // Fallback for older Chromium versions: Legacy Canvas Video PiP
       else {
@@ -99,6 +99,7 @@ export const TopBar = {
         img.crossOrigin = "anonymous";
         img.src = app.currentImage || "";
         img.onload = async () => {
+          if (!this.root) return;
           ctx.fillStyle = "#121212";
           ctx.fillRect(0, 0, 800, 800);
           ctx.drawImage(img, 0, 0, 800, 800);
@@ -109,13 +110,34 @@ export const TopBar = {
           await video.play();
           await video.requestPictureInPicture();
           video.addEventListener("leavepictureinpicture", () => {
-            this.pipBtn.classList.remove("fr-active");
+            this.pipBtn?.classList.remove("fr-active");
           });
         };
-        this.pipBtn.classList.add("fr-active");
+        this.pipBtn?.classList.add("fr-active");
       }
     } catch (e) {
       console.warn("[Fullscreen Reloaded] PiP error:", e);
     }
+  },
+
+  destroy() {
+    try {
+      if (window?.documentPictureInPicture?.window) {
+        window.documentPictureInPicture.window.close();
+      }
+    } catch (_) {}
+
+    try {
+      if (document.pictureInPictureElement && typeof document.exitPictureInPicture === "function") {
+        Promise.resolve(document.exitPictureInPicture()).catch(() => {});
+      }
+    } catch (_) {}
+
+    this.pipImg = null;
+    this.root?.remove();
+    this.root = null;
+    this.lyricsBtn = null;
+    this.creatorBtn = null;
+    this.pipBtn = null;
   },
 };

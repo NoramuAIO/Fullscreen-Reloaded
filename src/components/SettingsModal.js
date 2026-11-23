@@ -241,7 +241,6 @@ export const SettingsModal = {
       value: Settings.get("language") || "auto",
       onChange: (val) => {
         Settings.set("language", val);
-        location.reload();
       },
     });
     langRow.append(el("label", null, t("language")), langSelect);
@@ -308,5 +307,10 @@ export const SettingsModal = {
     if (this.root) {
       this.root.classList.remove("fr-show");
     }
+  },
+
+  destroy() {
+    this.root?.remove();
+    this.root = null;
   },
 };
