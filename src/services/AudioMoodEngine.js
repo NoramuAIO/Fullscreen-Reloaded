@@ -1,12 +1,13 @@
 /**
  * Real-time Audio Analysis & Mood Atmosphere Engine.
- * - Uses Spicetify.getAudioData() `segments` (loudness_start, loudness_max, loudness_max_time, timbre)
+ * - Uses SpotiKitBridge.getAudioData() `segments` (loudness_start, loudness_max, loudness_max_time, timbre)
  *   with true logarithmic decibel-to-amplitude conversion (10^(dB/20)) and transient onset detection.
  * - Never fires fake metronome pulses during quiet sections or when audio analysis is unavailable.
  * - Automatically classifies each track into one of 4 atmospheric moods:
  *   "energetic" | "melancholic" | "latenight" | "dreamy"
  */
 import { Settings } from "../utils/settings.js";
+import { SpotiKitBridge } from "./SpotiKitBridge.js";
 
 const MELANCHOLIC_KEYWORDS = [
   "ağla", "agla", "veda", "yalnız", "yalniz", "hüzün", "huzun", "gözyaş", "gozyas",
@@ -287,14 +288,17 @@ export const AudioMoodEngine = {
     if (this._audioCache.has(uri)) {
       return this._audioCache.get(uri);
     }
-    if (typeof Spicetify === "undefined" || typeof Spicetify.getAudioData !== "function") {
+    if (SpotiKitBridge.isStopped()) {
       return null;
     }
 
+    let timer = null;
     try {
       const result = await Promise.race([
-        Spicetify.getAudioData(uri),
-        new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+        SpotiKitBridge.getAudioData(uri),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(null), 2500);
+        }),
       ]);
       if (result && Array.isArray(result.segments) && result.segments.length > 0) {
         if (this._audioCache.size > 30) {
@@ -306,6 +310,8 @@ export const AudioMoodEngine = {
       }
     } catch (_) {
       // Ignore audio-analysis errors gracefully
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
     return null;
   },

@@ -5,6 +5,7 @@
  */
 import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
 import { AppleMusicAuth } from "../AppleMusicAuth.js";
+import { SpotiKitBridge } from "../SpotiKitBridge.js";
 import { parseTTML } from "../../utils/parsers.js";
 
 function normText(s) {
@@ -42,13 +43,13 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
     }
 
     // 2. Fallback to authenticated Apple Music API if user configured Music-User-Token
-    if (!AppleMusicAuth.isConnected()) return null;
+    if (SpotiKitBridge.isStopped() || !AppleMusicAuth.isConnected()) return null;
 
     const devToken = await AppleMusicAuth.getDeveloperToken();
-    if (!devToken) return null;
+    if (!devToken || SpotiKitBridge.isStopped()) return null;
 
     const songId = await this.findSongId(devToken, targetTitle, artist, durationMs);
-    if (!songId) return null;
+    if (!songId || SpotiKitBridge.isStopped()) return null;
 
     const userToken = AppleMusicAuth.getUserToken();
     const headers = {
@@ -61,13 +62,10 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
 
     let res = null;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1800);
       res = await fetch(
         `https://amp-api.music.apple.com/v1/catalog/${AppleMusicAuth.storefront}/songs/${songId}/lyrics`,
-        { headers, signal: controller.signal }
+        { headers, signal: SpotiKitBridge.createTimeoutSignal(1800) }
       ).then((r) => (r.ok ? r.json() : null));
-      clearTimeout(timeoutId);
     } catch (e) {
       return null;
     }
@@ -90,11 +88,11 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
   async _fetchPublicTTML(title, artist, durationSec = 0) {
     try {
       let results = await this._queryBinimum(title, artist);
-      if (!results.length && title.includes(" - ")) {
+      if (!results.length && !SpotiKitBridge.isStopped() && title.includes(" - ")) {
         const shortTitle = title.split(" - ")[0].trim();
         if (shortTitle) results = await this._queryBinimum(shortTitle, artist);
       }
-      if (!results.length) return null;
+      if (!results.length || SpotiKitBridge.isStopped()) return null;
 
       const normArtist = normText(artist);
       const normTitle = normText(title);
@@ -130,10 +128,10 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
       });
 
       const best = pool[0];
-      const ttmlCtrl = new AbortController();
-      const ttmlTimer = setTimeout(() => ttmlCtrl.abort(), 2400);
-      const ttmlRes = await fetch(best.lyricsUrl, { signal: ttmlCtrl.signal });
-      clearTimeout(ttmlTimer);
+      if (SpotiKitBridge.isStopped()) return null;
+      const ttmlRes = await fetch(best.lyricsUrl, {
+        signal: SpotiKitBridge.createTimeoutSignal(2400),
+      });
       if (!ttmlRes.ok) return null;
 
       const ttmlText = await ttmlRes.text();
@@ -160,12 +158,9 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
         track: title,
         artist: artist,
       });
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2400);
       const r = await fetch(`https://lyrics-api.binimum.org/?${params.toString()}`, {
-        signal: controller.signal,
+        signal: SpotiKitBridge.createTimeoutSignal(2400),
       });
-      clearTimeout(timer);
       if (!r.ok) return [];
       const data = await r.json();
       return Array.isArray(data?.results) ? data.results : [];
@@ -178,13 +173,13 @@ export class AppleMusicLyricsProvider extends BaseLyricsProvider {
     const term = encodeURIComponent(`${title} ${artist}`);
     let res = null;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1500);
       res = await fetch(
         `https://amp-api.music.apple.com/v1/catalog/${AppleMusicAuth.storefront}/search?term=${term}&types=songs&limit=5`,
-        { headers: { Authorization: `Bearer ${devToken}`, Origin: "https://music.apple.com" }, signal: controller.signal }
+        {
+          headers: { Authorization: `Bearer ${devToken}`, Origin: "https://music.apple.com" },
+          signal: SpotiKitBridge.createTimeoutSignal(1500),
+        }
       ).then((r) => (r.ok ? r.json() : null));
-      clearTimeout(timer);
     } catch (e) {
       return null;
     }

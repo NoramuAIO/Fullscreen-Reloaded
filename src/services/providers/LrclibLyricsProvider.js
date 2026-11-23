@@ -3,6 +3,7 @@
  * Free, open, no API key required. Line-synced and plain lyrics with 503 retry and cleaned search fallback.
  */
 import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
+import { SpotiKitBridge } from "../SpotiKitBridge.js";
 import { parseLRC } from "../../utils/parsers.js";
 
 export class LrclibLyricsProvider extends BaseLyricsProvider {
@@ -29,6 +30,8 @@ export class LrclibLyricsProvider extends BaseLyricsProvider {
       return searchRes;
     }
 
+    if (SpotiKitBridge.isStopped()) return null;
+
     // 2. Fallback to free-text query search only if structured search returned nothing
     const qRes = await this._searchQuery(`${targetTitle} ${artist}`, durationSec);
     if (qRes && qRes.lines?.length) {
@@ -53,18 +56,19 @@ export class LrclibLyricsProvider extends BaseLyricsProvider {
 
   async _fetchJsonWithRetry(url) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0 && SpotiKitBridge.isStopped()) {
+        return null;
+      }
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2200);
-        const r = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        const r = await fetch(url, { signal: SpotiKitBridge.createTimeoutSignal(2200) });
 
         if (r.ok) {
           return await r.json();
         }
         // Retry once on 503 Service Unavailable
-        if (r.status === 503 && attempt === 0) {
+        if (r.status === 503 && attempt === 0 && !SpotiKitBridge.isStopped()) {
           await new Promise((res) => setTimeout(res, 450));
+          if (SpotiKitBridge.isStopped()) return null;
           continue;
         }
         return null;

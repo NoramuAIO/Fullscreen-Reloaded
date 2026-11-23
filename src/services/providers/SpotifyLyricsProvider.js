@@ -1,9 +1,9 @@
 /**
  * Spotify native lyrics provider.
- * Updated for Spotify 1.3.6: supports both Spicetify.CosmosAsync and native fetch with session token.
+ * Updated for Spotify 1.3.6: supports both SpotiKit.Http.get and native fetch with session token.
  */
 import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
-import { SpicetifyBridge } from "../SpicetifyBridge.js";
+import { SpotiKitBridge } from "../SpotiKitBridge.js";
 import { splitParentheticalBg } from "../../utils/parsers.js";
 
 export class SpotifyLyricsProvider extends BaseLyricsProvider {
@@ -16,37 +16,39 @@ export class SpotifyLyricsProvider extends BaseLyricsProvider {
     const url = `https://spclient.wg.spotify.com/color-lyrics/v2/track/${id}?format=json&vocalRemoval=false&market=from_token`;
     let res = null;
 
-    // Strategy 1: CosmosAsync in Spicetify
-    if (typeof Spicetify !== "undefined" && Spicetify.CosmosAsync?.get) {
+    // Strategy 1: SpotiKit.Http.get
+    if (!SpotiKitBridge.isStopped()) {
+      let timer = null;
       try {
-        const cosmosPromise = Spicetify.CosmosAsync.get(url);
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500));
-        res = await Promise.race([cosmosPromise, timeoutPromise]);
+        const httpPromise = SpotiKitBridge.httpGet(url);
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("timeout")), 1500);
+        });
+        res = await Promise.race([httpPromise, timeoutPromise]);
         if (typeof res === "string") {
           try { res = JSON.parse(res); } catch (_) {}
         } else if (res && !res.lyrics && res.body) {
           res = typeof res.body === "string" ? JSON.parse(res.body) : res.body;
         }
       } catch (e) {
-        // CosmosAsync failed or timed out, continue to Strategy 2
+        // SpotiKit.Http.get failed or timed out, continue to Strategy 2
+      } finally {
+        if (timer !== null) clearTimeout(timer);
       }
     }
 
     // Strategy 2: Direct HTTP fetch with session access token (Spotify 1.3.6 compatible)
-    if (!res || !res.lyrics) {
+    if ((!res || !res.lyrics) && !SpotiKitBridge.isStopped()) {
       try {
-        const token = await SpicetifyBridge.getAccessToken();
-        if (token) {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 1800);
+        const token = await SpotiKitBridge.getAccessToken();
+        if (token && !SpotiKitBridge.isStopped()) {
           const response = await fetch(url, {
             headers: {
               Authorization: `Bearer ${token}`,
               "app-platform": "WebPlayer",
             },
-            signal: controller.signal,
+            signal: SpotiKitBridge.createTimeoutSignal(1800),
           });
-          clearTimeout(timeoutId);
           if (response.ok) {
             res = await response.json();
           }

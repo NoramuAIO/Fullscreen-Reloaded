@@ -4,6 +4,7 @@
  * using the exact Liquid Lyrics / Spicy Lyrics protocol (`SpicyLyrics-WebAuth` + `SLObjPack` unpacker).
  */
 import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
+import { SpotiKitBridge } from "../SpotiKitBridge.js";
 import { extractTrackId, spicyLyricsToFullscreenLines } from "../CustomSyncStorage.js";
 
 const SPICY_API_BASE = "https://api.spicylyrics.org";
@@ -11,8 +12,6 @@ const DEFAULT_SPICY_VERSION = "6.3.12";
 
 let _cachedVersion = null;
 let _versionPromise = null;
-let _cachedToken = null;
-let _tokenPromise = null;
 
 const PACK_LIMITS = {
   depth: 512,
@@ -155,10 +154,9 @@ async function getSpicyVersion() {
   if (!_versionPromise) {
     _versionPromise = (async () => {
       try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 1800);
-        const res = await fetch(`${SPICY_API_BASE}/version`, { signal: ctrl.signal });
-        clearTimeout(timer);
+        const res = await fetch(`${SPICY_API_BASE}/version`, {
+          signal: SpotiKitBridge.createTimeoutSignal(1800),
+        });
         if (res.ok) {
           const txt = (await res.text()).trim();
           if (/^\d+\.\d+\.\d+$/.test(txt)) {
@@ -171,58 +169,6 @@ async function getSpicyVersion() {
   }
   await _versionPromise;
   return _cachedVersion || DEFAULT_SPICY_VERSION;
-}
-
-function isTokenFresh(tokObj) {
-  if (!tokObj?.accessToken) return false;
-  if (!Number.isFinite(tokObj.expiresAtTime)) return true;
-  return tokObj.expiresAtTime - Date.now() > 2000;
-}
-
-async function getSpotifyAccessToken() {
-  try {
-    const authApi = Spicetify?.Platform?.AuthorizationAPI;
-    if (typeof authApi?.getState === "function") {
-      const state = authApi.getState();
-      if (state?.isAuthorized !== false && state?.token?.accessToken) {
-        return state.token.accessToken;
-      }
-    }
-  } catch (_) {}
-
-  if (isTokenFresh(_cachedToken)) return _cachedToken.accessToken;
-  _cachedToken = null;
-
-  if (_tokenPromise) return _tokenPromise;
-
-  _tokenPromise = (async () => {
-    try {
-      if (Spicetify?.CosmosAsync?.get) {
-        const res = await Spicetify.CosmosAsync.get("sp://oauth/v2/token");
-        if (res?.accessToken) {
-          _cachedToken = {
-            accessToken: res.accessToken,
-            expiresAtTime: Number(res.expiresAtTime),
-          };
-          return res.accessToken;
-        }
-      }
-    } catch (_) {}
-
-    const session = Spicetify?.Platform?.Session;
-    if (session?.accessToken) {
-      _cachedToken = {
-        accessToken: session.accessToken,
-        expiresAtTime: Number(session.accessTokenExpirationTimestampMs),
-      };
-      return session.accessToken;
-    }
-    return null;
-  })().finally(() => {
-    _tokenPromise = null;
-  });
-
-  return _tokenPromise;
 }
 
 function convertSpicyTimesToMs(data) {
@@ -268,11 +214,8 @@ export class SpicyLyricsProvider extends BaseLyricsProvider {
 
     try {
       const version = await getSpicyVersion();
-      const token = await getSpotifyAccessToken();
+      const token = await SpotiKitBridge.getAccessToken();
       const authHeader = token ? `Bearer ${token}` : null;
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3200);
 
       const res = await fetch(`${SPICY_API_BASE}/query`, {
         method: "POST",
@@ -294,9 +237,8 @@ export class SpicyLyricsProvider extends BaseLyricsProvider {
           ],
           client: { version },
         }),
-        signal: controller.signal,
+        signal: SpotiKitBridge.createTimeoutSignal(3200),
       });
-      clearTimeout(timer);
 
       if (!res.ok) return null;
       const body = await res.json();

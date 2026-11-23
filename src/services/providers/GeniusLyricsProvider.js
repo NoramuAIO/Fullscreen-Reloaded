@@ -3,28 +3,27 @@
  * Fetches unsynced lyrics through a CORS proxy to bypass Spotify CEF cross-origin restrictions.
  */
 import { BaseLyricsProvider } from "./BaseLyricsProvider.js";
+import { SpotiKitBridge } from "../SpotiKitBridge.js";
 
 async function safeProxyFetch(targetUrl, timeoutMs = 1800) {
   const proxies = [
     (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
   ];
 
-  for (const getProxyUrl of proxies) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  for (let i = 0; i < proxies.length; i++) {
+    if (i > 0 && SpotiKitBridge.isStopped()) return null;
     try {
-      const proxyUrl = getProxyUrl(targetUrl);
+      const proxyUrl = proxies[i](targetUrl);
       const res = await fetch(proxyUrl, {
-        signal: controller.signal,
+        signal: SpotiKitBridge.createTimeoutSignal(timeoutMs),
       });
-      clearTimeout(timer);
       if (res && res.ok) {
         return res;
       }
     } catch (e) {
-      clearTimeout(timer);
-      // Try next proxy
+      // Try next proxy if not stopped
     }
+    if (SpotiKitBridge.isStopped()) return null;
   }
   return null;
 }
@@ -62,6 +61,7 @@ export class GeniusLyricsProvider extends BaseLyricsProvider {
       if (!hit?.url) return null;
 
       // Fetch the song page through CORS proxy
+      if (SpotiKitBridge.isStopped()) return null;
       const pageRes = await safeProxyFetch(hit.url, 2500);
       if (!pageRes) return null;
 
