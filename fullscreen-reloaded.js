@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (SpotiKit ESM bundle)
 // A cinematic, modern fullscreen experience for Spotify.
-// Generated on: 2026-11-23T14:31:55.537Z
+// Generated on: 2026-11-23T14:34:41.221Z
 // ==========================================================================
 
 function __createRuntime() {
