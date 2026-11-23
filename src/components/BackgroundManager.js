@@ -5,14 +5,17 @@ import { el } from "../utils/dom.js";
 import { rgb, rgba } from "../utils/formatters.js";
 import { Settings } from "../utils/settings.js";
 import { ColorExtractor } from "../services/ColorExtractor.js";
+import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 
 export const BackgroundManager = {
   root: null,
   layerA: null,
   layerB: null,
   activeIsA: true,
+  _updateGen: 0,
 
   build() {
+    this.activeIsA = true;
     const root = el("div", "fr-bg-root");
     this.layerA = el("div", "fr-bg-layer fr-bg-active");
     this.layerB = el("div", "fr-bg-layer");
@@ -22,7 +25,18 @@ export const BackgroundManager = {
   },
 
   async update(imageUrl) {
+    const gen = ++this._updateGen;
     const colors = await ColorExtractor.extract(imageUrl);
+    if (
+      !this.root ||
+      !this.layerA ||
+      !this.layerB ||
+      SpotiKitBridge.isStopped() ||
+      gen !== this._updateGen
+    ) {
+      return null;
+    }
+
     const mode = Settings.get("backgroundMode");
     const next = this.activeIsA ? this.layerB : this.layerA;
     const prev = this.activeIsA ? this.layerA : this.layerB;
@@ -72,5 +86,14 @@ export const BackgroundManager = {
     this.activeIsA = !this.activeIsA;
 
     return colors;
+  },
+
+  destroy() {
+    this._updateGen++;
+    this.activeIsA = true;
+    this.root?.remove();
+    this.root = null;
+    this.layerA = null;
+    this.layerB = null;
   },
 };

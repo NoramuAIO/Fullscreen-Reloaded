@@ -619,6 +619,164 @@ test("componentCleanupAndRepeatMode: BottomDock repeat state & drag abort, TopBa
   }
 });
 
+test("overlappingOnTrackChange: slow Track A color extraction finishing after Track B does not overwrite Track B", async () => {
+  const env = createLifecycleEnv();
+  const [{ SpotiKitBridge }, { App }, { Settings }, { BackgroundManager }, { AmbientManager }, { ColorExtractor }] =
+    await Promise.all([
+      import(pathToFileURL(path.join(ROOT, "src/services/SpotiKitBridge.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/App.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/utils/settings.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/components/BackgroundManager.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/components/AmbientManager.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/services/ColorExtractor.js")).href),
+    ]);
+
+  const origExtract = ColorExtractor.extract;
+  let resolveTrackA;
+  const trackAColorsPromise = new Promise((resolve) => {
+    resolveTrackA = resolve;
+  });
+
+  ColorExtractor.extract = async (url) => {
+    if (String(url).includes("track-a")) {
+      return trackAColorsPromise;
+    }
+    return { dominant: [0, 60, 20], accent: [0, 255, 0], dark: [0, 20, 10] };
+  };
+
+  try {
+    await SpotiKitBridge.waitForReady();
+    SpotiKitBridge.init(env.mock.ctx);
+    Settings.load();
+    App.mount(env.mock.ctx);
+
+    // Emit Track A (slow color extraction)
+    env.mock.emitTrack({
+      uri: "spotify:track:a",
+      name: "Track A",
+      metadata: {
+        title: "Track A",
+        artist_name: "Artist A",
+        image_xlarge_url: "https://example.com/track-a.jpg",
+      },
+    });
+    const staleOnload = App.artImgAlt.onload;
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Emit Track B (fast color extraction) while Track A is still pending
+    env.mock.emitTrack({
+      uri: "spotify:track:b",
+      name: "Track B",
+      metadata: {
+        title: "Track B",
+        artist_name: "Artist B",
+        image_xlarge_url: "https://example.com/track-b.jpg",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.equal(App.root.style.getPropertyValue("--fr-word-accent"), "rgb(0, 255, 0)");
+    assert.equal(AmbientManager.root.style.getPropertyValue("--fr-amb-accent"), "rgb(0, 255, 0)");
+    assert.equal(BackgroundManager.activeIsA, false);
+    assert.equal(BackgroundManager.layerB.classList.contains("fr-bg-active"), true);
+
+    // Now resolve stale Track A extraction and fire stale image onload
+    resolveTrackA({ dominant: [60, 0, 0], accent: [255, 0, 0], dark: [20, 0, 0] });
+    staleOnload?.();
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(App.root.style.getPropertyValue("--fr-word-accent"), "rgb(0, 255, 0)");
+    assert.equal(AmbientManager.root.style.getPropertyValue("--fr-amb-accent"), "rgb(0, 255, 0)");
+    assert.equal(BackgroundManager.activeIsA, false);
+    assert.equal(BackgroundManager.layerB.classList.contains("fr-bg-active"), true);
+    assert.equal(BackgroundManager.layerA.classList.contains("fr-bg-active"), false);
+    assert.equal(App.artActiveIsImg, true);
+
+    App.unmount();
+  } finally {
+    ColorExtractor.extract = origExtract;
+    env.teardown();
+  }
+});
+
+test("backgroundUpdateAcrossRebuildAndUnmount: pending BackgroundManager.update does not mutate rebuilt or detached layers", async () => {
+  const env = createLifecycleEnv();
+  const [{ SpotiKitBridge }, { App }, { Settings }, { BackgroundManager }, { ColorExtractor }] =
+    await Promise.all([
+      import(pathToFileURL(path.join(ROOT, "src/services/SpotiKitBridge.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/App.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/utils/settings.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/components/BackgroundManager.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/services/ColorExtractor.js")).href),
+    ]);
+
+  const origExtract = ColorExtractor.extract;
+  let resolveSlow1;
+  let resolveSlow2;
+  const slow1 = new Promise((resolve) => {
+    resolveSlow1 = resolve;
+  });
+  const slow2 = new Promise((resolve) => {
+    resolveSlow2 = resolve;
+  });
+
+  ColorExtractor.extract = async (url) => {
+    if (url === "https://example.com/slow-1.jpg") return slow1;
+    if (url === "https://example.com/slow-2.jpg") return slow2;
+    return { dominant: [20, 20, 20], accent: [255, 255, 255], dark: [10, 10, 10] };
+  };
+
+  try {
+    await SpotiKitBridge.waitForReady();
+    SpotiKitBridge.init(env.mock.ctx);
+    Settings.load();
+    App.mount(env.mock.ctx);
+    await App.launch();
+
+    // Case 1: Pending update across rebuildForLanguage()
+    const pending1 = BackgroundManager.update("https://example.com/slow-1.jpg");
+    await App.rebuildForLanguage();
+
+    const rebuiltLayerA = BackgroundManager.layerA;
+    const rebuiltLayerB = BackgroundManager.layerB;
+    assert.equal(BackgroundManager.activeIsA, true);
+    assert.equal(rebuiltLayerA.classList.contains("fr-bg-active"), true);
+    assert.equal(rebuiltLayerB.classList.contains("fr-bg-active"), false);
+
+    resolveSlow1({ dominant: [200, 10, 10], accent: [255, 0, 0], dark: [50, 0, 0] });
+    const res1 = await pending1;
+    assert.equal(res1, null);
+    assert.equal(BackgroundManager.activeIsA, true);
+    assert.equal(rebuiltLayerA.classList.contains("fr-bg-active"), true);
+    assert.equal(rebuiltLayerB.classList.contains("fr-bg-active"), false);
+    assert.equal(rebuiltLayerB.style.backgroundImage, "");
+    assert.equal(rebuiltLayerB.style.backgroundColor, "");
+
+    // Case 2: Pending update across App.unmount()
+    const detachedLayerA = BackgroundManager.layerA;
+    const detachedLayerB = BackgroundManager.layerB;
+    const pending2 = BackgroundManager.update("https://example.com/slow-2.jpg");
+    App.unmount();
+
+    assert.equal(BackgroundManager.root, null);
+    assert.equal(BackgroundManager.layerA, null);
+    assert.equal(BackgroundManager.layerB, null);
+    assert.equal(BackgroundManager.activeIsA, true);
+
+    resolveSlow2({ dominant: [10, 200, 10], accent: [0, 255, 0], dark: [0, 50, 0] });
+    const res2 = await pending2;
+    assert.equal(res2, null);
+    assert.equal(BackgroundManager.activeIsA, true);
+    assert.equal(detachedLayerA.classList.contains("fr-bg-active"), true);
+    assert.equal(detachedLayerB.classList.contains("fr-bg-active"), false);
+    assert.equal(detachedLayerB.style.backgroundImage, "");
+    assert.equal(detachedLayerB.style.backgroundColor, "");
+  } finally {
+    ColorExtractor.extract = origExtract;
+    env.teardown();
+  }
+});
+
 test("zeroLegacySpicetifyRefs: no literal Spicetify.<Letter> tokens exist across src or tests", () => {
   const dirs = [path.join(ROOT, "src"), path.join(ROOT, "tests")];
   const files = [path.join(ROOT, "build.js")];

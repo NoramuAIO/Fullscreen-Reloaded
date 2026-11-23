@@ -40,6 +40,7 @@ export const App = {
   currentImage: null,
   _metaGen: 0,
   _metaTimer: null,
+  _trackGen: 0,
   _rebuildGen: 0,
   idleTimer: null,
   _ctx: null,
@@ -133,6 +134,7 @@ export const App = {
     clearTimeout(this._metaTimer);
     this._metaTimer = null;
     this._metaGen++;
+    this._trackGen++;
 
     this.stopTicking();
     Clock.stop();
@@ -143,12 +145,12 @@ export const App = {
     BottomDock.destroy();
     UpNextCard.destroy();
     SettingsModal.destroy();
+    BackgroundManager.destroy();
     destroyCustomSelects();
     destroyCustomColorPickers();
 
     AmbientManager._currentMood = "";
     AmbientManager._isIdle = false;
-    BackgroundManager.activeIsA = true;
 
     if (this.artImg) this.artImg.onload = null;
     if (this.artImgAlt) this.artImgAlt.onload = null;
@@ -194,6 +196,7 @@ export const App = {
     this._mounted = true;
     this._rebuildGen = 0;
     this._metaGen = 0;
+    this._trackGen = 0;
 
     this._abortController = new AbortController();
     if (ctx?.signal) {
@@ -251,6 +254,7 @@ export const App = {
     this._mounted = false;
     this._rebuildGen++;
     this._metaGen++;
+    this._trackGen++;
 
     this.close();
 
@@ -412,6 +416,7 @@ export const App = {
     if (!track) return;
 
     const isSameTrack = this.currentTrack && this.currentTrack.uri === track.uri;
+    const trackGen = !isSameTrack ? ++this._trackGen : this._trackGen;
     this.currentTrack = track;
 
     const meta = track.metadata || {};
@@ -465,7 +470,14 @@ export const App = {
       if (incoming && showing) {
         incoming.src = image;
         incoming.onload = () => {
-          if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+          if (
+            !this._mounted ||
+            !this.root ||
+            SpotiKitBridge.isStopped() ||
+            trackGen !== this._trackGen
+          ) {
+            return;
+          }
           incoming.classList.add("fr-art-active");
           showing.classList.remove("fr-art-active");
           this.artActiveIsImg = !this.artActiveIsImg;
@@ -473,7 +485,15 @@ export const App = {
       }
 
       const colors = await BackgroundManager.update(image);
-      if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+      if (
+        !colors ||
+        !this._mounted ||
+        !this.root ||
+        SpotiKitBridge.isStopped() ||
+        trackGen !== this._trackGen
+      ) {
+        return;
+      }
       AmbientManager.updateColors(colors);
       AudioMoodEngine.updateColors(colors);
       this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));

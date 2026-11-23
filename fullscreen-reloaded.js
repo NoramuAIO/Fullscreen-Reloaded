@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (SpotiKit ESM bundle)
 // A cinematic, modern fullscreen experience for Spotify.
-// Generated on: 2026-11-23T14:25:24.486Z
+// Generated on: 2026-11-23T14:31:55.537Z
 // ==========================================================================
 
 function __createRuntime() {
@@ -52,6 +52,7 @@ const App = exports.App = {
   currentImage: null,
   _metaGen: 0,
   _metaTimer: null,
+  _trackGen: 0,
   _rebuildGen: 0,
   idleTimer: null,
   _ctx: null,
@@ -145,6 +146,7 @@ const App = exports.App = {
     clearTimeout(this._metaTimer);
     this._metaTimer = null;
     this._metaGen++;
+    this._trackGen++;
 
     this.stopTicking();
     Clock.stop();
@@ -155,12 +157,12 @@ const App = exports.App = {
     BottomDock.destroy();
     UpNextCard.destroy();
     SettingsModal.destroy();
+    BackgroundManager.destroy();
     destroyCustomSelects();
     destroyCustomColorPickers();
 
     AmbientManager._currentMood = "";
     AmbientManager._isIdle = false;
-    BackgroundManager.activeIsA = true;
 
     if (this.artImg) this.artImg.onload = null;
     if (this.artImgAlt) this.artImgAlt.onload = null;
@@ -206,6 +208,7 @@ const App = exports.App = {
     this._mounted = true;
     this._rebuildGen = 0;
     this._metaGen = 0;
+    this._trackGen = 0;
 
     this._abortController = new AbortController();
     if (ctx?.signal) {
@@ -263,6 +266,7 @@ const App = exports.App = {
     this._mounted = false;
     this._rebuildGen++;
     this._metaGen++;
+    this._trackGen++;
 
     this.close();
 
@@ -424,6 +428,7 @@ const App = exports.App = {
     if (!track) return;
 
     const isSameTrack = this.currentTrack && this.currentTrack.uri === track.uri;
+    const trackGen = !isSameTrack ? ++this._trackGen : this._trackGen;
     this.currentTrack = track;
 
     const meta = track.metadata || {};
@@ -477,7 +482,14 @@ const App = exports.App = {
       if (incoming && showing) {
         incoming.src = image;
         incoming.onload = () => {
-          if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+          if (
+            !this._mounted ||
+            !this.root ||
+            SpotiKitBridge.isStopped() ||
+            trackGen !== this._trackGen
+          ) {
+            return;
+          }
           incoming.classList.add("fr-art-active");
           showing.classList.remove("fr-art-active");
           this.artActiveIsImg = !this.artActiveIsImg;
@@ -485,7 +497,15 @@ const App = exports.App = {
       }
 
       const colors = await BackgroundManager.update(image);
-      if (!this._mounted || !this.root || SpotiKitBridge.isStopped()) return;
+      if (
+        !colors ||
+        !this._mounted ||
+        !this.root ||
+        SpotiKitBridge.isStopped() ||
+        trackGen !== this._trackGen
+      ) {
+        return;
+      }
       AmbientManager.updateColors(colors);
       AudioMoodEngine.updateColors(colors);
       this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));
@@ -834,14 +854,17 @@ const {  el  } = require("./utils/dom.js");
 const {  rgb, rgba  } = require("./utils/formatters.js");
 const {  Settings  } = require("./utils/settings.js");
 const {  ColorExtractor  } = require("./services/ColorExtractor.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
 const BackgroundManager = exports.BackgroundManager = {
   root: null,
   layerA: null,
   layerB: null,
   activeIsA: true,
+  _updateGen: 0,
 
   build() {
+    this.activeIsA = true;
     const root = el("div", "fr-bg-root");
     this.layerA = el("div", "fr-bg-layer fr-bg-active");
     this.layerB = el("div", "fr-bg-layer");
@@ -851,7 +874,18 @@ const BackgroundManager = exports.BackgroundManager = {
   },
 
   async update(imageUrl) {
+    const gen = ++this._updateGen;
     const colors = await ColorExtractor.extract(imageUrl);
+    if (
+      !this.root ||
+      !this.layerA ||
+      !this.layerB ||
+      SpotiKitBridge.isStopped() ||
+      gen !== this._updateGen
+    ) {
+      return null;
+    }
+
     const mode = Settings.get("backgroundMode");
     const next = this.activeIsA ? this.layerB : this.layerA;
     const prev = this.activeIsA ? this.layerA : this.layerB;
@@ -901,6 +935,15 @@ const BackgroundManager = exports.BackgroundManager = {
     this.activeIsA = !this.activeIsA;
 
     return colors;
+  },
+
+  destroy() {
+    this._updateGen++;
+    this.activeIsA = true;
+    this.root?.remove();
+    this.root = null;
+    this.layerA = null;
+    this.layerB = null;
   },
 };
 
