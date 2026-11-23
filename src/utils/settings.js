@@ -4,6 +4,7 @@
 
 export const Settings = {
   KEY: "fullscreen-reloaded:settings",
+  SETTINGS_KEY: "settings",
   defaults: {
     backgroundMode: "dynamic-gradient", // solid | gradient | dynamic-gradient | blurred-artwork | artwork | darkened-artwork | custom-color
     customColor: "#101014",
@@ -33,32 +34,56 @@ export const Settings = {
   data: {},
   _listeners: new Set(),
 
+  _getScope() {
+    return typeof SpotiKit !== "undefined" ? SpotiKit.Storage?.scope?.("fullscreen-reloaded") || null : null;
+  },
+
   load() {
     let stored = null;
+    let migratedFromLocalStorage = false;
+    const scope = this._getScope();
     try {
-      const raw =
-        (typeof Spicetify !== "undefined" && Spicetify.LocalStorage && Spicetify.LocalStorage.get(this.KEY)) ||
-        window.localStorage.getItem(this.KEY);
-      if (raw) stored = JSON.parse(raw);
+      const scopeValue = scope && typeof scope.get === "function" ? scope.get(this.SETTINGS_KEY, null) : null;
+      if (scopeValue !== null && scopeValue !== undefined) {
+        const parsed = typeof scopeValue === "string" ? JSON.parse(scopeValue) : scopeValue;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          stored = parsed;
+        }
+      } else if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem(this.KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            stored = parsed;
+            if (scope) migratedFromLocalStorage = true;
+          }
+        }
+      }
     } catch (e) {
       /* ignore corrupt settings */
     }
     this.data = Object.assign({}, this.defaults, stored || {});
+    let needsSave = migratedFromLocalStorage;
     if (!this.data._migratedIdleLyricsV2) {
       this.data.idleLyrics = true;
       this.data.showLyrics = true;
       this.data._migratedIdleLyricsV2 = true;
+      needsSave = true;
+    }
+    if (needsSave) {
       this.save();
     }
   },
 
   save() {
-    const raw = JSON.stringify(this.data);
     try {
-      if (typeof Spicetify !== "undefined" && Spicetify.LocalStorage) {
-        Spicetify.LocalStorage.set(this.KEY, raw);
-      } else {
-        window.localStorage.setItem(this.KEY, raw);
+      const scope = this._getScope();
+      if (scope && typeof scope.set === "function") {
+        scope.set(this.SETTINGS_KEY, { ...this.data });
+        return;
+      }
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(this.KEY, JSON.stringify(this.data));
       }
     } catch (e) {
       /* storage unavailable */

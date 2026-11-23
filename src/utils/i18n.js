@@ -2,6 +2,7 @@
  * Internationalization (i18n) and translations.
  */
 import { Settings } from "./settings.js";
+import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 
 export const Locales = {
   en: {
@@ -116,6 +117,9 @@ export const Locales = {
     creatorCreditPlaceholder: "Credit (optional) — e.g. Synced by Mustafa",
     creatorTextPlaceholder:
       "Paste or type lyrics here, one line per row.\n\n• Type #interlude for an instrumental break (• • •)\n• Type [background vocal] on the line below a lyric to attach sub-vocals\n• Prefix a line with v2: for right-aligned Duet singer",
+    appleConnectError: "Could not reach Apple Music, please try again.",
+    appleConnected: "Apple Music connected.",
+    appleConnectFailed: "Apple Music connection failed.",
   },
   tr: {
     appearance: "Görünüm",
@@ -229,17 +233,16 @@ export const Locales = {
     creatorCreditPlaceholder: "Hazırlayan notu (isteğe bağlı) — örn. Synced by Mustafa",
     creatorTextPlaceholder:
       "Şarkı sözlerini her satıra bir cümle gelecek şekilde yazın veya yapıştırın.\n\n• Enstrümantal ara için #interlude yazın\n• Arka vokal eklemek için cümlenin hemen alt satırına [arka vokal] yazın\n• Sağ hizalı Düet şarkıcı için satır başına v2: ekleyin",
+    appleConnectError: "Apple Music'e ulaşılamadı, tekrar deneyin.",
+    appleConnected: "Apple Music bağlandı.",
+    appleConnectFailed: "Apple Music bağlantısı başarısız oldu.",
   },
 };
 
 export function t(key) {
   let lang = Settings.get("language") || "auto";
   if (lang === "auto") {
-    const spLocale =
-      (typeof Spicetify !== "undefined" && Spicetify.Locale && Spicetify.Locale.getLocale()) ||
-      (typeof Spicetify !== "undefined" && Spicetify.Platform?.Translations?.getLocale?.()) ||
-      navigator.language ||
-      "en";
+    const spLocale = SpotiKitBridge.getLocale() || "en";
     lang = spLocale.split("-")[0].toLowerCase();
   }
   const dict = Locales[lang] || Locales.en;

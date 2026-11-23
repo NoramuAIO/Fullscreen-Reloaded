@@ -2,6 +2,8 @@
  * Apple Music authorization & developer token manager.
  */
 import { Settings } from "../utils/settings.js";
+import { SpotiKitBridge } from "./SpotiKitBridge.js";
+import { t } from "../utils/i18n.js";
 
 export const AppleMusicAuth = {
   storefront: "us",
@@ -22,10 +24,8 @@ export const AppleMusicAuth = {
     try {
       const proxyUrl =
         "https://corsproxy.io/?url=" + encodeURIComponent("https://music.apple.com/us/browse");
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1500);
-      const html = await fetch(proxyUrl, { signal: controller.signal }).then((r) => (r.ok ? r.text() : ""));
-      clearTimeout(timer);
+      const signal = SpotiKitBridge.createTimeoutSignal(1500);
+      const html = await fetch(proxyUrl, { signal }).then((r) => (r.ok ? r.text() : ""));
       const token = this._extractFromMetaTag(html) || this._extractFromRawJwt(html);
       if (!token) return null;
 
@@ -56,12 +56,26 @@ export const AppleMusicAuth = {
     return match ? match[0] : null;
   },
 
+  _getScope() {
+    return typeof SpotiKit !== "undefined" ? SpotiKit.Storage?.scope?.("fullscreen-reloaded") || null : null;
+  },
+
   _readCache() {
     try {
-      const raw = window.localStorage.getItem("fullscreen-reloaded:apple-dev-token");
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (parsed.expires < Date.now()) return null;
+      const scope = this._getScope();
+      let parsed = null;
+      if (scope && typeof scope.get === "function") {
+        const raw = scope.get("apple-dev-token", null);
+        if (!raw) return null;
+        parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      } else if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem("fullscreen-reloaded:apple-dev-token");
+        if (!raw) return null;
+        parsed = JSON.parse(raw);
+      }
+      if (!parsed || typeof parsed !== "object" || !parsed.token || parsed.expires < Date.now()) {
+        return null;
+      }
       return parsed;
     } catch (e) {
       return null;
@@ -70,10 +84,15 @@ export const AppleMusicAuth = {
 
   _writeCache(token, expires) {
     try {
-      window.localStorage.setItem(
-        "fullscreen-reloaded:apple-dev-token",
-        JSON.stringify({ token, expires })
-      );
+      const payload = { token, expires };
+      const scope = this._getScope();
+      if (scope && typeof scope.set === "function") {
+        scope.set("apple-dev-token", payload);
+        return;
+      }
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("fullscreen-reloaded:apple-dev-token", JSON.stringify(payload));
+      }
     } catch (e) {
       /* ignore */
     }
@@ -108,9 +127,7 @@ export const AppleMusicAuth = {
   async connect() {
     const devToken = await this.getDeveloperToken();
     if (!devToken) {
-      if (typeof Spicetify !== "undefined" && Spicetify.showNotification) {
-        Spicetify.showNotification("Apple Music'e ulaşılamadı, tekrar deneyin.");
-      }
+      SpotiKitBridge.notify(t("appleConnectError"), { type: "error" });
       return false;
     }
     try {
@@ -122,14 +139,10 @@ export const AppleMusicAuth = {
       const instance = MusicKit.getInstance();
       const userToken = await instance.authorize();
       Settings.set("appleMusicUserToken", userToken);
-      if (typeof Spicetify !== "undefined" && Spicetify.showNotification) {
-        Spicetify.showNotification("Apple Music bağlandı.");
-      }
+      SpotiKitBridge.notify(t("appleConnected"), { type: "default" });
       return true;
     } catch (e) {
-      if (typeof Spicetify !== "undefined" && Spicetify.showNotification) {
-        Spicetify.showNotification("Apple Music bağlantısı başarısız oldu.");
-      }
+      SpotiKitBridge.notify(t("appleConnectFailed"), { type: "error" });
       return false;
     }
   },
