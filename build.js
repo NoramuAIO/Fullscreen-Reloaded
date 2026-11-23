@@ -153,12 +153,12 @@ export function build() {
   modulesObj += "  }";
 
   const bundle = `// ==========================================================================
-// Fullscreen Reloaded (Spotify 1.3.6 compatible)
-// A cinematic, modern fullscreen replacement for Spicetify.
+// Fullscreen Reloaded (SpotiKit ESM bundle)
+// A cinematic, modern fullscreen experience for Spotify.
 // Generated on: ${new Date().toISOString()}
 // ==========================================================================
 
-(function FullscreenReloaded() {
+function __createRuntime() {
   "use strict";
 
   const __modules = ${modulesObj};
@@ -186,9 +186,15 @@ export function build() {
     return module.exports;
   }
 
-  // Bootstrap application
-  __require("./index.js");
-})();
+  return __require;
+}
+
+export default async function start(context) {
+  const __require = __createRuntime();
+  const entry = __require("./index.js");
+  const fn = entry && entry.default ? entry.default : entry;
+  return typeof fn === "function" ? await fn(context) : undefined;
+}
 `;
 
   fs.writeFileSync(DIST_FILE, bundle, "utf-8");
@@ -197,24 +203,25 @@ export function build() {
   console.log(`[Fullscreen Reloaded] Bundle created: ${DIST_FILE} (${sizeKb} KB) in ${elapsed}ms`);
 }
 
-// Check arguments
-const isWatch = process.argv.includes("--watch");
-build();
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  const isWatch = process.argv.includes("--watch");
+  build();
 
-if (isWatch) {
-  console.log("[Fullscreen Reloaded] Watching src/ for changes...");
-  let timeout = null;
-  fs.watch(SRC_DIR, { recursive: true }, (eventType, filename) => {
-    if (filename) {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => {
-        console.log(`[Fullscreen Reloaded] Changed: ${filename}. Rebuilding...`);
-        try {
-          build();
-        } catch (e) {
-          console.error("[Fullscreen Reloaded] Build error:", e);
-        }
-      }, 100);
-    }
-  });
+  if (isWatch) {
+    console.log("[Fullscreen Reloaded] Watching src/ for changes...");
+    let timeout = null;
+    fs.watch(SRC_DIR, { recursive: true }, (eventType, filename) => {
+      if (filename) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          console.log(`[Fullscreen Reloaded] Changed: ${filename}. Rebuilding...`);
+          try {
+            build();
+          } catch (e) {
+            console.error("[Fullscreen Reloaded] Build error:", e);
+          }
+        }, 100);
+      }
+    });
+  }
 }
