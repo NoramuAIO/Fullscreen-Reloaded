@@ -812,10 +812,32 @@ export function createSpotiKitMock(overrides = {}) {
     },
   };
 
+  const buildPlayer = () => {
+    const base = {
+      ...defaultPlayer,
+      state: { item: null },
+      ...(overrides.Player || {}),
+    };
+    base.state = {
+      item: null,
+      ...(overrides.Player?.state || {}),
+    };
+    return base;
+  };
+
+  const buildQueue = () => ({
+    next: [],
+    prev: [],
+    ...(overrides.Queue || {}),
+    ...(Array.isArray(overrides.Queue?.next) ? { next: [...overrides.Queue.next] } : {}),
+    ...(Array.isArray(overrides.Queue?.prev) ? { prev: [...overrides.Queue.prev] } : {}),
+    ...(Array.isArray(overrides.Queue?.previous) ? { previous: [...overrides.Queue.previous] } : {}),
+  });
+
   const SpotiKit = {
     ready: overrides.ready ?? Promise.resolve(),
-    Player: { ...defaultPlayer, ...(overrides.Player || {}) },
-    Queue: { next: [], prev: [], ...(overrides.Queue || {}) },
+    Player: buildPlayer(),
+    Queue: buildQueue(),
     Navigation: {
       go: () => {},
       push: () => {},
@@ -973,6 +995,10 @@ export function createSpotiKitMock(overrides = {}) {
     profileMenuItems.length = 0;
     playbarItems.length = 0;
     notifications.length = 0;
+    for (const k of Object.keys(SpotiKit.Player)) delete SpotiKit.Player[k];
+    Object.assign(SpotiKit.Player, buildPlayer());
+    for (const k of Object.keys(SpotiKit.Queue)) delete SpotiKit.Queue[k];
+    Object.assign(SpotiKit.Queue, buildQueue());
     abortController = new AbortController();
     bindSignal(abortController);
   };

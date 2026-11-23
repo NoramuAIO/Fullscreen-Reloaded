@@ -101,13 +101,49 @@ test("createSpotiKitMock provides SpotiKit APIs, ctx lifecycle, and emitTrack", 
       received = t;
     });
     mock.emitTrack({ uri: "spotify:track:1", name: "Test" });
+    mock.SpotiKit.Player.play();
+    mock.SpotiKit.Player.seek(42000);
+    mock.SpotiKit.Player.setShuffle(true);
+    mock.SpotiKit.Player.setRepeat("track");
+    mock.SpotiKit.Player.setVolume(0.25);
+    mock.SpotiKit.Player.setMuted(true);
+    mock.SpotiKit.Player.duration = 180000;
+    mock.SpotiKit.Queue.next.push({ uri: "spotify:track:2" });
+    mock.SpotiKit.Queue.prev.push({ uri: "spotify:track:0" });
+
     assert.equal(received?.uri, "spotify:track:1");
     assert.equal(mock.SpotiKit.Player.track?.uri, "spotify:track:1");
+    assert.equal(mock.SpotiKit.Player.isPlaying, true);
 
     mock.reset();
     assert.equal(stopped, true);
     assert.equal(document.head.querySelectorAll("style").length, 0);
     assert.equal(mock.ctx.signal.aborted, false);
+    assert.equal(mock.SpotiKit.Player.track, null);
+    assert.equal(mock.SpotiKit.Player.state.item, null);
+    assert.equal(mock.SpotiKit.Player.duration, 0);
+    assert.equal(mock.SpotiKit.Player.position, 0);
+    assert.equal(mock.SpotiKit.Player.isPlaying, false);
+    assert.equal(mock.SpotiKit.Player.shuffle, false);
+    assert.equal(mock.SpotiKit.Player.repeat, "off");
+    assert.equal(mock.SpotiKit.Player.volume, 0.8);
+    assert.equal(mock.SpotiKit.Player.muted, false);
+    assert.deepEqual(mock.SpotiKit.Queue.next, []);
+    assert.deepEqual(mock.SpotiKit.Queue.prev, []);
+
+    const customMock = createSpotiKitMock({
+      Player: { volume: 0.5, repeat: "context" },
+      Queue: { next: [{ uri: "spotify:track:seed" }] },
+    });
+    customMock.emitTrack({ uri: "spotify:track:override" });
+    customMock.SpotiKit.Player.setVolume(0.1);
+    customMock.SpotiKit.Player.setRepeat("track");
+    customMock.SpotiKit.Queue.next.push({ uri: "spotify:track:extra" });
+    customMock.reset();
+    assert.equal(customMock.SpotiKit.Player.track, null);
+    assert.equal(customMock.SpotiKit.Player.volume, 0.5);
+    assert.equal(customMock.SpotiKit.Player.repeat, "context");
+    assert.deepEqual(customMock.SpotiKit.Queue.next, [{ uri: "spotify:track:seed" }]);
   } finally {
     dom.reset();
   }
