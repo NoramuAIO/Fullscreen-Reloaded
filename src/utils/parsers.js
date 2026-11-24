@@ -5,6 +5,8 @@
  *   and Duet singer alignment (`ttm:agent="v2"` / `v2:`).
  */
 
+import { finalizeWordSyllables } from "./letterTiming.js";
+
 function isBgSpan(span, stopNode) {
   let curr = span;
   while (curr && curr !== stopNode) {
@@ -54,10 +56,12 @@ function extractWordsFromSpans(spans, fallbackStartMs, fallbackEndMs) {
         startMs: wStart,
         endMs: wEnd,
         exactWordSync: true,
+        _syllables: [{ text: trimmed, startMs: wStart, endMs: wEnd }],
       };
     } else {
       currentWord.text += trimmed;
       if (wEnd != null) currentWord.endMs = wEnd;
+      currentWord._syllables.push({ text: trimmed, startMs: wStart, endMs: wEnd });
     }
 
     if (hasTrailingSpace) {
@@ -84,6 +88,11 @@ function extractWordsFromSpans(spans, fallbackStartMs, fallbackEndMs) {
       if (words[k].endMs == null || words[k].endMs <= words[k].startMs) {
         words[k].endMs = words[k + 1]?.startMs || endMs;
       }
+      finalizeWordSyllables(words[k]);
+    }
+  } else {
+    for (let k = 0; k < words.length; k++) {
+      delete words[k]._syllables;
     }
   }
 

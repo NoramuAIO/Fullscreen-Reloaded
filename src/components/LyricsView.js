@@ -12,6 +12,12 @@ import { Settings } from "../utils/settings.js";
 import { LyricsService } from "../services/LyricsService.js";
 import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 import { AudioMoodEngine } from "../services/AudioMoodEngine.js";
+import {
+  buildCharTimeline,
+  canAnimateLetters,
+  clamp01,
+  computeWordWaveParams,
+} from "../utils/letterTiming.js";
 
 export const LyricsView = {
   panel: null,
@@ -241,11 +247,44 @@ export const LyricsView = {
     if (app?.applyLayoutSettings) app.applyLayoutSettings();
 
     this.applyWaterfallMode();
+    this._renderLines();
+    this.revealLyrics();
+    if (app?.open) {
+      this.showProviderBadge(3000);
+      this._shownStartBadgeForUri = track.uri;
+    }
+
+    this.update(SpotiKitBridge.getProgress(), true);
+  },
+
+  setLetterByLetter() {
+    if (!this.scrollEl) return;
+    const useLetterMode = this.syncType === "word-synced" && Settings.get("letterByLetter") !== false;
+    this.scrollEl.classList.toggle("fr-letter-mode", useLetterMode);
+    if (!this.lines.length || this.syncType !== "word-synced") return;
+    this.userScrolling = false;
+    this._manualOffsetY = 0;
+    this.scrollEl.classList.remove("fr-user-scrolling");
+    this.resumeBtn?.classList.remove("fr-show");
+    this._renderLines();
+    this.scrollEl.classList.add("fr-ready");
+    this.update(SpotiKitBridge.getProgress(), true);
+  },
+
+  _renderLines() {
+    if (!this.scrollEl) return;
+    this.scrollEl.innerHTML = "";
+    this.scrollEl.classList.remove("fr-unsynced", "fr-mode-word", "fr-mode-line", "fr-letter-mode");
+    this.lineEls = [];
+    this.activeIndex = -1;
+
+    const useLetterMode = this.syncType === "word-synced" && Settings.get("letterByLetter") !== false;
 
     if (this.syncType === "unsynced") {
       this.scrollEl.classList.add("fr-unsynced");
     } else if (this.syncType === "word-synced") {
       this.scrollEl.classList.add("fr-mode-word");
+      if (useLetterMode) this.scrollEl.classList.add("fr-letter-mode");
     } else {
       this.scrollEl.classList.add("fr-mode-line");
     }
@@ -255,6 +294,10 @@ export const LyricsView = {
     let prevVocalEndMs = 0;
 
     this.lines.forEach((line, lineIdx) => {
+      line._interlude = null;
+      line._sentenceEl = null;
+      line._bgSentenceEl = null;
+
       let fullText = "";
       if (!Array.isArray(line.words) || !line.words.length) {
         fullText = String(line.text || "");
@@ -374,8 +417,6 @@ export const LyricsView = {
                 ? rawW
                 : { text: rawW != null ? String(rawW) : "" };
             const wordText = wObj.text != null ? String(wObj.text) : "";
-            const wordEl = el("span", isBg ? "fr-lyric-word fr-bg-word" : "fr-lyric-word", wordText);
-            wordEl.style.setProperty("--w-idx", String(wIdx));
 
             const sliceMs = (weights[wIdx] / totalWeight) * spanDurMs;
             const synthStart = startBaseMs + cursorMs;
@@ -394,6 +435,46 @@ export const LyricsView = {
               wObj.endMs = fallbackEnd;
             }
 
+            let wordEl;
+            wObj.chars = null;
+            if (useLetterMode && canAnimateLetters(wordText)) {
+              const timeline = buildCharTimeline(wObj);
+              if (timeline.visible.length > 0) {
+                wordEl = el("span", isBg ? "fr-lyric-word fr-bg-word fr-word-letters" : "fr-lyric-word fr-word-letters");
+                wordEl.setAttribute("aria-label", wordText);
+                const frag = document.createDocumentFragment();
+                const charRecords = [];
+                for (let cIdx = 0; cIdx < timeline.entries.length; cIdx++) {
+                  const entry = timeline.entries[cIdx];
+                  if (entry.isSpace) {
+                    frag.appendChild(document.createTextNode(entry.text));
+                  } else {
+                    const charEl = el("span", "fr-char", entry.text);
+                    frag.appendChild(charEl);
+                    charRecords.push({
+                      el: charEl,
+                      fillStartMs: entry.fillStartMs,
+                      fillEndMs: entry.fillEndMs,
+                      rawStart: entry.rawStart,
+                      rawEnd: entry.rawEnd,
+                      normCenter: entry.normCenter,
+                      _state: 0,
+                      _pct: "",
+                      _lift: "",
+                      _scale: "",
+                      _glow: "",
+                    });
+                  }
+                }
+                wordEl.appendChild(frag);
+                wObj.chars = charRecords;
+              }
+            }
+            if (!wordEl) {
+              wordEl = el("span", isBg ? "fr-lyric-word fr-bg-word" : "fr-lyric-word", wordText);
+            }
+            wordEl.style.setProperty("--w-idx", String(wIdx));
+            wObj._wordState = 0;
             wObj.el = wordEl;
             containerEl.appendChild(wordEl);
             return wObj;
@@ -426,14 +507,6 @@ export const LyricsView = {
       this.scrollEl.appendChild(lineEl);
       this.lineEls.push(lineEl);
     });
-
-    this.revealLyrics();
-    if (app?.open) {
-      this.showProviderBadge(3000);
-      this._shownStartBadgeForUri = track.uri;
-    }
-
-    this.update(SpotiKitBridge.getProgress(), true);
   },
 
   revealLyrics() {
@@ -459,6 +532,23 @@ export const LyricsView = {
       line._bgSentenceEl.style.removeProperty("--bar-pct");
       line._bgSentenceEl.style.removeProperty("--bar-flow-y");
     }
+    const clearChars = (chars) => {
+      if (!Array.isArray(chars)) return;
+      for (let j = 0; j < chars.length; j++) {
+        const c = chars[j];
+        if (!c || !c.el) continue;
+        c.el.classList.remove("fr-c-active", "fr-c-done");
+        c.el.style.removeProperty("--c-pct");
+        c.el.style.removeProperty("--c-lift");
+        c.el.style.removeProperty("--c-scale");
+        c.el.style.removeProperty("--c-glow");
+        c._state = 0;
+        c._pct = "";
+        c._lift = "";
+        c._scale = "";
+        c._glow = "";
+      }
+    };
     const clearWords = (arr) => {
       if (!Array.isArray(arr)) return;
       for (let k = 0; k < arr.length; k++) {
@@ -468,6 +558,8 @@ export const LyricsView = {
         w.el.style.removeProperty("--w-pct");
         w.el.style.removeProperty("--w-lift");
         w.el.style.removeProperty("--w-scale");
+        w._wordState = 0;
+        clearChars(w.chars);
         if (asPast) w.el.classList.add("fr-w-done");
       }
     };
@@ -636,12 +728,35 @@ export const LyricsView = {
       }
     }
 
-    // --- 4b. 60fps Word-by-Word Waterfall & Karaoke Sweep (ONLY on word-synced tracks) ---
+    // --- 4b. 60fps Word-by-Word & Letter-by-Letter Waterfall / Karaoke Sweep (ONLY on word-synced tracks) ---
     if (this.syncType === "word-synced" && this.activeIndex >= 0) {
       const activeLine = this.lines[this.activeIndex];
       if (activeLine) {
         const wfMode = Settings.get("waterfallMode") || "normal";
+        const useLetterMode = Settings.get("letterByLetter") !== false;
         const dropPx = wfMode === "intense" ? -12 : wfMode === "normal" ? -8 : 0;
+
+        const resetWordChars = (chars, isDone) => {
+          if (!Array.isArray(chars)) return;
+          const targetState = isDone ? 2 : 0;
+          for (let j = 0; j < chars.length; j++) {
+            const c = chars[j];
+            if (!c || !c.el) continue;
+            if (c._state !== targetState || c._pct || c._lift || c._scale || c._glow) {
+              c.el.classList.remove("fr-c-active", "fr-c-done");
+              if (isDone) c.el.classList.add("fr-c-done");
+              if (c._pct) c.el.style.removeProperty("--c-pct");
+              if (c._lift) c.el.style.removeProperty("--c-lift");
+              if (c._scale) c.el.style.removeProperty("--c-scale");
+              if (c._glow) c.el.style.removeProperty("--c-glow");
+              c._state = targetState;
+              c._pct = "";
+              c._lift = "";
+              c._scale = "";
+              c._glow = "";
+            }
+          }
+        };
 
         const animateWordList = (words, dropScale = 1) => {
           if (!Array.isArray(words)) return;
@@ -652,6 +767,7 @@ export const LyricsView = {
 
             const wStart = w.startMs ?? activeLine.startMs ?? 0;
             const wEnd = w.endMs ?? wStart + 350;
+            const hasChars = useLetterMode && Array.isArray(w.chars) && w.chars.length > 0;
 
             if (progressMs <= wStart) {
               if (elWord.classList.contains("fr-w-active") || elWord.classList.contains("fr-w-done")) {
@@ -659,29 +775,108 @@ export const LyricsView = {
                 elWord.style.removeProperty("--w-pct");
                 elWord.style.removeProperty("--w-lift");
                 elWord.style.removeProperty("--w-scale");
+                w._wordState = 0;
               }
+              if (hasChars) resetWordChars(w.chars, false);
             } else if (progressMs >= wEnd) {
               if (!elWord.classList.contains("fr-w-done")) {
                 elWord.classList.remove("fr-w-active");
                 elWord.classList.add("fr-w-done");
-                elWord.style.setProperty("--w-pct", "118%");
+                if (hasChars) {
+                  elWord.style.removeProperty("--w-pct");
+                  elWord.style.removeProperty("--w-scale");
+                } else {
+                  elWord.style.setProperty("--w-pct", "118%");
+                  elWord.style.setProperty("--w-scale", "1");
+                }
                 elWord.style.setProperty("--w-lift", "0px");
-                elWord.style.setProperty("--w-scale", "1");
+                w._wordState = 2;
               }
+              if (hasChars) resetWordChars(w.chars, true);
             } else {
               if (!elWord.classList.contains("fr-w-active")) {
                 elWord.classList.remove("fr-w-done");
                 elWord.classList.add("fr-w-active");
+                w._wordState = 1;
               }
               const dur = Math.max(40, wEnd - wStart);
-              const ratio = Math.max(0, Math.min(1, (progressMs - wStart) / dur));
-              const swept = -16 + ratio * 132;
+              const ratio = clamp01((progressMs - wStart) / dur);
               const lift = dropPx * dropScale * 0.5 * (1 + Math.cos(ratio * Math.PI));
-              const scale = 1 + 0.03 * dropScale * Math.sin(ratio * Math.PI);
 
-              elWord.style.setProperty("--w-pct", `${swept.toFixed(1)}%`);
               elWord.style.setProperty("--w-lift", `${lift.toFixed(2)}px`);
-              elWord.style.setProperty("--w-scale", `${scale.toFixed(3)}`);
+
+              if (hasChars) {
+                const wave = computeWordWaveParams(w.chars, progressMs, wStart, wEnd, {
+                  wfMode,
+                  dropScale,
+                });
+                for (let j = 0; j < w.chars.length; j++) {
+                  const c = w.chars[j];
+                  const elChar = c.el;
+                  const cSpan = Math.max(20, c.fillEndMs - c.fillStartMs);
+                  const cRatio = clamp01((progressMs - c.fillStartMs) / cSpan);
+
+                  const dist = (wave.focalNorm - c.normCenter) / wave.sigma;
+                  const bell = Math.exp(-(dist * dist) * 1.45);
+                  const cLiftVal = wave.maxLiftPx * bell;
+                  const cScaleVal = 1 + wave.maxScaleDelta * bell;
+                  const cGlowVal = clamp01(bell * wave.glowEnv * 1.15);
+
+                  const liftStr = Math.abs(cLiftVal) < 0.02 ? "0px" : `${cLiftVal.toFixed(2)}px`;
+                  const scaleStr = Math.abs(cScaleVal - 1) < 0.002 ? "1" : cScaleVal.toFixed(3);
+                  const glowStr = cGlowVal < 0.02 ? "0" : cGlowVal.toFixed(2);
+
+                  if (c._lift !== liftStr) {
+                    c._lift = liftStr;
+                    elChar.style.setProperty("--c-lift", liftStr);
+                  }
+                  if (c._scale !== scaleStr) {
+                    c._scale = scaleStr;
+                    elChar.style.setProperty("--c-scale", scaleStr);
+                  }
+                  if (c._glow !== glowStr) {
+                    c._glow = glowStr;
+                    elChar.style.setProperty("--c-glow", glowStr);
+                  }
+
+                  if (cRatio <= 0) {
+                    if (c._state !== 0) {
+                      elChar.classList.remove("fr-c-active", "fr-c-done");
+                      c._state = 0;
+                    }
+                    if (c._pct) {
+                      c._pct = "";
+                      elChar.style.removeProperty("--c-pct");
+                    }
+                  } else if (cRatio >= 1) {
+                    if (c._state !== 2) {
+                      elChar.classList.remove("fr-c-active");
+                      elChar.classList.add("fr-c-done");
+                      c._state = 2;
+                    }
+                    if (c._pct) {
+                      c._pct = "";
+                      elChar.style.removeProperty("--c-pct");
+                    }
+                  } else {
+                    if (c._state !== 1) {
+                      elChar.classList.remove("fr-c-done");
+                      elChar.classList.add("fr-c-active");
+                      c._state = 1;
+                    }
+                    const pctStr = `${(-18 + cRatio * 136).toFixed(1)}%`;
+                    if (c._pct !== pctStr) {
+                      c._pct = pctStr;
+                      elChar.style.setProperty("--c-pct", pctStr);
+                    }
+                  }
+                }
+              } else {
+                const swept = -16 + ratio * 132;
+                const scale = 1 + 0.03 * dropScale * Math.sin(ratio * Math.PI);
+                elWord.style.setProperty("--w-pct", `${swept.toFixed(1)}%`);
+                elWord.style.setProperty("--w-scale", `${scale.toFixed(3)}`);
+              }
             }
           }
         };

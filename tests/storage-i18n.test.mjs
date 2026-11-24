@@ -156,6 +156,11 @@ test("i18nLocale: resolves SpotiKit.Locale.language when language is auto and tr
     assert.equal(t("resumeSync"), "Resume Sync");
     assert.equal(t("appleConnected"), Locales.en.appleConnected);
     assert.notEqual(t("appleConnected"), "appleConnected");
+
+    assert.equal(Settings.defaults.letterByLetter, true);
+    assert.equal(typeof Locales.en.letterByLetter, "string");
+    assert.equal(typeof Locales.tr.letterByLetter, "string");
+    assert.notEqual(Locales.tr.letterByLetter, "letterByLetter");
   } finally {
     env.teardown();
   }

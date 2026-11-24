@@ -631,6 +631,9 @@ export const App = {
     if (key === "waterfallMode") {
       LyricsView.applyWaterfallMode();
     }
+    if (key === "letterByLetter") {
+      LyricsView.setLetterByLetter();
+    }
   },
 
   applyLayoutSettings() {

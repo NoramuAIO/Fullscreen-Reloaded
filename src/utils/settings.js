@@ -18,6 +18,7 @@ export const Settings = {
     metaPosition: "left", // left | center | right
     unsyncedScrollMode: "track", // track | slow | normal | fast | off
     waterfallMode: "normal", // normal | intense | off
+    letterByLetter: true,
     interludeDots: true,
     bgVocalsDuet: true,
     moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off

@@ -5,6 +5,7 @@
  * plus TTML and Enhanced LRC import/export and Fullscreen Reloaded line conversion.
  */
 import { parseTTML, parseLRC } from "../utils/parsers.js";
+import { finalizeWordSyllables } from "../utils/letterTiming.js";
 
 export const SYNC_PREFIX = "liquid-lyrics-custom-sync:";
 export const INDEX_KEY = "liquid-lyrics-custom-sync-index";
@@ -606,10 +607,12 @@ function syllablesToWords(syllables = [], fallbackStartMs = 0, fallbackEndMs = 3
         startMs: sStart,
         endMs: sEnd,
         exactWordSync: true,
+        _syllables: [{ text: trimmed, startMs: sStart, endMs: sEnd }],
       };
     } else {
       current.text += trimmed;
       if (sEnd != null) current.endMs = sEnd;
+      current._syllables.push({ text: trimmed, startMs: sStart, endMs: sEnd });
     }
 
     if (!isPart || i === syllables.length - 1) {
@@ -631,6 +634,7 @@ function syllablesToWords(syllables = [], fallbackStartMs = 0, fallbackEndMs = 3
     if (words[k].endMs == null || words[k].endMs <= words[k].startMs) {
       words[k].endMs = words[k + 1]?.startMs ?? fallbackEndMs;
     }
+    finalizeWordSyllables(words[k]);
   }
 
   return words;

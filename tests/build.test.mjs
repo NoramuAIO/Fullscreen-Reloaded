@@ -25,6 +25,8 @@ test("build.js produces ESM module exporting default start(context) and includes
     assert.match(code, /export default async function start\(context\)/);
     assert.doesNotMatch(code, /\(function FullscreenReloaded\(\)/);
     assert.match(code, /\/\* --- creator\.css --- \*\//);
+    assert.match(code, /\.fr-letter-mode/);
+    assert.match(code, /letterByLetter/);
 
     const indexCss = fs.readFileSync(path.join(ROOT, "src/styles/index.css"), "utf8");
     assert.match(indexCss, /@import\s+"\.\/creator\.css";/);

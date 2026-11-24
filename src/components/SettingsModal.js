@@ -114,6 +114,15 @@ export const SettingsModal = {
     waterfallRow.append(el("label", null, t("waterfallFlow")), waterfallSelect);
     sec2.appendChild(waterfallRow);
 
+    // Letter-by-Letter Flow Toggle (Word-synced Karaoke)
+    const letterByLetterRow = el("div", "fr-settings-row");
+    const letterByLetterToggle = toggle(
+      Settings.get("letterByLetter") !== false,
+      (v) => Settings.set("letterByLetter", v)
+    );
+    letterByLetterRow.append(el("label", null, t("letterByLetter")), letterByLetterToggle);
+    sec2.appendChild(letterByLetterRow);
+
     // Interlude Dots Toggle (Apple Music • • •)
     const interludeRow = el("div", "fr-settings-row");
     const interludeToggle = toggle(Settings.get("interludeDots") !== false, (v) => Settings.set("interludeDots", v));

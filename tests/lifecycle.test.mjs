@@ -845,6 +845,166 @@ test("topBarPipStopGuard: closes orphaned pipWindow if extension stops while req
   }
 });
 
+test("letterByLetterWordSyncedAnimationAndLiveToggle: animates characters progressively and toggles live from Settings UI without refetch", async () => {
+  let progressMs = 1000;
+  let fetchCount = 0;
+  const track = {
+    uri: "spotify:track:lettertest1",
+    name: "Letter Test",
+    artists: [{ name: "Test Artist" }],
+    metadata: {
+      title: "Letter Test",
+      artist_name: "Test Artist",
+      album_title: "Test Album",
+      duration: 180000,
+    },
+  };
+  const env = createLifecycleEnv({
+    Locale: { language: "en-US" },
+    Player: {
+      track,
+      state: { item: track },
+      position: progressMs,
+      duration: 180000,
+    },
+  });
+  env.dom.window.SpotiKit = env.mock.SpotiKit;
+
+  const [{ SpotiKitBridge }, { App }, { LyricsService }, { LyricsView }, { Settings }, { Locales }] =
+    await Promise.all([
+      import(pathToFileURL(path.join(ROOT, "src/services/SpotiKitBridge.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/App.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/services/LyricsService.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/components/LyricsView.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/utils/settings.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/utils/i18n.js")).href),
+    ]);
+
+  const origResolve = LyricsService.resolve.bind(LyricsService);
+  LyricsService.resolve = async () => {
+    fetchCount++;
+    return {
+      type: "word-synced",
+      source: "Apple Music",
+      lines: [
+        {
+          startMs: 1000,
+          endMs: 3200,
+          hasLineTime: true,
+          isWordSynced: true,
+          words: [
+            {
+              text: "Şarkı ",
+              startMs: 1000,
+              endMs: 2200,
+              syllables: [
+                { text: "Şar", startMs: 1000, endMs: 1500 },
+                { text: "kı", startMs: 1500, endMs: 2200 },
+              ],
+            },
+            {
+              text: "سلام",
+              startMs: 2200,
+              endMs: 3000,
+            },
+          ],
+        },
+      ],
+    };
+  };
+
+  let reloadCount = 0;
+  env.dom.window.location.reload = () => {
+    reloadCount++;
+  };
+
+  try {
+    await SpotiKitBridge.waitForReady();
+    SpotiKitBridge.init(env.mock.ctx);
+    Settings.load();
+    App.mount(env.mock.ctx);
+    await App.launch();
+
+    assert.equal(fetchCount, 1);
+    assert.equal(Settings.get("letterByLetter"), true);
+    assert.equal(LyricsView.scrollEl.classList.contains("fr-letter-mode"), true);
+
+    const words = App.root.querySelectorAll(".fr-lyric-word");
+    assert.equal(words.length, 2);
+    assert.equal(words[0].classList.contains("fr-word-letters"), true);
+    // Arabic RTL word falls back cleanly to whole-word sweep without breaking glyph shaping
+    assert.equal(words[1].classList.contains("fr-word-letters"), false);
+
+    const chars = words[0].querySelectorAll(".fr-char");
+    assert.equal(chars.length, 5);
+    assert.deepEqual(
+      chars.map((c) => c.textContent),
+      ["Ş", "a", "r", "k", "ı"]
+    );
+
+    // Mid-word playback: earlier characters completed/active while wave lifts crest cleanly
+    progressMs = 1600;
+    env.mock.SpotiKit.Player.position = progressMs;
+    LyricsView.update(progressMs, true);
+    assert.equal(words[0].classList.contains("fr-w-active"), true);
+    assert.equal(chars[0].classList.contains("fr-c-done"), true);
+    assert.ok(chars[3].classList.contains("fr-c-active") || chars[3].classList.contains("fr-c-done"));
+    assert.ok(chars[3].style.getPropertyValue("--c-lift"));
+    assert.ok(chars[3].style.getPropertyValue("--c-glow"));
+
+    // Rewind before word start clears per-letter classes and inline properties cleanly
+    progressMs = 900;
+    env.mock.SpotiKit.Player.position = progressMs;
+    LyricsView.update(progressMs, true);
+    for (const c of chars) {
+      assert.equal(c.classList.contains("fr-c-active"), false);
+      assert.equal(c.classList.contains("fr-c-done"), false);
+      assert.equal(c.style.getPropertyValue("--c-pct"), "");
+      assert.equal(c.style.getPropertyValue("--c-lift"), "");
+      assert.equal(c.style.getPropertyValue("--c-glow"), "");
+    }
+
+    // Live toggle OFF via Settings UI toggle button (no page reload, no lyrics refetch)
+    const rows = App.root.querySelectorAll(".fr-settings-row");
+    const letterRow = rows.find((r) => r.textContent.includes(Locales.en.letterByLetter));
+    assert.ok(letterRow);
+    const toggleBtn = letterRow.querySelector("button.fr-toggle");
+    assert.ok(toggleBtn);
+    assert.equal(toggleBtn.classList.contains("fr-on"), true);
+
+    toggleBtn.click();
+    assert.equal(Settings.get("letterByLetter"), false);
+    assert.equal(reloadCount, 0);
+    assert.equal(fetchCount, 1);
+    assert.equal(LyricsView.scrollEl.classList.contains("fr-letter-mode"), false);
+    assert.equal(App.root.querySelectorAll(".fr-char").length, 0);
+
+    // Classic word sweep still drives --w-pct when letterByLetter is false
+    progressMs = 1600;
+    env.mock.SpotiKit.Player.position = progressMs;
+    LyricsView.update(progressMs, true);
+    const classicWord = App.root.querySelector(".fr-lyric-word");
+    assert.equal(classicWord.classList.contains("fr-w-active"), true);
+    assert.ok(classicWord.style.getPropertyValue("--w-pct"));
+
+    // Toggle back ON restores per-letter spans immediately at current playback time
+    toggleBtn.click();
+    assert.equal(Settings.get("letterByLetter"), true);
+    assert.equal(LyricsView.scrollEl.classList.contains("fr-letter-mode"), true);
+    assert.equal(App.root.querySelectorAll(".fr-char").length, 5);
+    assert.equal(fetchCount, 1);
+
+    // Restored at current progressMs (1600) -> characters already reflect playback progression
+    const restoredChars = App.root.querySelectorAll(".fr-char");
+    assert.equal(restoredChars[0].classList.contains("fr-c-done"), true);
+
+    App.unmount();
+  } finally {
+    LyricsService.resolve = origResolve;
+    env.teardown();
+  }
+});
+
 test("zeroLegacySpicetifyRefs: no literal Spicetify.<Letter> tokens exist across src or tests", () => {
   const dirs = [path.join(ROOT, "src"), path.join(ROOT, "tests")];
   const files = [path.join(ROOT, "build.js")];

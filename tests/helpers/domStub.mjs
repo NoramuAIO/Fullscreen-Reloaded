@@ -458,6 +458,12 @@ class StubTextNode extends StubNode {
     this.nodeName = "#text";
     this.textContent = String(text);
   }
+  get nodeValue() {
+    return this.textContent;
+  }
+  set nodeValue(val) {
+    this.textContent = String(val ?? "");
+  }
 }
 
 class StubDocumentFragment extends StubNode {
