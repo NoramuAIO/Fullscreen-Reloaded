@@ -1,5 +1,5 @@
 /**
- * Apple Music Liquid Top Bar component (Lyrics, Creator, Picture-in-Picture with Live Lyrics, Settings, Close).
+ * Apple Music Liquid Top Bar component (Lyrics, Creator, Redesigned PiP with Live Lyrics + Mini Controls, Settings, Close).
  */
 import { el, iconBtn } from "../utils/dom.js";
 import { Icons } from "../utils/icons.js";
@@ -13,72 +13,87 @@ const PIP_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     width: 100%; height: 100%; overflow: hidden;
-    background: #0b0b0f; color: #fff;
+    background: #09090e; color: #fff;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif;
     user-select: none;
   }
   .fr-pip-shell {
     position: relative; width: 100%; height: 100%;
     display: flex; flex-direction: column; justify-content: space-between;
-    padding: 18px; overflow: hidden;
+    padding: 16px 18px 18px; overflow: hidden;
   }
   .fr-pip-bg {
-    position: absolute; inset: -18%; background-size: cover; background-position: center;
-    filter: blur(42px) saturate(1.7) brightness(0.55);
-    transform: scale(1.1); transition: background-image 600ms ease; z-index: 0;
+    position: absolute; inset: -22%; background-size: cover; background-position: center;
+    filter: blur(46px) saturate(1.85) brightness(0.46);
+    transform: scale(1.12); transition: background-image 600ms ease; z-index: 0;
   }
   .fr-pip-scrim {
     position: absolute; inset: 0; z-index: 1;
-    background: linear-gradient(180deg, rgba(10,10,16,0.28) 0%, rgba(10,10,16,0.52) 55%, rgba(8,8,14,0.82) 100%);
+    background: radial-gradient(circle at 50% 25%, rgba(0,0,0,0.12) 0%, rgba(6,6,12,0.72) 100%);
   }
   .fr-pip-header {
-    position: relative; z-index: 2; display: flex; align-items: center; gap: 12px;
-    padding: 10px 12px; border-radius: 18px;
-    background: rgba(255,255,255,0.1);
-    backdrop-filter: blur(28px) saturate(1.8);
-    border: 1px solid rgba(255,255,255,0.2);
-    box-shadow: 0 12px 30px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.26);
+    position: relative; z-index: 2; display: flex; align-items: center; gap: 10px;
+    padding: 4px 2px;
   }
   .fr-pip-art {
-    width: 50px; height: 50px; border-radius: 12px; object-fit: cover; flex-shrink: 0;
-    box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    width: 38px; height: 38px; border-radius: 10px; object-fit: cover; flex-shrink: 0;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.48);
     -webkit-user-drag: none; pointer-events: none;
   }
   .fr-pip-meta { min-width: 0; flex: 1; }
   .fr-pip-title {
-    font-size: 14px; font-weight: 700; color: #fff;
+    font-size: 13.5px; font-weight: 700; color: #ffffff; letter-spacing: -0.01em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .fr-pip-artist {
-    font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.72); margin-top: 2px;
+    font-size: 11.5px; font-weight: 500; color: rgba(255,255,255,0.62); margin-top: 1px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .fr-pip-mini-ctrl {
+    display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0;
+  }
+  .fr-pip-ctrl-btn {
+    width: 28px; height: 28px; border-radius: 50%; border: none;
+    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.9);
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+    transition: background 180ms ease, transform 160ms ease;
+  }
+  .fr-pip-ctrl-btn:hover { background: rgba(255,255,255,0.22); transform: scale(1.06); }
+  .fr-pip-ctrl-btn:active { transform: scale(0.92); }
+  .fr-pip-ctrl-btn svg { width: 14px; height: 14px; fill: currentColor; }
   .fr-pip-lyrics {
     position: relative; z-index: 2; flex: 1;
-    display: flex; flex-direction: column; justify-content: center; gap: 12px;
-    padding: 14px 6px 6px;
+    display: flex; flex-direction: column; justify-content: center; gap: 11px;
+    padding: 8px 4px 4px;
+    mask-image: linear-gradient(180deg, transparent 0%, #000 16%, #000 84%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 16%, #000 84%, transparent 100%);
+  }
+  .fr-pip-lyric-prev {
+    font-size: clamp(13px, 3.6vw, 16px); font-weight: 600; line-height: 1.3;
+    color: rgba(255,255,255,0.28); filter: blur(0.4px);
+    transition: opacity 320ms ease;
   }
   .fr-pip-lyric-active {
-    font-size: clamp(19px, 5.4vw, 26px); font-weight: 800; line-height: 1.24;
-    letter-spacing: -0.02em; color: #ffffff;
-    text-shadow: 0 2px 18px rgba(255,255,255,0.34);
-    transition: opacity 280ms cubic-bezier(0.32, 0.72, 0, 1), transform 320ms cubic-bezier(0.32, 0.72, 0, 1);
+    font-size: clamp(20px, 6vw, 28px); font-weight: 800; line-height: 1.22;
+    letter-spacing: -0.025em; color: #ffffff;
+    text-shadow: 0 3px 22px rgba(255,255,255,0.34);
+    transition: opacity 280ms cubic-bezier(0.32, 0.72, 0, 1), transform 340ms cubic-bezier(0.32, 0.72, 0, 1);
   }
   .fr-pip-lyric-next {
-    font-size: clamp(14px, 3.8vw, 17px); font-weight: 600; line-height: 1.3;
+    font-size: clamp(14px, 4vw, 17px); font-weight: 600; line-height: 1.32;
     color: rgba(255,255,255,0.46);
-    transition: opacity 280ms ease;
+    transition: opacity 320ms ease;
   }
   .fr-pip-shell.fr-pip-no-lyrics .fr-pip-lyrics { display: none; }
   .fr-pip-shell.fr-pip-no-lyrics { padding: 0; }
   .fr-pip-shell.fr-pip-no-lyrics .fr-pip-header {
-    position: absolute; inset: 0; padding: 0; border: none; border-radius: 0; background: none;
-    box-shadow: none;
+    position: absolute; inset: 0; padding: 0;
   }
   .fr-pip-shell.fr-pip-no-lyrics .fr-pip-art {
     width: 100%; height: 100%; border-radius: 0;
   }
-  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-meta { display: none; }
+  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-meta,
+  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-mini-ctrl { display: none; }
 `;
 
 export const TopBar = {
@@ -91,32 +106,27 @@ export const TopBar = {
   _pipBg: null,
   _pipTitle: null,
   _pipArtist: null,
+  _pipPrevLine: null,
   _pipActiveLine: null,
   _pipNextLine: null,
+  _pipPlayBtn: null,
+  _lastPipPrevText: "",
   _lastPipActiveText: "",
   _lastPipNextText: "",
+  _lastPipPlaying: null,
 
   build(app) {
     const topbar = el("div", "fr-topbar");
 
-    // 1. Lyrics Toggle
     this.lyricsBtn = iconBtn(Icons.lyrics, () => app.toggleLyricsVisible());
-
-    // 2. FullLyrics Creator Studio
     this.creatorBtn = iconBtn(Icons.creator, () => FullLyricsCreator.toggleOpen());
     this.creatorBtn.title = "FullLyrics Creator Studio (E)";
-
-    // 3. Picture-in-Picture
     this.pipBtn = iconBtn(Icons.pip, async () => {
       await this.togglePiP(app);
     });
 
     const sep = el("div", "fr-topbar-sep");
-
-    // 4. Settings Gear
     const gearBtn = iconBtn(Icons.gear, () => SettingsModal.toggleOpen());
-
-    // 5. Close Button
     const closeBtn = iconBtn(Icons.close, () => app.close());
 
     topbar.append(this.lyricsBtn, this.creatorBtn, this.pipBtn, sep, gearBtn, closeBtn);
@@ -130,10 +140,14 @@ export const TopBar = {
     this._pipBg = null;
     this._pipTitle = null;
     this._pipArtist = null;
+    this._pipPrevLine = null;
     this._pipActiveLine = null;
     this._pipNextLine = null;
+    this._pipPlayBtn = null;
+    this._lastPipPrevText = "";
     this._lastPipActiveText = "";
     this._lastPipNextText = "";
+    this._lastPipPlaying = null;
   },
 
   updatePiPImage(imageUrl) {
@@ -150,20 +164,28 @@ export const TopBar = {
     if (!track) return;
     const meta = track.metadata || {};
     const title = meta.title || track.name || t("unknownTitle");
-    const artists = SpotiKitBridge.getTrackArtists(track)
-      .map((a) => a.name)
-      .join(", ") || meta.artist_name || t("unknownArtist");
+    const artists =
+      SpotiKitBridge.getTrackArtists(track)
+        .map((a) => a.name)
+        .join(", ") ||
+      meta.artist_name ||
+      t("unknownArtist");
     if (this._pipTitle) this._pipTitle.textContent = title;
     if (this._pipArtist) this._pipArtist.textContent = artists;
   },
 
   updatePiPLyrics(snapshot) {
     if (!this._pipActiveLine || !this._pipNextLine) return;
+    const prevText = snapshot?.prevText || "";
     const activeText = snapshot?.isMusic
       ? "♪  •  •  •"
       : snapshot?.activeText || (snapshot ? "" : t("sidebarNoLyrics"));
     const nextText = snapshot?.nextText || "";
 
+    if (this._pipPrevLine && prevText !== this._lastPipPrevText) {
+      this._lastPipPrevText = prevText;
+      this._pipPrevLine.textContent = prevText;
+    }
     if (activeText !== this._lastPipActiveText) {
       this._lastPipActiveText = activeText;
       this._pipActiveLine.textContent = activeText;
@@ -171,6 +193,13 @@ export const TopBar = {
     if (nextText !== this._lastPipNextText) {
       this._lastPipNextText = nextText;
       this._pipNextLine.textContent = nextText;
+    }
+    if (this._pipPlayBtn) {
+      const playing = SpotiKitBridge.isPlaying();
+      if (playing !== this._lastPipPlaying) {
+        this._lastPipPlaying = playing;
+        this._pipPlayBtn.innerHTML = playing ? Icons.pause : Icons.play;
+      }
     }
   },
 
@@ -182,7 +211,6 @@ export const TopBar = {
 
   async togglePiP(app) {
     try {
-      // If Document PiP is open, close it
       if (window.documentPictureInPicture && window.documentPictureInPicture.window) {
         window.documentPictureInPicture.window.close();
         this.pipBtn?.classList.remove("fr-active");
@@ -190,18 +218,16 @@ export const TopBar = {
         return;
       }
 
-      // If Legacy Video PiP is open, close it
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
         this.pipBtn?.classList.remove("fr-active");
         return;
       }
 
-      // Modern Document PiP API (Available in Chromium-based Spotify Desktop)
       if (window.documentPictureInPicture) {
         const pipWindow = await window.documentPictureInPicture.requestWindow({
-          width: 420,
-          height: 460,
+          width: 400,
+          height: 360,
         });
         if (!this.root || SpotiKitBridge.isStopped()) {
           try {
@@ -217,7 +243,7 @@ export const TopBar = {
           pipDoc.head.appendChild(styleEl);
         }
         pipDoc.body.style.margin = "0";
-        pipDoc.body.style.backgroundColor = "#0b0b0f";
+        pipDoc.body.style.backgroundColor = "#09090e";
         pipDoc.body.style.overflow = "hidden";
 
         const createEl = (tag, cls, text) => {
@@ -248,12 +274,31 @@ export const TopBar = {
         const titleEl = createEl("div", "fr-pip-title", "");
         const artistEl = createEl("div", "fr-pip-artist", "");
         metaBox.append(titleEl, artistEl);
-        header.append(img, metaBox);
+
+        const miniCtrl = createEl("div", "fr-pip-mini-ctrl");
+        const prevBtn = createEl("button", "fr-pip-ctrl-btn");
+        prevBtn.setAttribute("type", "button");
+        prevBtn.innerHTML = Icons.prev;
+        prevBtn.addEventListener("click", () => SpotiKitBridge.back());
+
+        const playBtn = createEl("button", "fr-pip-ctrl-btn");
+        playBtn.setAttribute("type", "button");
+        playBtn.innerHTML = SpotiKitBridge.isPlaying() ? Icons.pause : Icons.play;
+        playBtn.addEventListener("click", () => SpotiKitBridge.togglePlay());
+
+        const nextBtn = createEl("button", "fr-pip-ctrl-btn");
+        nextBtn.setAttribute("type", "button");
+        nextBtn.innerHTML = Icons.next;
+        nextBtn.addEventListener("click", () => SpotiKitBridge.next());
+
+        miniCtrl.append(prevBtn, playBtn, nextBtn);
+        header.append(img, metaBox, miniCtrl);
 
         const lyricsBox = createEl("div", "fr-pip-lyrics");
+        const prevLineEl = createEl("div", "fr-pip-lyric-prev", "");
         const activeLineEl = createEl("div", "fr-pip-lyric-active", "");
         const nextLineEl = createEl("div", "fr-pip-lyric-next", "");
-        lyricsBox.append(activeLineEl, nextLineEl);
+        lyricsBox.append(prevLineEl, activeLineEl, nextLineEl);
 
         shell.append(bg, scrim, header, lyricsBox);
         pipDoc.body.appendChild(shell);
@@ -263,10 +308,14 @@ export const TopBar = {
         this._pipBg = bg;
         this._pipTitle = titleEl;
         this._pipArtist = artistEl;
+        this._pipPrevLine = prevLineEl;
         this._pipActiveLine = activeLineEl;
         this._pipNextLine = nextLineEl;
+        this._pipPlayBtn = playBtn;
+        this._lastPipPrevText = "";
         this._lastPipActiveText = "";
         this._lastPipNextText = "";
+        this._lastPipPlaying = SpotiKitBridge.isPlaying();
 
         this.updatePiPTrack(app?.currentTrack, app?.currentImage);
 
@@ -275,9 +324,7 @@ export const TopBar = {
           this._clearPiPRefs();
         });
         this.pipBtn?.classList.add("fr-active");
-      }
-      // Fallback for older Chromium versions: Legacy Canvas Video PiP
-      else {
+      } else {
         const canvas = document.createElement("canvas");
         canvas.width = 800;
         canvas.height = 800;

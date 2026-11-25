@@ -25,7 +25,9 @@ export const Settings = {
     showLegacyPlayer: false,
     sidebarLyrics: true,
     sidebarLyricsBg: true,
+    sidebarLyricsAnim: true,
     pipLyrics: true,
+    dynamicThemeColors: true,
     moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off
     beatReactive: "normal", // normal | intense | off
     lyricsProvider: "auto", // auto | spotify | lrclib | genius | applemusic

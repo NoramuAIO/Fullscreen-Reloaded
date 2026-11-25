@@ -40,6 +40,7 @@ export const App = {
   songChangeListener: null,
   currentTrack: null,
   currentImage: null,
+  _lastColors: null,
   _metaGen: 0,
   _metaTimer: null,
   _trackGen: 0,
@@ -318,7 +319,16 @@ export const App = {
 
     this.currentTrack = null;
     this.currentImage = null;
+    this._lastColors = null;
     this._ctx = null;
+    if (typeof document !== "undefined" && document.documentElement) {
+      const ds = document.documentElement.style;
+      ds.removeProperty("--fr-theme-accent");
+      ds.removeProperty("--fr-theme-accent-soft");
+      ds.removeProperty("--fr-theme-border");
+      ds.removeProperty("--fr-theme-surface");
+      ds.removeProperty("--fr-theme-glow");
+    }
   },
 
   async rebuildForLanguage() {
@@ -540,9 +550,10 @@ export const App = {
       ) {
         return;
       }
+      this._lastColors = colors;
       AmbientManager.updateColors(colors);
       AudioMoodEngine.updateColors(colors);
-      this.root.style.setProperty("--fr-word-accent", rgb(colors.accent));
+      this.applyThemeColors();
       this.artWrap?.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
     } else if (LyricsView._currentTrackUri !== track.uri) {
       LyricsView.loadForTrack(track, this);
@@ -691,8 +702,35 @@ export const App = {
     if (key === "sidebarLyricsBg") {
       SidebarLyrics.syncBackground();
     }
+    if (key === "sidebarLyricsAnim") {
+      SidebarLyrics.syncAnimation();
+    }
+    if (key === "dynamicThemeColors") {
+      this.applyThemeColors();
+    }
     if (key === "pipLyrics") {
       TopBar.applyPiPLyricsVisibility();
+    }
+  },
+
+  applyThemeColors() {
+    const adaptive = Settings.get("dynamicThemeColors") !== false;
+    const c = adaptive && this._lastColors ? this._lastColors : null;
+    const accent = c ? rgb(c.accent) : "#ffffff";
+    const accentSoft = c ? rgba(c.accent, 0.24) : "rgba(255, 255, 255, 0.16)";
+    const border = c ? rgba(c.accent, 0.34) : "rgba(255, 255, 255, 0.22)";
+    const surface = c ? rgba(c.dark, 0.68) : "rgba(20, 20, 28, 0.72)";
+    const glow = c ? rgba(c.accent, 0.45) : "rgba(255, 255, 255, 0.32)";
+
+    const targets = [this.root, typeof document !== "undefined" ? document.documentElement : null];
+    for (const elTarget of targets) {
+      if (!elTarget?.style) continue;
+      elTarget.style.setProperty("--fr-word-accent", accent);
+      elTarget.style.setProperty("--fr-theme-accent", accent);
+      elTarget.style.setProperty("--fr-theme-accent-soft", accentSoft);
+      elTarget.style.setProperty("--fr-theme-border", border);
+      elTarget.style.setProperty("--fr-theme-surface", surface);
+      elTarget.style.setProperty("--fr-theme-glow", glow);
     }
   },
 

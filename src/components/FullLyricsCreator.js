@@ -6,11 +6,13 @@
 import { el } from "../utils/dom.js";
 import { t } from "../utils/i18n.js";
 import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
+import { LyricsService } from "../services/LyricsService.js";
 import { LyricsView } from "./LyricsView.js";
 import {
   getCustomSync,
   extractTrackId,
   normalizeTrackUri,
+  splitTextIntoTokens,
   parsePlainTextToDraftLines,
   serializeDraftLinesToText,
   fullscreenLinesToDraft,

@@ -1,6 +1,7 @@
 /**
  * Settings Tab: Background, Custom Color, Mood Atmosphere, and Beat Pulse.
  */
+import { toggle } from "../../utils/dom.js";
 import { t } from "../../utils/i18n.js";
 import { Settings } from "../../utils/settings.js";
 import { createCustomSelect } from "../CustomSelect.js";
@@ -8,6 +9,11 @@ import { createCustomColorPicker } from "../CustomColorPicker.js";
 import { createSettingCard, createSettingRow } from "./helpers.js";
 
 export function buildBackgroundSection() {
+  const dynamicColorsRow = createSettingRow(
+    t("dynamicThemeColors"),
+    toggle(Settings.get("dynamicThemeColors") !== false, (v) => Settings.set("dynamicThemeColors", v)),
+    t("dynamicThemeColorsDesc")
+  );
   const bgSelect = createCustomSelect({
     options: [
       { value: "solid", label: t("solidColor") },
@@ -61,7 +67,7 @@ export function buildBackgroundSection() {
   const beatRow = createSettingRow(t("beatReactive"), beatSelect);
 
   return [
-    createSettingCard(t("background"), [bgRow, colorRow]),
+    createSettingCard(t("background"), [dynamicColorsRow, bgRow, colorRow]),
     createSettingCard(t("moodAtmosphere"), [moodRow, beatRow]),
   ];
 }

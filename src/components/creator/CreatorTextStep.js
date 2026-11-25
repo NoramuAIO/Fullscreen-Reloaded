@@ -2,14 +2,17 @@
  * FullLyrics Creator Step 1: Visual sentence/word builder and raw text editor.
  */
 import { el } from "../../utils/dom.js";
+import { Icons } from "../../utils/icons.js";
 import { t } from "../../utils/i18n.js";
 import {
   splitTextIntoTokens,
   createLyricDraftLine,
   createInterludeDraftLine,
   createBackgroundDraftEntry,
+  parsePlainTextToDraftLines,
   serializeDraftLinesToText,
 } from "../../services/CustomSyncStorage.js";
+import { formatCueTime } from "./CreatorUtils.js";
 
 export const CreatorTextStep = {
   // ==========================================================================

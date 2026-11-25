@@ -5,8 +5,10 @@ import { el } from "../../utils/dom.js";
 import { Icons } from "../../utils/icons.js";
 import { t } from "../../utils/i18n.js";
 import {
+  getCustomSync,
   hasCustomSync,
   listCustomSyncs,
+  serializeDraftLinesToText,
   exportDraftAsJSON,
   exportDraftAsTTML,
   exportDraftAsLRC,

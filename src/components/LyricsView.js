@@ -602,11 +602,13 @@ export const LyricsView = {
       }
       return String(line.text || "").trim();
     };
+    const prevLine = idx > 0 ? this.lines[idx - 1] : null;
     const activeLine = idx >= 0 ? this.lines[idx] : null;
     const nextLine = this.lines[idx + 1] || null;
     return {
       syncType: this.syncType,
       activeIndex: idx,
+      prevText: getLineText(prevLine),
       activeText: getLineText(activeLine),
       nextText: getLineText(nextLine),
       isMusic: Boolean(activeLine?._isMusic),

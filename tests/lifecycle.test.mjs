@@ -1105,14 +1105,38 @@ test("newPlayerConditionalSubToggle_Navigation_StaleBadge_Sidebar_PiPLyrics: ver
     assert.equal(Settings.get("showLegacyPlayer"), true);
     assert.equal(App.root.classList.contains("fr-hide-legacy-player"), false);
 
-    // 3. Sidebar Lyrics card attached & toggleable background + enable/disable
+    // 3. Sidebar Lyrics card attached, hides native Spotify lyrics, toggles background/animation/enable
     const sbCard = document.getElementById("fr-sidebar-lyrics-card");
     assert.ok(sbCard);
+    assert.equal(document.documentElement.classList.contains("fr-hide-native-npv-lyrics"), true);
     assert.equal(sbCard.classList.contains("fr-sb-has-bg"), true);
+    assert.equal(sbCard.classList.contains("fr-sb-animated"), true);
     Settings.set("sidebarLyricsBg", false);
     assert.equal(sbCard.classList.contains("fr-sb-has-bg"), false);
+    Settings.set("sidebarLyricsAnim", false);
+    assert.equal(sbCard.classList.contains("fr-sb-animated"), false);
     Settings.set("sidebarLyrics", false);
     assert.equal(document.getElementById("fr-sidebar-lyrics-card"), null);
+    assert.equal(document.documentElement.classList.contains("fr-hide-native-npv-lyrics"), false);
+
+    // 3b. Dynamic song-adaptive colors toggle updates CSS theme vars cleanly
+    App._lastColors = { dominant: [40, 10, 20], accent: [240, 80, 110], dark: [18, 6, 12] };
+    Settings.set("dynamicThemeColors", true);
+    assert.equal(App.root.style.getPropertyValue("--fr-theme-accent"), "rgb(240, 80, 110)");
+    Settings.set("dynamicThemeColors", false);
+    assert.equal(App.root.style.getPropertyValue("--fr-theme-accent"), "#ffffff");
+
+    // 3c. FullLyrics Creator renders all 3 steps (text, sync, preview) cleanly without missing-import errors
+    const { FullLyricsCreator } = await import(
+      pathToFileURL(path.join(ROOT, "src/components/FullLyricsCreator.js")).href
+    );
+    await FullLyricsCreator.openForCurrentTrack();
+    assert.ok(FullLyricsCreator.bodyEl && FullLyricsCreator.bodyEl.children.length > 0);
+    FullLyricsCreator.setStep("sync");
+    assert.ok(FullLyricsCreator.bodyEl && FullLyricsCreator.bodyEl.children.length > 0);
+    FullLyricsCreator.setStep("preview");
+    assert.ok(FullLyricsCreator.bodyEl && FullLyricsCreator.bodyEl.children.length > 0);
+    FullLyricsCreator.close();
 
     // 4. Stale provider badge cleared immediately before second track resolves
     const load2 = LyricsView.loadForTrack({ uri: "spotify:track:t2", metadata: { duration: 180000 } }, App, true);

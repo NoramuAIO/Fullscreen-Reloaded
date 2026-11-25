@@ -1,19 +1,21 @@
 /**
  * Spotify Right Sidebar (Now Playing View) Live Lyrics Card.
- * - Mounts cleanly into Spotify's right sidebar (`.right-sidebar` / `.npv-sections`).
- * - Features Apple Music Liquid header, expand/collapse height, fullscreen launch shortcut,
- *   click-to-seek, always-smooth bar transitions, and optional blurred album art backdrop.
- * - Controlled live by Settings: `sidebarLyrics` and `sidebarLyricsBg`.
+ * - Hides Spotify's native `[data-testid="lyrics-npv-section"]` while active so there is no duplicate card.
+ * - Features Apple Music Liquid header, larger readable bold typography, expand/collapse height,
+ *   fullscreen launch shortcut, click-to-seek, toggleable blurred album backdrop (`sidebarLyricsBg`),
+ *   and toggleable live word/line karaoke sweep animation (`sidebarLyricsAnim`).
  */
 import { el } from "../utils/dom.js";
 import { Icons } from "../utils/icons.js";
 import { t } from "../utils/i18n.js";
 import { Settings } from "../utils/settings.js";
 import { resolveImageUrl } from "../utils/formatters.js";
+import { normalizeWordTimings, clamp01 } from "../utils/letterTiming.js";
 import { LyricsService } from "../services/LyricsService.js";
 import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 
 const CARD_ID = "fr-sidebar-lyrics-card";
+const HIDE_NATIVE_CLASS = "fr-hide-native-npv-lyrics";
 const RIGHT_SIDEBAR_SEL = ".right-sidebar";
 const NPV_PANEL_SEL = ".npv-sections";
 const NPV_LYRICS_SEL = '[data-testid="lyrics-npv-section"]';
@@ -53,20 +55,37 @@ export const SidebarLyrics = {
     this.syncEnabled();
   },
 
+  _setNativeLyricsHidden(hidden) {
+    if (typeof document !== "undefined" && document.documentElement) {
+      document.documentElement.classList.toggle(HIDE_NATIVE_CLASS, Boolean(hidden));
+    }
+  },
+
   syncEnabled() {
     const enabled = Settings.get("sidebarLyrics") !== false;
+    this._setNativeLyricsHidden(enabled);
     if (!enabled) {
       this._unmountCard();
       return;
     }
     this._mountCard();
     this.syncBackground();
+    this.syncAnimation();
   },
 
   syncBackground() {
     if (!this.cardEl) return;
     const showBg = Settings.get("sidebarLyricsBg") !== false;
     this.cardEl.classList.toggle("fr-sb-has-bg", showBg);
+  },
+
+  syncAnimation() {
+    if (!this.cardEl) return;
+    const animated = Settings.get("sidebarLyricsAnim") !== false;
+    this.cardEl.classList.toggle("fr-sb-animated", animated);
+    if (!animated && this._activeIndex >= 0) {
+      this._clearLineAnim(this._activeIndex);
+    }
   },
 
   _mountCard() {
@@ -83,11 +102,13 @@ export const SidebarLyrics = {
     if (Settings.get("sidebarLyricsBg") !== false) {
       card.classList.add("fr-sb-has-bg");
     }
+    if (Settings.get("sidebarLyricsAnim") !== false) {
+      card.classList.add("fr-sb-animated");
+    }
 
     const bg = el("div", "fr-sb-bg");
     const scrim = el("div", "fr-sb-scrim");
 
-    // Header
     const header = el("div", "fr-sb-header");
     const titleBtn = el("button", "fr-sb-title-btn");
     titleBtn.setAttribute("type", "button");
@@ -132,7 +153,6 @@ export const SidebarLyrics = {
     controls.append(expandBtn, fsBtn, collapseBtn);
     header.append(titleBtn, controls);
 
-    // Body
     const body = el("div", "fr-sb-body");
     const scrollEl = el("div", "fr-sb-scroll");
     const statusEl = el("div", "fr-sb-status", t("sidebarLoading"));
@@ -266,7 +286,7 @@ export const SidebarLyrics = {
 
     if (this.statusEl) this.statusEl.classList.remove("fr-show");
     this._syncType = data.type || "synced";
-    this._lines = [...data.lines];
+    this._lines = data.lines.map((l) => ({ ...l }));
     if (this._syncType === "synced" || this._syncType === "word-synced") {
       this._lines.sort((a, b) => (Number(a.startMs) || 0) - (Number(b.startMs) || 0));
     }
@@ -276,14 +296,36 @@ export const SidebarLyrics = {
 
     for (let i = 0; i < this._lines.length; i++) {
       const line = this._lines[i];
-      const text =
-        line.text ||
-        (Array.isArray(line.words) ? line.words.map((w) => (typeof w === "string" ? w : w?.text || "")).join("").trim() : "");
-      const lineEl = el("div", "fr-sb-line fr-sb-future", text || "♪");
+      const nextLine = this._lines[i + 1];
+      const lineStart = Number(line.startMs) || 0;
+      const nextStart = nextLine ? Number(nextLine.startMs) : lineStart + 3200;
+      line._sbSpanMs = Math.max(400, nextStart - lineStart);
+
+      const lineEl = el("div", "fr-sb-line fr-sb-future");
+      if (this._syncType === "word-synced" && Array.isArray(line.words) && line.words.length) {
+        const normWords = normalizeWordTimings(
+          line.words.map((w) => (typeof w === "object" ? { ...w } : { text: String(w || "") })),
+          lineStart,
+          line._sbSpanMs
+        );
+        line._sbWords = normWords.map((w) => {
+          const span = el("span", "fr-sb-word", w.text || "");
+          lineEl.appendChild(span);
+          return { el: span, startMs: w.startMs, endMs: w.endMs };
+        });
+      } else {
+        const text =
+          line.text ||
+          (Array.isArray(line.words) ? line.words.map((w) => (typeof w === "string" ? w : w?.text || "")).join("").trim() : "");
+        const span = el("span", "fr-sb-sentence", text || "♪");
+        lineEl.appendChild(span);
+        line._sbSentenceEl = span;
+      }
+
       if (isSynced) {
         lineEl.classList.add("fr-sb-clickable");
         lineEl.addEventListener("click", () => {
-          SpotiKitBridge.seek(Number(line.startMs) || 0);
+          SpotiKitBridge.seek(lineStart);
         });
       }
       frag.appendChild(lineEl);
@@ -294,12 +336,27 @@ export const SidebarLyrics = {
     this._tick(true);
   },
 
+  _clearLineAnim(idx) {
+    const line = this._lines[idx];
+    if (!line) return;
+    if (line._sbSentenceEl) {
+      line._sbSentenceEl.style.removeProperty("--sb-pct");
+    }
+    if (Array.isArray(line._sbWords)) {
+      for (let k = 0; k < line._sbWords.length; k++) {
+        const w = line._sbWords[k];
+        w.el.classList.remove("fr-sb-w-active", "fr-sb-w-done");
+        w.el.style.removeProperty("--sb-w-pct");
+      }
+    }
+  },
+
   _scrollToActive(instant = false) {
     if (!this.scrollEl || this._activeIndex < 0) return;
     const activeEl = this._lineEls[this._activeIndex];
     if (!activeEl) return;
-    const containerH = this.scrollEl.clientHeight || 280;
-    const targetTop = Math.max(0, activeEl.offsetTop - containerH * 0.36 + (activeEl.offsetHeight || 28) / 2);
+    const containerH = this.scrollEl.clientHeight || 340;
+    const targetTop = Math.max(0, activeEl.offsetTop - containerH * 0.36 + (activeEl.offsetHeight || 36) / 2);
     if (typeof this.scrollEl.scrollTo === "function") {
       this.scrollEl.scrollTo({
         top: targetTop,
@@ -323,6 +380,8 @@ export const SidebarLyrics = {
     }
 
     if (idx !== this._activeIndex || instant) {
+      const prevIdx = this._activeIndex;
+      if (prevIdx >= 0 && prevIdx !== idx) this._clearLineAnim(prevIdx);
       this._activeIndex = idx;
       for (let i = 0; i < this._lineEls.length; i++) {
         const node = this._lineEls[i];
@@ -331,6 +390,36 @@ export const SidebarLyrics = {
         node.classList.toggle("fr-sb-future", idx < 0 || i > idx);
       }
       this._scrollToActive(instant);
+    }
+
+    // Live karaoke animation inside right sidebar (when enabled in settings)
+    const animated = Settings.get("sidebarLyricsAnim") !== false;
+    if (!animated || this._activeIndex < 0) return;
+
+    const activeLine = this._lines[this._activeIndex];
+    if (!activeLine) return;
+
+    if (Array.isArray(activeLine._sbWords) && activeLine._sbWords.length) {
+      for (let k = 0; k < activeLine._sbWords.length; k++) {
+        const w = activeLine._sbWords[k];
+        if (progressMs <= w.startMs) {
+          w.el.classList.remove("fr-sb-w-active", "fr-sb-w-done");
+          w.el.style.removeProperty("--sb-w-pct");
+        } else if (progressMs >= w.endMs) {
+          w.el.classList.remove("fr-sb-w-active");
+          w.el.classList.add("fr-sb-w-done");
+          w.el.style.removeProperty("--sb-w-pct");
+        } else {
+          w.el.classList.remove("fr-sb-w-done");
+          w.el.classList.add("fr-sb-w-active");
+          const r = clamp01((progressMs - w.startMs) / Math.max(40, w.endMs - w.startMs));
+          w.el.style.setProperty("--sb-w-pct", `${(-15 + r * 130).toFixed(1)}%`);
+        }
+      }
+    } else if (activeLine._sbSentenceEl) {
+      const start = Number(activeLine.startMs) || 0;
+      const p = clamp01((progressMs - start) / Math.max(400, activeLine._sbSpanMs || 2400));
+      activeLine._sbSentenceEl.style.setProperty("--sb-pct", `${(p * 118).toFixed(1)}%`);
     }
   },
 
@@ -383,6 +472,7 @@ export const SidebarLyrics = {
   },
 
   destroy() {
+    this._setNativeLyricsHidden(false);
     this._unmountCard();
     this._app = null;
   },

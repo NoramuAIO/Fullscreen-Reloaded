@@ -2,8 +2,13 @@
  * FullLyrics Creator Step 2: Block & Karaoke word-by-word sync studio.
  */
 import { el } from "../../utils/dom.js";
+import { Icons } from "../../utils/icons.js";
 import { t } from "../../utils/i18n.js";
-import { isDraftLineComplete } from "../../services/CustomSyncStorage.js";
+import {
+  isDraftLineComplete,
+  createLyricDraftLine,
+  createInterludeDraftLine,
+} from "../../services/CustomSyncStorage.js";
 import { formatCueTime } from "./CreatorUtils.js";
 
 export const CreatorSyncStep = {

@@ -1,6 +1,7 @@
 /**
  * FullLyrics Creator actions (pull online, auto-spread, save/delete) and cue stamping engine.
  */
+import { t } from "../../utils/i18n.js";
 import { SpotiKitBridge } from "../../services/SpotiKitBridge.js";
 import { LyricsService } from "../../services/LyricsService.js";
 import { LyricsView } from "../LyricsView.js";
@@ -11,6 +12,7 @@ import {
   normalizeTrackUri,
   compileDraftToSpicyLyrics,
   fullscreenLinesToDraft,
+  importFileToDraft,
   serializeDraftLinesToText,
 } from "../../services/CustomSyncStorage.js";
 import { formatCueTime } from "./CreatorUtils.js";

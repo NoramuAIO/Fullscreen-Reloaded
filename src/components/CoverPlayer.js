@@ -1,6 +1,9 @@
 /**
- * Apple Music iOS-inspired Liquid Overlay Player rendered directly over the album cover
- * when Settings.get("newPlayerMode") ("Switch to New Player") is enabled.
+ * Hover-only Apple Music Liquid Cover Overlay Player (Switch to New Player).
+ * - Appears smoothly when hovering the album cover (or dragging), hides immediately on leave
+ *   so 100% of the artwork stays unobstructed during playback.
+ * - Clean borderless bottom fade scrim + transport & scrubber, with vertical liquid volume slider
+ *   tucked on the right edge of the artwork.
  */
 import { el, iconBtn } from "../utils/dom.js";
 import { Icons } from "../utils/icons.js";
@@ -44,11 +47,13 @@ export const CoverPlayer = {
       const ac = new AbortController();
       this._dragAbortController = ac;
       this[flagKey] = true;
+      this.root?.parentElement?.classList.add("fr-cp-dragging");
       onSample(e, bar);
 
       const move = (ev) => onSample(ev, bar);
       const up = () => {
         this[flagKey] = false;
+        this.root?.parentElement?.classList.remove("fr-cp-dragging");
         ac.abort();
         if (this._dragAbortController === ac) this._dragAbortController = null;
       };
@@ -64,7 +69,44 @@ export const CoverPlayer = {
 
     const root = el("div", "fr-cover-player");
 
-    // 1. Apple Music iOS Liquid Scrubber
+    // 1. Right-Edge Vertical Liquid Volume Rail (Apple Control Center style)
+    const volRail = el("div", "fr-cp-vol-vertical");
+    const volTrack = el("div", "fr-cp-vol-track");
+    this.volFill = el("div", "fr-cp-vol-fill");
+    volTrack.appendChild(this.volFill);
+    const volIcon = iconBtn(Icons.volume, () => SpotiKitBridge.toggleMute(), "fr-cp-btn fr-cp-btn-xs");
+    volRail.append(volTrack, volIcon);
+
+    this._bindDrag(volTrack, "volSeeking", (ev, bar) => {
+      const rect = bar.getBoundingClientRect();
+      const height = rect.height || 1;
+      const pct = Math.min(1, Math.max(0, (rect.bottom - ev.clientY) / height));
+      SpotiKitBridge.setVolume(pct);
+      this._lastVolume = pct;
+      if (this.volFill) this.volFill.style.height = `${(pct * 100).toFixed(1)}%`;
+    });
+
+    volRail.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const vol = Math.max(0, Math.min(1, SpotiKitBridge.getVolume() + dir * 0.05));
+      SpotiKitBridge.setVolume(vol);
+      this._lastVolume = vol;
+      if (this.volFill) this.volFill.style.height = `${(vol * 100).toFixed(1)}%`;
+    });
+
+    // 2. Bottom Borderless Scrim HUD (Transport + Slim Scrubber)
+    const bottomHud = el("div", "fr-cp-bottom");
+
+    const transport = el("div", "fr-cp-transport");
+    this.shuffleBtn = iconBtn(Icons.shuffle, () => SpotiKitBridge.toggleShuffle(), "fr-cp-btn fr-cp-btn-sm");
+    const prevBtn = iconBtn(Icons.prev, () => SpotiKitBridge.back(), "fr-cp-btn");
+    this.playBtn = iconBtn(Icons.play, () => SpotiKitBridge.togglePlay(), "fr-cp-btn fr-cp-btn-play");
+    const nextBtn = iconBtn(Icons.next, () => SpotiKitBridge.next(), "fr-cp-btn");
+    this.repeatBtn = iconBtn(Icons.repeat, () => SpotiKitBridge.toggleRepeat(), "fr-cp-btn fr-cp-btn-sm");
+    transport.append(this.shuffleBtn, prevBtn, this.playBtn, nextBtn, this.repeatBtn);
+
     const scrubWrap = el("div", "fr-cp-scrubber-wrap");
     const progBar = el("div", "fr-cp-progress-bar");
     this.progressFill = el("div", "fr-cp-progress-fill");
@@ -85,42 +127,8 @@ export const CoverPlayer = {
       if (this.progressFill) this.progressFill.style.width = `${(pct * 100).toFixed(2)}%`;
     });
 
-    // 2. Transport Controls
-    const transport = el("div", "fr-cp-transport");
-    this.shuffleBtn = iconBtn(Icons.shuffle, () => SpotiKitBridge.toggleShuffle(), "fr-cp-btn fr-cp-btn-sm");
-    const prevBtn = iconBtn(Icons.prev, () => SpotiKitBridge.back(), "fr-cp-btn");
-    this.playBtn = iconBtn(Icons.play, () => SpotiKitBridge.togglePlay(), "fr-cp-btn fr-cp-btn-play");
-    const nextBtn = iconBtn(Icons.next, () => SpotiKitBridge.next(), "fr-cp-btn");
-    this.repeatBtn = iconBtn(Icons.repeat, () => SpotiKitBridge.toggleRepeat(), "fr-cp-btn fr-cp-btn-sm");
-    transport.append(this.shuffleBtn, prevBtn, this.playBtn, nextBtn, this.repeatBtn);
-
-    // 3. Slim Liquid Volume Bar
-    const volRow = el("div", "fr-cp-volume-row");
-    const volIcon = iconBtn(Icons.volume, () => SpotiKitBridge.toggleMute(), "fr-cp-btn fr-cp-btn-xs");
-    const volBar = el("div", "fr-cp-vol-bar");
-    this.volFill = el("div", "fr-cp-vol-fill");
-    volBar.appendChild(this.volFill);
-    volRow.append(volIcon, volBar);
-
-    this._bindDrag(volBar, "volSeeking", (ev, bar) => {
-      const rect = bar.getBoundingClientRect();
-      const width = rect.width || 1;
-      const pct = Math.min(1, Math.max(0, (ev.clientX - rect.left) / width));
-      SpotiKitBridge.setVolume(pct);
-      this._lastVolume = pct;
-      if (this.volFill) this.volFill.style.width = `${(pct * 100).toFixed(1)}%`;
-    });
-
-    volRow.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      const dir = e.deltaY < 0 ? 1 : -1;
-      const vol = Math.max(0, Math.min(1, SpotiKitBridge.getVolume() + dir * 0.05));
-      SpotiKitBridge.setVolume(vol);
-      this._lastVolume = vol;
-      if (this.volFill) this.volFill.style.width = `${(vol * 100).toFixed(1)}%`;
-    });
-
-    root.append(scrubWrap, transport, volRow);
+    bottomHud.append(transport, scrubWrap);
+    root.append(volRail, bottomHud);
     this.root = root;
     return root;
   },
@@ -171,7 +179,7 @@ export const CoverPlayer = {
       const vol = SpotiKitBridge.getMute() ? 0 : SpotiKitBridge.getVolume();
       if (Math.abs(vol - this._lastVolume) > 0.005) {
         this._lastVolume = vol;
-        this.volFill.style.width = `${(vol * 100).toFixed(1)}%`;
+        this.volFill.style.height = `${(vol * 100).toFixed(1)}%`;
       }
     }
   },
@@ -179,6 +187,7 @@ export const CoverPlayer = {
   destroy() {
     this._dragAbortController?.abort();
     this._dragAbortController = null;
+    this.root?.parentElement?.classList.remove("fr-cp-dragging");
     this.seeking = false;
     this.volSeeking = false;
     this._resetCache();

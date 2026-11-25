@@ -17,11 +17,19 @@ export function buildSidebarPipSection() {
     sidebarEnabled ? "fr-settings-subrow" : "fr-settings-subrow fr-hidden"
   );
 
+  const sidebarAnimRow = createSettingRow(
+    t("sidebarLyricsAnim"),
+    toggle(Settings.get("sidebarLyricsAnim") !== false, (v) => Settings.set("sidebarLyricsAnim", v)),
+    t("sidebarLyricsAnimDesc"),
+    sidebarEnabled ? "fr-settings-subrow" : "fr-settings-subrow fr-hidden"
+  );
+
   const sidebarLyricsRow = createSettingRow(
     t("sidebarLyrics"),
     toggle(sidebarEnabled, (v) => {
       Settings.set("sidebarLyrics", v);
       sidebarBgRow.classList.toggle("fr-hidden", !v);
+      sidebarAnimRow.classList.toggle("fr-hidden", !v);
     }),
     t("sidebarLyricsDesc")
   );
@@ -44,7 +52,7 @@ export function buildSidebarPipSection() {
   const langRow = createSettingRow(t("language"), langSelect);
 
   return [
-    createSettingCard(t("tabSidebarPip"), [sidebarLyricsRow, sidebarBgRow, pipLyricsRow]),
+    createSettingCard(t("tabSidebarPip"), [sidebarLyricsRow, sidebarBgRow, sidebarAnimRow, pipLyricsRow]),
     createSettingCard(t("language"), [langRow]),
   ];
 }

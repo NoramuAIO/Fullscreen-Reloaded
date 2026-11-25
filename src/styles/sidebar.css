@@ -1,19 +1,24 @@
+/* ---------------- Hide Native Spotify Lyrics Preview Card When Sidebar Lyrics Is Active ---------------- */
+html.fr-hide-native-npv-lyrics [data-testid="lyrics-npv-section"] {
+  display: none !important;
+}
+
 /* ---------------- Spotify Right Sidebar Live Lyrics Card (Apple Music Liquid) ---------------- */
 .fr-sidebar-card {
   position: relative;
   overflow: hidden;
   border-radius: 22px;
   margin: 10px 0;
-  background: rgba(24, 24, 30, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: var(--fr-theme-surface, rgba(20, 20, 28, 0.72));
+  border: 1px solid var(--fr-theme-border, rgba(255, 255, 255, 0.18));
   box-shadow:
     0 18px 42px rgba(0, 0, 0, 0.36),
     inset 0 1px 0 rgba(255, 255, 255, 0.24);
-  backdrop-filter: blur(36px) saturate(1.85);
-  -webkit-backdrop-filter: blur(36px) saturate(1.85);
+  backdrop-filter: blur(36px) saturate(1.9);
+  -webkit-backdrop-filter: blur(36px) saturate(1.9);
   color: #ffffff;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif;
-  transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), border-color 260ms ease;
+  transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), border-color 420ms ease;
 }
 
 .fr-sb-bg {
@@ -21,7 +26,7 @@
   inset: -18%;
   background-size: cover;
   background-position: center;
-  filter: blur(42px) saturate(1.75) brightness(0.62);
+  filter: blur(42px) saturate(1.75) brightness(0.58);
   opacity: 0;
   transform: scale(1.08);
   transition: opacity 520ms ease, background-image 600ms ease;
@@ -36,7 +41,7 @@
 .fr-sb-scrim {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(12, 12, 18, 0.34) 0%, rgba(10, 10, 16, 0.56) 100%);
+  background: linear-gradient(180deg, rgba(10, 10, 16, 0.3) 0%, rgba(8, 8, 14, 0.58) 100%);
   pointer-events: none;
   z-index: 1;
 }
@@ -70,7 +75,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--fr-theme-accent, #ffffff);
+  transition: color 420ms ease;
 }
 
 .fr-sb-icon svg {
@@ -79,7 +85,7 @@
 }
 
 .fr-sb-title {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 700;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -103,7 +109,7 @@
   border-radius: 50%;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(255, 255, 255, 0.8);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -112,13 +118,13 @@
 }
 
 .fr-sb-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.16);
   color: #ffffff;
 }
 
 .fr-sb-btn.fr-active {
-  background: rgba(255, 255, 255, 0.22);
-  color: #ffffff;
+  background: var(--fr-theme-accent-soft, rgba(255, 255, 255, 0.22));
+  color: var(--fr-theme-accent, #ffffff);
 }
 
 .fr-sb-btn svg {
@@ -133,13 +139,13 @@
 .fr-sb-body {
   position: relative;
   z-index: 2;
-  height: 310px;
+  height: 390px;
   overflow: hidden;
   transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), opacity 280ms ease;
 }
 
 .fr-sidebar-card.fr-sb-expanded .fr-sb-body {
-  height: min(72vh, 680px);
+  height: min(78vh, 760px);
 }
 
 .fr-sidebar-card.fr-sb-collapsed .fr-sb-body {
@@ -152,10 +158,10 @@
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 28px 16px 64px;
+  padding: 36px 18px 84px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
   scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
@@ -164,17 +170,19 @@
 }
 
 .fr-sb-line {
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.38;
-  text-align: center;
-  color: rgba(255, 255, 255, 0.4);
-  transform: scale(0.96);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.34;
+  letter-spacing: -0.02em;
+  text-align: left;
+  color: rgba(255, 255, 255, 0.36);
+  transform-origin: left center;
+  transform: scale(0.95);
   transition:
     color 380ms cubic-bezier(0.32, 0.72, 0, 1),
     transform 420ms cubic-bezier(0.32, 0.72, 0, 1),
     opacity 360ms ease,
-    text-shadow 360ms ease;
+    filter 360ms ease;
 }
 
 .fr-sb-line.fr-sb-clickable {
@@ -182,18 +190,68 @@
 }
 
 .fr-sb-line.fr-sb-clickable:hover {
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.86);
 }
 
 .fr-sb-line.fr-sb-active {
+  font-size: 22px;
   color: #ffffff;
   transform: scale(1.03);
-  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.35);
+  filter: drop-shadow(0 2px 16px var(--fr-theme-glow, rgba(255, 255, 255, 0.34)));
 }
 
 .fr-sb-line.fr-sb-past {
-  color: rgba(255, 255, 255, 0.34);
-  transform: scale(0.95);
+  color: rgba(255, 255, 255, 0.3);
+  transform: scale(0.94);
+}
+
+/* Sidebar live karaoke animation (toggled via sidebarLyricsAnim) */
+.fr-sb-word {
+  display: inline-block;
+  white-space: pre-wrap;
+  transition: transform 120ms cubic-bezier(0.32, 0.72, 0, 1), color 180ms ease;
+}
+
+.fr-sidebar-card.fr-sb-animated .fr-sb-line.fr-sb-active .fr-sb-word {
+  color: rgba(255, 255, 255, 0.36);
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.36);
+}
+
+.fr-sidebar-card.fr-sb-animated .fr-sb-line.fr-sb-active .fr-sb-word.fr-sb-w-active {
+  color: transparent;
+  background-image: linear-gradient(
+    104deg,
+    #ffffff 0%,
+    #ffffff calc(var(--sb-w-pct, -15%) - 14%),
+    color-mix(in srgb, #ffffff 72%, var(--fr-theme-accent, #ffffff)) calc(var(--sb-w-pct, -15%)),
+    rgba(255, 255, 255, 0.36) calc(var(--sb-w-pct, -15%) + 14%),
+    rgba(255, 255, 255, 0.36) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  transform: translate3d(0, -2.5px, 0) scale(1.03);
+}
+
+.fr-sidebar-card.fr-sb-animated .fr-sb-line.fr-sb-active .fr-sb-word.fr-sb-w-done {
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
+  background-image: none;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.fr-sidebar-card.fr-sb-animated .fr-sb-line.fr-sb-active .fr-sb-sentence {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    #ffffff 0%,
+    #ffffff calc(var(--sb-pct, 0%) - 16%),
+    rgba(255, 255, 255, 0.42) calc(var(--sb-pct, 0%)),
+    rgba(255, 255, 255, 0.36) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .fr-sb-status {
@@ -202,7 +260,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.56);
   opacity: 0;

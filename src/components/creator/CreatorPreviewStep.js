@@ -125,7 +125,7 @@ export const CreatorPreviewStep = {
 
     if (activeIdx >= 0 && this._previewLineEls[activeIdx] && this._lastPreviewIdx !== activeIdx) {
       this._lastPreviewIdx = activeIdx;
-      this._previewLineEls[activeIdx].scrollIntoView({
+      this._previewLineEls[activeIdx].scrollIntoView?.({
         block: "center",
         behavior: "smooth",
       });
