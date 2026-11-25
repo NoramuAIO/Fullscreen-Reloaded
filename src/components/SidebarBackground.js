@@ -13,11 +13,13 @@ import { SpotiKitBridge } from "../services/SpotiKitBridge.js";
 
 const BG_ID = "fr-right-sidebar-bg";
 const ACTIVE_CLASS = "fr-sidebar-panel-bg-active";
+const HOST_CLASS = "fr-sbg-host";
+const CLEAR_BG_CLASS = "fr-sbg-clear-bg";
 const MODE_ATTR = "data-fr-sbg-mode";
 const HOST_SELECTORS = [
-  ".Root__right-sidebar",
-  '[data-testid="right-sidebar"]',
   ".right-sidebar",
+  '[data-testid="right-sidebar"]',
+  ".Root__right-sidebar",
 ];
 
 function hexToRgbTuple(hex) {
@@ -34,6 +36,8 @@ export const SidebarBackground = {
   layerEl: null,
   artA: null,
   artB: null,
+  _hostEl: null,
+  _clearedEls: new Set(),
   _activeIsA: true,
   _currentImgUrl: "",
   _lastColors: null,
@@ -123,9 +127,9 @@ export const SidebarBackground = {
 
     const ds = document.documentElement.style;
     ds.setProperty("--fr-sbg-dom", rgb(dom));
-    ds.setProperty("--fr-sbg-dom-soft", rgba(dom, 0.62));
+    ds.setProperty("--fr-sbg-dom-soft", rgba(dom, 0.72));
     ds.setProperty("--fr-sbg-acc", rgb(acc));
-    ds.setProperty("--fr-sbg-acc-soft", rgba(acc, 0.42));
+    ds.setProperty("--fr-sbg-acc-soft", rgba(acc, 0.58));
     ds.setProperty("--fr-sbg-dark", rgb(dark));
   },
 
@@ -179,10 +183,50 @@ export const SidebarBackground = {
     return npv?.parentElement || null;
   },
 
+  _markTransparentWrappers(host) {
+    if (!host) return;
+    const targets = [
+      host.querySelector?.(".npv-sections"),
+      host.querySelector?.('[data-testid="NPV_Panel_OpenDiv"]'),
+      host.querySelector?.(".main-buddyFeed-container"),
+      host.querySelector?.(".os-viewport"),
+    ].filter(Boolean);
+
+    for (const node of targets) {
+      let cur = node;
+      while (cur && cur !== host) {
+        if (cur.classList && !cur.classList.contains(CLEAR_BG_CLASS)) {
+          cur.classList.add(CLEAR_BG_CLASS);
+          this._clearedEls.add(cur);
+        }
+        cur = cur.parentElement;
+      }
+    }
+  },
+
+  _cleanupHostClasses() {
+    if (this._hostEl?.classList) {
+      this._hostEl.classList.remove(HOST_CLASS);
+    }
+    this._hostEl = null;
+    for (const node of this._clearedEls) {
+      node?.classList?.remove(CLEAR_BG_CLASS);
+    }
+    this._clearedEls.clear();
+  },
+
   _ensureAttached() {
     if (!this.layerEl || !this._mounted) return false;
     const host = this._findHost();
     if (!host) return false;
+
+    if (this._hostEl && this._hostEl !== host) {
+      this._cleanupHostClasses();
+    }
+    this._hostEl = host;
+    host.classList?.add(HOST_CLASS);
+    this._markTransparentWrappers(host);
+
     if (this.layerEl.parentElement === host) return true;
     try {
       host.insertBefore(this.layerEl, host.firstChild || null);
@@ -265,6 +309,7 @@ export const SidebarBackground = {
     this.layerEl = null;
     this.artA = null;
     this.artB = null;
+    this._cleanupHostClasses();
   },
 
   destroy() {

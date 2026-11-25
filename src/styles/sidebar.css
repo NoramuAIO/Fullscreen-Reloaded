@@ -278,43 +278,42 @@ html.fr-sidebar-panel-bg-active .fr-sidebar-card.fr-sb-has-bg .fr-sb-bg {
 /* ============================================================================
  * Living Liquid Aurora Background for Spotify's Entire Right Sidebar
  * ============================================================================ */
-html.fr-sidebar-panel-bg-active .Root__right-sidebar,
-html.fr-sidebar-panel-bg-active [data-testid="right-sidebar"],
-html.fr-sidebar-panel-bg-active .right-sidebar {
+html.fr-sidebar-panel-bg-active .fr-sbg-host,
+html.fr-sidebar-panel-bg-active .Root__right-sidebar.fr-sbg-host,
+html.fr-sidebar-panel-bg-active .right-sidebar.fr-sbg-host {
   position: relative !important;
   overflow: hidden !important;
   background: var(--fr-sbg-dark, #0c0d14) !important;
+  background-color: var(--fr-sbg-dark, #0c0d14) !important;
   transition: background 750ms ease;
 }
 
-html.fr-sidebar-panel-bg-active .Root__right-sidebar > *:not(#fr-right-sidebar-bg),
-html.fr-sidebar-panel-bg-active [data-testid="right-sidebar"] > *:not(#fr-right-sidebar-bg),
-html.fr-sidebar-panel-bg-active .right-sidebar > *:not(#fr-right-sidebar-bg) {
+html.fr-sidebar-panel-bg-active .fr-sbg-host > *:not(#fr-right-sidebar-bg) {
   position: relative;
   z-index: 1;
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
-/* Let Spotify's inner scroll containers reveal the living Liquid Aurora behind them */
-html.fr-sidebar-panel-bg-active .Root__right-sidebar .main-buddyFeed-container,
-html.fr-sidebar-panel-bg-active .Root__right-sidebar .os-viewport,
-html.fr-sidebar-panel-bg-active .Root__right-sidebar .npv-sections,
-html.fr-sidebar-panel-bg-active .Root__right-sidebar [data-testid="NPV_Panel_OpenDiv"],
-html.fr-sidebar-panel-bg-active .Root__right-sidebar [data-testid="NPV_Panel_OpenDiv"] > div,
-html.fr-sidebar-panel-bg-active .right-sidebar .npv-sections,
-html.fr-sidebar-panel-bg-active .right-sidebar [data-testid="NPV_Panel_OpenDiv"] {
+/* Let every Spotify inner wrapper between the host and .npv-sections reveal the living Liquid Aurora */
+html.fr-sidebar-panel-bg-active .fr-sbg-clear-bg,
+html.fr-sidebar-panel-bg-active .fr-sbg-host .main-buddyFeed-container,
+html.fr-sidebar-panel-bg-active .fr-sbg-host .os-viewport,
+html.fr-sidebar-panel-bg-active .fr-sbg-host .os-content,
+html.fr-sidebar-panel-bg-active .fr-sbg-host .npv-sections,
+html.fr-sidebar-panel-bg-active .fr-sbg-host [data-testid="NPV_Panel_OpenDiv"],
+html.fr-sidebar-panel-bg-active .fr-sbg-host [data-testid="NPV_Panel_OpenDiv"] > div {
   background: transparent !important;
   background-color: transparent !important;
 }
 
 /* Elevate Spotify's native right-sidebar cards into translucent frosted glass */
-html.fr-sidebar-panel-bg-active .Root__right-sidebar .main-nowPlayingView-section,
-html.fr-sidebar-panel-bg-active .Root__right-sidebar .npv-section,
-html.fr-sidebar-panel-bg-active .right-sidebar .main-nowPlayingView-section,
-html.fr-sidebar-panel-bg-active .right-sidebar .npv-section {
-  background: rgba(16, 16, 24, 0.42) !important;
+html.fr-sidebar-panel-bg-active .fr-sbg-host .main-nowPlayingView-section,
+html.fr-sidebar-panel-bg-active .fr-sbg-host .npv-section {
+  background: rgba(16, 16, 24, 0.36) !important;
   backdrop-filter: blur(22px) saturate(1.45);
   -webkit-backdrop-filter: blur(22px) saturate(1.45);
-  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
   box-shadow:
     0 10px 28px rgba(0, 0, 0, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
@@ -329,9 +328,9 @@ html.fr-sidebar-panel-bg-active .right-sidebar .npv-section {
   border-radius: inherit;
   background: linear-gradient(
     165deg,
-    var(--fr-sbg-dom-soft, rgba(32, 28, 56, 0.72)) 0%,
-    var(--fr-sbg-dark, #0c0d14) 58%,
-    rgba(6, 7, 12, 0.96) 100%
+    var(--fr-sbg-dom-soft, rgba(46, 38, 82, 0.82)) 0%,
+    var(--fr-sbg-dark, #0e101a) 62%,
+    rgba(6, 7, 12, 0.94) 100%
   );
   transition: background 850ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -342,7 +341,7 @@ html.fr-sidebar-panel-bg-active .right-sidebar .npv-section {
   inset: -24%;
   background-size: cover;
   background-position: center;
-  filter: blur(56px) saturate(1.95) brightness(0.62);
+  filter: blur(48px) saturate(2.05) brightness(0.78);
   opacity: 0;
   transform: scale(1.12);
   transition: opacity 950ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -350,7 +349,7 @@ html.fr-sidebar-panel-bg-active .right-sidebar .npv-section {
 }
 
 .fr-sbg-art.fr-sbg-art-active {
-  opacity: 0.92;
+  opacity: 0.96;
   animation: fr-sbg-breathe 26s ease-in-out infinite alternate;
 }
 
@@ -369,42 +368,42 @@ html.fr-sidebar-panel-bg-active .right-sidebar .npv-section {
   inset: -15%;
   pointer-events: none;
   mix-blend-mode: screen;
-  opacity: 0.85;
+  opacity: 0.92;
   transition: opacity 600ms ease;
 }
 
 .fr-sbg-orb {
   position: absolute;
   border-radius: 50%;
-  filter: blur(64px);
+  filter: blur(56px);
   will-change: transform;
   transition: background 900ms ease;
 }
 
 .fr-sbg-orb-1 {
-  width: 86%;
+  width: 88%;
   aspect-ratio: 1;
-  top: -18%;
-  left: -22%;
-  background: radial-gradient(circle, var(--fr-sbg-acc-soft, rgba(160, 175, 255, 0.44)) 0%, transparent 68%);
+  top: -16%;
+  left: -20%;
+  background: radial-gradient(circle, var(--fr-sbg-acc-soft, rgba(160, 175, 255, 0.58)) 0%, transparent 68%);
   animation: fr-sbg-drift-1 18s ease-in-out infinite alternate;
 }
 
 .fr-sbg-orb-2 {
-  width: 78%;
+  width: 82%;
   aspect-ratio: 1;
-  top: 28%;
-  right: -28%;
-  background: radial-gradient(circle, var(--fr-sbg-dom-soft, rgba(90, 72, 168, 0.56)) 0%, transparent 70%);
+  top: 26%;
+  right: -26%;
+  background: radial-gradient(circle, var(--fr-sbg-dom-soft, rgba(90, 72, 168, 0.72)) 0%, transparent 70%);
   animation: fr-sbg-drift-2 22s ease-in-out infinite alternate;
 }
 
 .fr-sbg-orb-3 {
-  width: 92%;
+  width: 94%;
   aspect-ratio: 1;
-  bottom: -24%;
-  left: -12%;
-  background: radial-gradient(circle, var(--fr-sbg-acc-soft, rgba(120, 145, 240, 0.36)) 0%, transparent 72%);
+  bottom: -22%;
+  left: -10%;
+  background: radial-gradient(circle, var(--fr-sbg-acc-soft, rgba(120, 145, 240, 0.48)) 0%, transparent 72%);
   animation: fr-sbg-drift-3 25s ease-in-out infinite alternate;
 }
 
@@ -449,12 +448,12 @@ html.fr-sidebar-panel-bg-active .right-sidebar .npv-section {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(120% 32% at 50% 0%, rgba(255, 255, 255, 0.14) 0%, transparent 72%),
+    radial-gradient(120% 34% at 50% 0%, rgba(255, 255, 255, 0.16) 0%, transparent 72%),
     linear-gradient(
       180deg,
-      rgba(10, 10, 16, 0.18) 0%,
-      rgba(8, 9, 14, 0.36) 44%,
-      rgba(6, 7, 12, 0.72) 100%
+      rgba(10, 10, 16, 0.14) 0%,
+      rgba(8, 9, 14, 0.28) 46%,
+      rgba(6, 7, 12, 0.54) 100%
     );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
