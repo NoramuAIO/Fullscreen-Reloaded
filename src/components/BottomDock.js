@@ -136,6 +136,9 @@ export const BottomDock = {
     const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / width));
     const duration = SpotiKitBridge.getDuration();
     SpotiKitBridge.seek(pct * duration);
+    const pctStr = pct * 100 + "%";
+    if (this.progressFill) this.progressFill.style.width = pctStr;
+    if (this.progressHandle) this.progressHandle.style.left = pctStr;
   },
 
   volFromEvent(e, bar) {
