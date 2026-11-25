@@ -1,0 +1,215 @@
+/* ---------------- Spotify Right Sidebar Live Lyrics Card (Apple Music Liquid) ---------------- */
+.fr-sidebar-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 22px;
+  margin: 10px 0;
+  background: rgba(24, 24, 30, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  backdrop-filter: blur(36px) saturate(1.85);
+  -webkit-backdrop-filter: blur(36px) saturate(1.85);
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif;
+  transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), border-color 260ms ease;
+}
+
+.fr-sb-bg {
+  position: absolute;
+  inset: -18%;
+  background-size: cover;
+  background-position: center;
+  filter: blur(42px) saturate(1.75) brightness(0.62);
+  opacity: 0;
+  transform: scale(1.08);
+  transition: opacity 520ms ease, background-image 600ms ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.fr-sidebar-card.fr-sb-has-bg .fr-sb-bg {
+  opacity: 1;
+}
+
+.fr-sb-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(12, 12, 18, 0.34) 0%, rgba(10, 10, 16, 0.56) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.fr-sb-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.fr-sb-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  cursor: pointer;
+  padding: 2px 0;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.fr-sb-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.fr-sb-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.fr-sb-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fr-sb-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.fr-sb-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.78);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 180ms ease, color 180ms ease, transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.fr-sb-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.fr-sb-btn.fr-active {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+}
+
+.fr-sb-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.fr-sidebar-card.fr-sb-collapsed .fr-sb-chevron-btn svg {
+  transform: rotate(-90deg);
+}
+
+.fr-sb-body {
+  position: relative;
+  z-index: 2;
+  height: 310px;
+  overflow: hidden;
+  transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), opacity 280ms ease;
+}
+
+.fr-sidebar-card.fr-sb-expanded .fr-sb-body {
+  height: min(72vh, 680px);
+}
+
+.fr-sidebar-card.fr-sb-collapsed .fr-sb-body {
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fr-sb-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 28px 16px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  mask-image: linear-gradient(180deg, transparent 0%, #000 12%, #000 84%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 12%, #000 84%, transparent 100%);
+}
+
+.fr-sb-line {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.38;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+  transform: scale(0.96);
+  transition:
+    color 380ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 420ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 360ms ease,
+    text-shadow 360ms ease;
+}
+
+.fr-sb-line.fr-sb-clickable {
+  cursor: pointer;
+}
+
+.fr-sb-line.fr-sb-clickable:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.fr-sb-line.fr-sb-active {
+  color: #ffffff;
+  transform: scale(1.03);
+  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.35);
+}
+
+.fr-sb-line.fr-sb-past {
+  color: rgba(255, 255, 255, 0.34);
+  transform: scale(0.95);
+}
+
+.fr-sb-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.56);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+
+.fr-sb-status.fr-show {
+  opacity: 1;
+}

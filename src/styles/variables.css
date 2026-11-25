@@ -1,13 +1,18 @@
 :root {
-  --fr-bg: #060607;
+  --fr-bg: #07070b;
   --fr-fg: #ffffff;
   --fr-fg-dim: rgba(255, 255, 255, 0.78);
-  --fr-fg-faint: rgba(255, 255, 255, 0.52);
+  --fr-fg-faint: rgba(255, 255, 255, 0.54);
   --fr-accent: #ffffff;
-  --fr-accent-2: #101014;
-  --fr-radius: 18px;
-  --fr-font: "Spotify Circular", "Circular Std", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --fr-accent-2: #101018;
+  --fr-radius: 22px;
+  --fr-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Spotify Circular", "Circular Std", "Segoe UI", Helvetica, Arial, sans-serif;
   --fr-transition: 900ms;
+  --fr-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --fr-glass-bg: rgba(255, 255, 255, 0.09);
+  --fr-glass-surface: rgba(20, 20, 28, 0.52);
+  --fr-glass-border: rgba(255, 255, 255, 0.22);
+  --fr-glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.34), inset 0 -1px 0 rgba(0, 0, 0, 0.16);
 }
 
 #fullscreen-reloaded-root {

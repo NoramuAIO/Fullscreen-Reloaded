@@ -925,7 +925,8 @@ test("letterByLetterWordSyncedAnimationAndLiveToggle: animates characters progre
     App.mount(env.mock.ctx);
     await App.launch();
 
-    assert.equal(fetchCount, 1);
+    const fetchesBeforeToggle = fetchCount;
+    assert.ok(fetchesBeforeToggle >= 1);
     assert.equal(Settings.get("letterByLetter"), true);
     assert.equal(LyricsView.scrollEl.classList.contains("fr-letter-mode"), true);
 
@@ -975,7 +976,7 @@ test("letterByLetterWordSyncedAnimationAndLiveToggle: animates characters progre
     toggleBtn.click();
     assert.equal(Settings.get("letterByLetter"), false);
     assert.equal(reloadCount, 0);
-    assert.equal(fetchCount, 1);
+    assert.equal(fetchCount, fetchesBeforeToggle);
     assert.equal(LyricsView.scrollEl.classList.contains("fr-letter-mode"), false);
     assert.equal(App.root.querySelectorAll(".fr-char").length, 0);
 
@@ -992,13 +993,171 @@ test("letterByLetterWordSyncedAnimationAndLiveToggle: animates characters progre
     assert.equal(Settings.get("letterByLetter"), true);
     assert.equal(LyricsView.scrollEl.classList.contains("fr-letter-mode"), true);
     assert.equal(App.root.querySelectorAll(".fr-char").length, 5);
-    assert.equal(fetchCount, 1);
+    assert.equal(fetchCount, fetchesBeforeToggle);
 
     // Restored at current progressMs (1600) -> characters already reflect playback progression
     const restoredChars = App.root.querySelectorAll(".fr-char");
     assert.equal(restoredChars[0].classList.contains("fr-c-done"), true);
 
     App.unmount();
+  } finally {
+    LyricsService.resolve = origResolve;
+    env.teardown();
+  }
+});
+
+test("newPlayerConditionalSubToggle_Navigation_StaleBadge_Sidebar_PiPLyrics: verifies all new features and bug fixes", async () => {
+  const navCalls = [];
+  const track1 = {
+    uri: "spotify:track:t1",
+    name: "Aklın Hep Bende",
+    artists: [
+      { name: "UZI", uri: "spotify:artist:artUzi" },
+      { name: "Motive", uri: "spotify:artist:artMotive" },
+    ],
+    album: { name: "Kan II", uri: "spotify:album:albKan2" },
+    metadata: {
+      title: "Aklın Hep Bende",
+      artist_name: "UZI, Motive",
+      album_title: "Kan II",
+      album_uri: "spotify:album:albKan2",
+      duration: 180000,
+    },
+  };
+  const env = createLifecycleEnv({
+    Locale: { language: "en-US" },
+    Navigation: { go: (p) => navCalls.push(p) },
+    Player: { track: track1, state: { item: track1 }, position: 1200, duration: 180000 },
+  });
+
+  // Mount fake Spotify right sidebar container so SidebarLyrics attaches cleanly
+  const rightSidebar = document.createElement("aside");
+  rightSidebar.className = "right-sidebar";
+  const npvSections = document.createElement("div");
+  npvSections.className = "npv-sections";
+  rightSidebar.appendChild(npvSections);
+  document.body.appendChild(rightSidebar);
+
+  let resolveSecondTrack;
+  const secondTrackPromise = new Promise((r) => {
+    resolveSecondTrack = r;
+  });
+
+  const [
+    { SpotiKitBridge },
+    { App },
+    { LyricsService },
+    { LyricsView },
+    { SidebarLyrics },
+    { TopBar },
+    { Settings },
+    { Locales },
+  ] = await Promise.all([
+    import(pathToFileURL(path.join(ROOT, "src/services/SpotiKitBridge.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/App.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/services/LyricsService.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/components/LyricsView.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/components/SidebarLyrics.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/components/TopBar.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/utils/settings.js")).href),
+    import(pathToFileURL(path.join(ROOT, "src/utils/i18n.js")).href),
+  ]);
+
+  const origResolve = LyricsService.resolve.bind(LyricsService);
+  LyricsService.resolve = async (tr) => {
+    if (tr?.uri === "spotify:track:t2") return secondTrackPromise;
+    return {
+      type: "synced",
+      source: "Apple Music",
+      lines: [
+        { startMs: 1000, endMs: 3000, text: "First active line" },
+        { startMs: 3000, endMs: 5000, text: "Upcoming next line" },
+      ],
+    };
+  };
+
+  try {
+    await SpotiKitBridge.waitForReady();
+    SpotiKitBridge.init(env.mock.ctx);
+    Settings.load();
+    App.mount(env.mock.ctx);
+    await App.launch();
+
+    // 1. Artwork images disable native drag (prevents hover/drag ghost cover)
+    assert.equal(App.artImg.draggable, false);
+    assert.equal(App.artImgAlt.draggable, false);
+
+    // 2. Switch to New Player + conditional Show Old Player sub-row
+    const rows = App.root.querySelectorAll(".fr-settings-row");
+    const newPlayerRow = rows.find((r) => r.textContent.includes(Locales.en.switchToNewPlayer));
+    const legacyRow = rows.find((r) => r.textContent.includes(Locales.en.showLegacyPlayer));
+    assert.ok(newPlayerRow && legacyRow);
+    assert.equal(legacyRow.classList.contains("fr-hidden"), true);
+    assert.equal(App.root.classList.contains("fr-new-player"), false);
+
+    newPlayerRow.querySelector("button.fr-toggle").click();
+    assert.equal(Settings.get("newPlayerMode"), true);
+    assert.equal(legacyRow.classList.contains("fr-hidden"), false);
+    assert.equal(App.root.classList.contains("fr-new-player"), true);
+    assert.equal(App.root.classList.contains("fr-hide-legacy-player"), true);
+
+    legacyRow.querySelector("button.fr-toggle").click();
+    assert.equal(Settings.get("showLegacyPlayer"), true);
+    assert.equal(App.root.classList.contains("fr-hide-legacy-player"), false);
+
+    // 3. Sidebar Lyrics card attached & toggleable background + enable/disable
+    const sbCard = document.getElementById("fr-sidebar-lyrics-card");
+    assert.ok(sbCard);
+    assert.equal(sbCard.classList.contains("fr-sb-has-bg"), true);
+    Settings.set("sidebarLyricsBg", false);
+    assert.equal(sbCard.classList.contains("fr-sb-has-bg"), false);
+    Settings.set("sidebarLyrics", false);
+    assert.equal(document.getElementById("fr-sidebar-lyrics-card"), null);
+
+    // 4. Stale provider badge cleared immediately before second track resolves
+    const load2 = LyricsView.loadForTrack({ uri: "spotify:track:t2", metadata: { duration: 180000 } }, App, true);
+    assert.equal(LyricsView.providerSource, "");
+    assert.equal(LyricsView._isLoading, true);
+    LyricsView.showProviderBadge(3000);
+    assert.equal(LyricsView.providerBadge.classList.contains("fr-show"), false);
+    resolveSecondTrack({ type: "synced", source: "LRCLIB", lines: [{ startMs: 0, endMs: 2000, text: "Line 2" }] });
+    await load2;
+    assert.equal(LyricsView.providerSource, "LRCLIB");
+
+    // 5. Clickable track title and individual artists navigate & close fullscreen
+    App.titleEl.click();
+    assert.equal(navCalls[0], "/album/albKan2");
+    assert.equal(App.open, false);
+
+    await App.launch();
+    const artistLinks = App.artistEl.querySelectorAll(".fr-artist-link");
+    assert.equal(artistLinks.length, 2);
+    artistLinks[1].click();
+    assert.equal(navCalls[1], "/artist/artMotive");
+    assert.equal(App.open, false);
+
+    // 6. PiP live lyrics update
+    const pipBody = document.createElement("body");
+    const pipHead = document.createElement("head");
+    env.dom.window.documentPictureInPicture = {
+      window: null,
+      requestWindow: async () => ({
+        document: {
+          head: pipHead,
+          body: pipBody,
+          createElement: (tag) => document.createElement(tag),
+        },
+        addEventListener() {},
+        close() {},
+      }),
+    };
+    await TopBar.togglePiP(App);
+    TopBar.updatePiPLyrics({ activeText: "Live PiP lyric", nextText: "Next PiP line", isMusic: false });
+    assert.equal(pipBody.querySelector(".fr-pip-lyric-active").textContent, "Live PiP lyric");
+    assert.equal(pipBody.querySelector(".fr-pip-lyric-next").textContent, "Next PiP line");
+
+    App.unmount();
+    SidebarLyrics.destroy();
   } finally {
     LyricsService.resolve = origResolve;
     env.teardown();

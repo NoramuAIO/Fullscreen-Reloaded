@@ -209,3 +209,68 @@ test("spicyLyricsToFullscreenLines and parseTTML preserve multi-syllable sub-wor
     dom.reset();
   }
 });
+
+test("normalizeWordTimings repairs identical/overlapping word timestamps and preserves valid studio timings", async () => {
+  const { normalizeWordTimings, computeWrappedRowRatios, compileDraftToSpicyLyrics } = await loadLetterModules();
+
+  // Case 1: Forgotten word timestamps (all 3 words start at 1000ms) -> sequential non-overlapping windows
+  const repaired = normalizeWordTimings(
+    [
+      { text: "Valla ", startMs: 1000, endMs: 3000 },
+      { text: "gençler ", startMs: 1000, endMs: 3000 },
+      { text: "obama", startMs: 1000, endMs: 3000 },
+    ],
+    1000,
+    2000
+  );
+  assert.equal(repaired[0].startMs, 1000);
+  assert.ok(repaired[0].endMs <= repaired[1].startMs + 1);
+  assert.ok(repaired[1].endMs <= repaired[2].startMs + 1);
+  assert.ok(repaired[1].startMs > repaired[0].startMs);
+  assert.ok(repaired[2].startMs > repaired[1].startMs);
+
+  // Case 2: Overlapping endMs clamped to next word startMs
+  const clamped = normalizeWordTimings(
+    [
+      { text: "One ", startMs: 1000, endMs: 2800 },
+      { text: "Two", startMs: 1500, endMs: 2400 },
+    ],
+    1000,
+    1800
+  );
+  assert.equal(clamped[0].endMs, 1500);
+  assert.equal(clamped[1].startMs, 1500);
+  assert.equal(clamped[1].endMs, 2400);
+
+  // Case 3: Wrapped line-synced row ratios are sequential [0..split] then [split..1]
+  const rows = computeWrappedRowRatios(["Karanlık yollardan geçtim,", "içinden çok çile seçtim"]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].startRatio, 0);
+  assert.equal(rows[0].endRatio, rows[1].startRatio);
+  assert.equal(rows[1].endRatio, 1);
+  assert.ok(rows[0].endRatio > 0.4 && rows[0].endRatio < 0.65);
+
+  // Case 4: CustomSyncStorage draft compilation with unstamped middle tokens never stretches EndTime to lineEnd
+  const compiled = compileDraftToSpicyLyrics({
+    trackId: "test123",
+    syncMode: "word",
+    lines: [
+      {
+        kind: "lyric",
+        text: "Valla gençler obama",
+        start: 1000,
+        end: 3000,
+        tokens: [
+          { text: "Valla", start: 1000, end: null },
+          { text: "gençler", start: null, end: null },
+          { text: "obama", start: null, end: null },
+        ],
+      },
+    ],
+  });
+  const syls = compiled.Content[0].Lead.Syllables;
+  assert.equal(syls.length, 3);
+  assert.ok(syls[0].EndTime <= syls[1].StartTime);
+  assert.ok(syls[1].EndTime <= syls[2].StartTime);
+  assert.ok(syls[0].EndTime < 2500);
+});

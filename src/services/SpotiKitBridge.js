@@ -349,20 +349,72 @@ export const SpotiKitBridge = {
   },
 
   openQueue() {
+    this.navigateToPath("/queue");
+  },
+
+  uriToSpotifyPath(uri) {
+    if (!uri || typeof uri !== "string") return null;
+    const trimmed = uri.trim();
+    if (trimmed.startsWith("/")) return trimmed;
+    const match = trimmed.match(/^spotify:(track|album|artist|playlist|show|episode):([A-Za-z0-9]+)$/i);
+    if (match) {
+      return `/${match[1].toLowerCase()}/${match[2]}`;
+    }
+    return null;
+  },
+
+  navigateToPath(path) {
+    if (!path || typeof path !== "string") return false;
     try {
       if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Navigation?.go === "function") {
-        SpotiKit.Navigation.go("/queue");
-        return;
+        SpotiKit.Navigation.go(path);
+        return true;
       }
       if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Platform?.History?.push === "function") {
-        SpotiKit.Platform.History.push("/queue");
-        return;
+        SpotiKit.Platform.History.push(path);
+        return true;
       }
     } catch (_) {}
 
     if (typeof window !== "undefined" && window.location) {
-      window.location.hash = "/queue";
+      window.location.hash = path;
+      return true;
     }
+    return false;
+  },
+
+  navigateToUri(uri) {
+    const path = this.uriToSpotifyPath(uri);
+    if (!path) return false;
+    return this.navigateToPath(path);
+  },
+
+  getTrackArtists(track) {
+    if (!track || typeof track !== "object") return [];
+    const meta = track.metadata || {};
+    if (Array.isArray(track.artists) && track.artists.length > 0) {
+      const list = track.artists
+        .map((a, idx) => {
+          const name = a?.name || a?.displayName || "";
+          const metaUriKey = idx === 0 ? "artist_uri" : `artist_uri:${idx}`;
+          const uri = a?.uri || meta[metaUriKey] || "";
+          return name ? { name, uri } : null;
+        })
+        .filter(Boolean);
+      if (list.length) return list;
+    }
+
+    const rawNames = String(meta.artist_name || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (rawNames.length) {
+      return rawNames.map((name, idx) => {
+        const metaUriKey = idx === 0 ? "artist_uri" : `artist_uri:${idx}`;
+        return { name, uri: meta[metaUriKey] || "" };
+      });
+    }
+    return [];
   },
 
   notify(message, options) {

@@ -507,10 +507,39 @@ export function compileDraftToSpicyLyrics(draft) {
     const tokenCount = Math.max(1, l.tokens.length);
     const sliceMs = (lineEnd - lineStart) / tokenCount;
 
+    // Pre-compute monotonic start timestamps so unstamped tokens interpolate cleanly
+    // between their nearest stamped neighbors instead of overlapping until lineEnd.
+    const resolvedStarts = new Array(l.tokens.length);
+    for (let idx = 0; idx < l.tokens.length; idx++) {
+      if (l.tokens[idx].start != null) {
+        resolvedStarts[idx] = Number(l.tokens[idx].start);
+      } else {
+        let prevIdx = idx - 1;
+        while (prevIdx >= 0 && l.tokens[prevIdx].start == null) prevIdx--;
+        let nextIdx = idx + 1;
+        while (nextIdx < l.tokens.length && l.tokens[nextIdx].start == null) nextIdx++;
+
+        const spanStart = prevIdx >= 0 ? Number(l.tokens[prevIdx].start) : lineStart;
+        const spanEnd = nextIdx < l.tokens.length ? Number(l.tokens[nextIdx].start) : lineEnd;
+        const steps = Math.max(1, nextIdx - prevIdx);
+        const stepPos = idx - prevIdx;
+        const interp = spanStart + ((Math.max(spanStart + 40, spanEnd) - spanStart) * stepPos) / steps;
+        resolvedStarts[idx] = Math.round(interp);
+      }
+    }
+
     const syllables = l.tokens.map((tok, idx) => {
-      const tStart = tok.start != null ? tok.start : Math.round(lineStart + idx * sliceMs);
-      const nextTokStart = l.tokens[idx + 1]?.start;
-      let tEnd = tok.end != null && tok.end > tStart ? tok.end : nextTokStart ?? lineEnd;
+      const tStart = resolvedStarts[idx];
+      const nextResolvedStart = resolvedStarts[idx + 1];
+      let tEnd =
+        tok.end != null && tok.end > tStart
+          ? Number(tok.end)
+          : nextResolvedStart != null && nextResolvedStart > tStart
+          ? nextResolvedStart
+          : lineEnd;
+      if (nextResolvedStart != null && nextResolvedStart > tStart && tEnd > nextResolvedStart) {
+        tEnd = nextResolvedStart;
+      }
       if (tEnd <= tStart) tEnd = tStart + Math.max(100, Math.round(sliceMs));
       return {
         Text: tok.text,

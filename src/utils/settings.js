@@ -21,6 +21,11 @@ export const Settings = {
     letterByLetter: true,
     interludeDots: true,
     bgVocalsDuet: true,
+    newPlayerMode: false,
+    showLegacyPlayer: false,
+    sidebarLyrics: true,
+    sidebarLyricsBg: true,
+    pipLyrics: true,
     moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off
     beatReactive: "normal", // normal | intense | off
     lyricsProvider: "auto", // auto | spotify | lrclib | genius | applemusic

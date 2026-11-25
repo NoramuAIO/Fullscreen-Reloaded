@@ -20,6 +20,7 @@ export const UpNextCard = {
     this.root = el("div", "fr-up-next");
     this.img = document.createElement("img");
     this.img.className = "fr-up-next-img";
+    this.img.draggable = false;
 
     const info = el("div", "fr-up-next-info");
     info.appendChild(el("div", "fr-up-next-label", t("upNext")));

@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (SpotiKit ESM bundle)
 // A cinematic, modern fullscreen experience for Spotify.
-// Generated on: 2026-11-24T12:11:00.935Z
+// Generated on: 2026-11-25T19:42:57.827Z
 // ==========================================================================
 
 function __createRuntime() {
@@ -26,6 +26,8 @@ const {  UpNextCard  } = require("./components/UpNextCard.js");
 const {  SettingsModal  } = require("./components/SettingsModal.js");
 const {  TopBar  } = require("./components/TopBar.js");
 const {  BottomDock  } = require("./components/BottomDock.js");
+const {  CoverPlayer  } = require("./components/CoverPlayer.js");
+const {  SidebarLyrics  } = require("./components/SidebarLyrics.js");
 const {  LyricsView  } = require("./components/LyricsView.js");
 const {  FullLyricsCreator  } = require("./components/FullLyricsCreator.js");
 const {  destroyCustomSelects  } = require("./components/CustomSelect.js");
@@ -100,16 +102,37 @@ const App = exports.App = {
 
     this.artImg = document.createElement("img");
     this.artImg.className = "fr-art-img";
+    this.artImg.draggable = false;
     this.artImgAlt = document.createElement("img");
     this.artImgAlt.className = "fr-art-img";
+    this.artImgAlt.draggable = false;
 
-    this.artWrap.append(ringSvg, this.artImg, this.artImgAlt);
+    this.artWrap.append(ringSvg, this.artImg, this.artImgAlt, CoverPlayer.build(this));
 
     const meta = el("div", "fr-meta");
     this.metaWrap = meta;
-    this.titleEl = el("h1", "fr-title", "—");
+    this.titleEl = el("h1", "fr-title fr-meta-link", "—");
+    this.titleEl.title = t("openInSpotify");
+    this.titleEl.addEventListener("click", () => {
+      const track = this.currentTrack;
+      if (!track) return;
+      const targetUri = track.album?.uri || track.metadata?.album_uri || track.uri;
+      if (targetUri && SpotiKitBridge.navigateToUri(targetUri)) {
+        this.close();
+      }
+    });
+
     this.artistEl = el("p", "fr-artist", "—");
-    this.albumEl = el("p", "fr-album", "—");
+    this.albumEl = el("p", "fr-album fr-meta-link", "—");
+    this.albumEl.title = t("openInSpotify");
+    this.albumEl.addEventListener("click", () => {
+      const track = this.currentTrack;
+      if (!track) return;
+      const albumUri = track.album?.uri || track.metadata?.album_uri;
+      if (albumUri && SpotiKitBridge.navigateToUri(albumUri)) {
+        this.close();
+      }
+    });
     meta.append(this.titleEl, this.artistEl, this.albumEl);
 
     artColumn.append(this.artWrap, meta);
@@ -155,6 +178,7 @@ const App = exports.App = {
     LyricsView.destroy();
     FullLyricsCreator.destroy();
     BottomDock.destroy();
+    CoverPlayer.destroy();
     UpNextCard.destroy();
     SettingsModal.destroy();
     BackgroundManager.destroy();
@@ -259,6 +283,9 @@ const App = exports.App = {
     const signal = this._abortController.signal;
     this.registerIdleTracker(signal);
     this.registerHotkeys(signal);
+
+    // Mount Spotify right-sidebar lyrics card (if enabled in settings)
+    SidebarLyrics.init(this);
   },
 
   unmount() {
@@ -269,6 +296,7 @@ const App = exports.App = {
     this._trackGen++;
 
     this.close();
+    SidebarLyrics.destroy();
 
     clearTimeout(this.idleTimer);
     this.idleTimer = null;
@@ -432,15 +460,32 @@ const App = exports.App = {
     this.currentTrack = track;
 
     const meta = track.metadata || {};
-    const artists =
-      track.artists && track.artists.length
-        ? track.artists.map((a) => a.name || a.displayName || "").filter(Boolean).join(", ")
-        : meta.artist_name || track.name || t("unknownArtist");
+    const artistList = SpotiKitBridge.getTrackArtists(track);
 
     const updateMeta = () => {
       if (!this.titleEl || !this.artistEl || !this.albumEl) return;
       this.titleEl.textContent = meta.title || track.name || t("unknownTitle");
-      this.artistEl.textContent = artists;
+      this.artistEl.innerHTML = "";
+      if (artistList.length > 0) {
+        artistList.forEach((artist, idx) => {
+          if (idx > 0) {
+            this.artistEl.appendChild(document.createTextNode(", "));
+          }
+          const span = el("span", artist.uri ? "fr-artist-link" : "fr-artist-name", artist.name);
+          if (artist.uri) {
+            span.title = t("openInSpotify");
+            span.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (SpotiKitBridge.navigateToUri(artist.uri)) {
+                this.close();
+              }
+            });
+          }
+          this.artistEl.appendChild(span);
+        });
+      } else {
+        this.artistEl.textContent = meta.artist_name || track.name || t("unknownArtist");
+      }
       this.albumEl.textContent = meta.album_title || track.album?.name || "";
       this._applyMetaVisibility();
     };
@@ -470,7 +515,8 @@ const App = exports.App = {
 
     if (!isSameTrack) {
       UpNextCard.reset();
-      TopBar.updatePiPImage(image);
+      TopBar.updatePiPTrack(track, image);
+      SidebarLyrics.onTrackChange(track);
 
       // Start fetching lyrics & audio analysis immediately without waiting for background color extraction
       LyricsView.loadForTrack(track, this);
@@ -525,7 +571,11 @@ const App = exports.App = {
       const progress = BottomDock.tick();
       const duration = SpotiKitBridge.getDuration();
       if (typeof progress === "number") {
+        if (Settings.get("newPlayerMode")) {
+          CoverPlayer.tick(progress, duration);
+        }
         LyricsView.update(progress);
+        TopBar.updatePiPLyrics(LyricsView.getActiveLineSnapshot());
         UpNextCard.update(duration, progress);
 
         const moodFrame = AudioMoodEngine.sample(progress, SpotiKitBridge.isPlaying(), LyricsView);
@@ -575,7 +625,6 @@ const App = exports.App = {
     await this.onTrackChange();
     if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) return;
 
-    LyricsView.showProviderBadge(3000);
     this.startTicking();
   },
 
@@ -626,6 +675,8 @@ const App = exports.App = {
         "showAlbum",
         "showAlbumArt",
         "showTitle",
+        "newPlayerMode",
+        "showLegacyPlayer",
       ].includes(key)
     ) {
       this.applyLayoutSettings();
@@ -646,12 +697,26 @@ const App = exports.App = {
     if (key === "letterByLetter") {
       LyricsView.setLetterByLetter();
     }
+    if (key === "sidebarLyrics") {
+      SidebarLyrics.syncEnabled();
+    }
+    if (key === "sidebarLyricsBg") {
+      SidebarLyrics.syncBackground();
+    }
+    if (key === "pipLyrics") {
+      TopBar.applyPiPLyricsVisibility();
+    }
   },
 
   applyLayoutSettings() {
     if (!this.root || !this.stage || !this.artWrap) return;
     const forceCenter = !Settings.get("showLyrics") || LyricsView.hasLyrics === false;
     this.stage.classList.toggle("fr-centered", forceCenter);
+
+    const newPlayerOn = Boolean(Settings.get("newPlayerMode"));
+    const showLegacy = Boolean(Settings.get("showLegacyPlayer"));
+    this.root.classList.toggle("fr-new-player", newPlayerOn);
+    this.root.classList.toggle("fr-hide-legacy-player", newPlayerOn && !showLegacy);
 
     this.artWrap.classList.toggle("fr-glow", !!Settings.get("albumArtGlow"));
     this.artWrap.classList.toggle("fr-no-shadow", !Settings.get("albumArtShadow"));
@@ -1241,837 +1306,820 @@ const Clock = exports.Clock = {
 
     },
 
-    "./components/CustomColorPicker.js": function(require, exports, module) {
-// --- ./components/CustomColorPicker.js ---
+    "./components/CoverPlayer.js": function(require, exports, module) {
+// --- ./components/CoverPlayer.js ---
 /**
- * Custom Liquid Glass Color Picker component.
- * Replaces ugly native OS color popups with Apple TV / visionOS aesthetic presets,
- * an interactive rainbow hue slider, hex input, and native color wheel trigger.
+ * Apple Music iOS-inspired Liquid Overlay Player rendered directly over the album cover
+ * when Settings.get("newPlayerMode") ("Switch to New Player") is enabled.
  */
-const {  el  } = require("./utils/dom.js");
+const {  el, iconBtn  } = require("./utils/dom.js");
+const {  Icons  } = require("./utils/icons.js");
+const {  formatMs  } = require("./utils/formatters.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 
-// Vibrant & distinguishable presets + elegant atmospheric darks
-const VIBRANT_PRESETS = [
-  { name: "Spotify Green", hex: "#1ed760" },
-  { name: "Cyan Sky", hex: "#06b6d4" },
-  { name: "Electric Blue", hex: "#3b82f6" },
-  { name: "Royal Violet", hex: "#8b5cf6" },
-  { name: "Neon Fuchsia", hex: "#d946ef" },
-  { name: "Coral Red", hex: "#ef4444" },
-  { name: "Sunset Orange", hex: "#f97316" },
-  { name: "Warm Amber", hex: "#f59e0b" },
-];
+const CoverPlayer = exports.CoverPlayer = {
+  root: null,
+  progressFill: null,
+  timeCur: null,
+  timeRem: null,
+  playBtn: null,
+  shuffleBtn: null,
+  repeatBtn: null,
+  volFill: null,
+  seeking: false,
+  volSeeking: false,
+  _dragAbortController: null,
+  _lastCurSec: -1,
+  _lastRemSec: -1,
+  _wasPlaying: null,
+  _wasShuffle: null,
+  _wasRepeat: null,
+  _lastVolume: -1,
 
-const DARK_PRESETS = [
-  { name: "OLED Siyah", hex: "#000000" },
-  { name: "Gece Mavisi", hex: "#0f172a" },
-  { name: "Derin İndigo", hex: "#1e1b4b" },
-  { name: "Koyu Mürdüm", hex: "#3b0764" },
-  { name: "Bordo Noir", hex: "#450a0a" },
-  { name: "Zümrüt Gece", hex: "#064e3b" },
-  { name: "Duman Grisi", hex: "#1e293b" },
-  { name: "Saf Beyaz", hex: "#ffffff" },
-];
+  _resetCache() {
+    this._lastCurSec = -1;
+    this._lastRemSec = -1;
+    this._wasPlaying = null;
+    this._wasShuffle = null;
+    this._wasRepeat = null;
+    this._lastVolume = -1;
+  },
 
-let initializedGlobalColorListener = false;
-let globalColorAbortController = null;
-const activeColorPickers = new Set();
+  _bindDrag(bar, flagKey, onSample) {
+    bar.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      this._dragAbortController?.abort();
+      this.seeking = false;
+      this.volSeeking = false;
+      const ac = new AbortController();
+      this._dragAbortController = ac;
+      this[flagKey] = true;
+      onSample(e, bar);
 
-function initGlobalListener() {
-  if (initializedGlobalColorListener) return;
-  initializedGlobalColorListener = true;
-  globalColorAbortController = new AbortController();
-  const { signal } = globalColorAbortController;
+      const move = (ev) => onSample(ev, bar);
+      const up = () => {
+        this[flagKey] = false;
+        ac.abort();
+        if (this._dragAbortController === ac) this._dragAbortController = null;
+      };
+      window.addEventListener("mousemove", move, { signal: ac.signal });
+      window.addEventListener("mouseup", up, { signal: ac.signal });
+    });
+  },
 
-  document.addEventListener(
-    "click",
-    (e) => {
-      for (const close of activeColorPickers) {
-        close(e);
-      }
-    },
-    { signal }
-  );
+  build() {
+    this._resetCache();
+    this.seeking = false;
+    this.volSeeking = false;
 
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.key === "Escape") {
-        for (const close of activeColorPickers) {
-          close(null, true);
-        }
-      }
-    },
-    { signal }
-  );
-}
+    const root = el("div", "fr-cover-player");
 
-function destroyCustomColorPickers() {
-  activeColorPickers.clear();
-  if (globalColorAbortController) {
-    globalColorAbortController.abort();
-    globalColorAbortController = null;
-  }
-  initializedGlobalColorListener = false;
-}
+    // 1. Apple Music iOS Liquid Scrubber
+    const scrubWrap = el("div", "fr-cp-scrubber-wrap");
+    const progBar = el("div", "fr-cp-progress-bar");
+    this.progressFill = el("div", "fr-cp-progress-fill");
+    progBar.appendChild(this.progressFill);
 
-function hslToHex(h, s, l) {
-  s /= 100;
-  l /= 100;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => {
-    const k = (n + h / 30) % 12;
-    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-    return Math.round(255 * color)
-      .toString(16)
-      .padStart(2, "0");
-  };
-  return `#${f(0)}${f(8)}${f(4)}`;
-}
+    const timesRow = el("div", "fr-cp-times");
+    this.timeCur = el("span", "fr-cp-time-cur", "0:00");
+    this.timeRem = el("span", "fr-cp-time-rem", "-0:00");
+    timesRow.append(this.timeCur, this.timeRem);
+    scrubWrap.append(progBar, timesRow);
 
-function hexToHsl(hex) {
-  let c = (hex || "#101014").replace("#", "");
-  if (c.length === 3) c = c.split("").map((x) => x + x).join("");
-  if (c.length !== 6) return { h: 0, s: 70, l: 50 };
-
-  const r = parseInt(c.substring(0, 2), 16) / 255;
-  const g = parseInt(c.substring(2, 4), 16) / 255;
-  const b = parseInt(c.substring(4, 6), 16) / 255;
-
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  let h = 0;
-  let s = 0;
-  const l = (max + min) / 2;
-
-  if (max !== min) {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r:
-        h = (g - b) / d + (g < b ? 6 : 0);
-        break;
-      case g:
-        h = (b - r) / d + 2;
-        break;
-      case b:
-        h = (r - g) / d + 4;
-        break;
-    }
-    h = Math.round(h * 60);
-  }
-  return { h, s: Math.round(s * 100), l: Math.round(l * 100) };
-}
-
-/**
- * Creates a custom Liquid Glass Color Picker element.
- * @param {Object} config
- * @param {string} config.value Initial hex color (e.g. "#1ed760")
- * @param {(hex: string) => void} config.onChange Callback on color change
- * @returns {HTMLElement}
- */
-function createCustomColorPicker({ value = "#101014", onChange }) {
-  initGlobalListener();
-
-  const wrap = el("div", "fr-color-picker-wrap");
-  let currentColor = (value || "#101014").toLowerCase();
-  if (!currentColor.startsWith("#")) currentColor = "#" + currentColor;
-
-  // Swatch trigger button
-  const triggerBtn = document.createElement("button");
-  triggerBtn.setAttribute("type", "button");
-  triggerBtn.className = "fr-color-swatch-btn";
-
-  const swatchInner = el("span", "fr-color-swatch-inner");
-  swatchInner.style.backgroundColor = currentColor;
-
-  const hexLabel = el("span", "fr-color-hex-label", currentColor.toUpperCase());
-
-  triggerBtn.append(swatchInner, hexLabel);
-
-  // Popup dialog
-  const popup = el("div", "fr-color-popup");
-
-  const close = (e, force = false) => {
-    if (force || (e && !wrap.contains(e.target))) {
-      wrap.classList.remove("fr-open");
-    }
-  };
-  activeColorPickers.add(close);
-
-  // Preset container
-  const createPresetGroup = (titleText, presets) => {
-    const title = el("div", "fr-color-popup-title", titleText);
-    const grid = el("div", "fr-color-preset-grid");
-
-    presets.forEach((p) => {
-      const item = el("button", "fr-color-preset-item");
-      item.setAttribute("type", "button");
-      item.setAttribute("title", p.name);
-      item.setAttribute("data-hex", p.hex);
-      item.style.backgroundColor = p.hex;
-
-      // Checkmark icon
-      const checkSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      checkSvg.setAttribute("class", "fr-check-sm");
-      checkSvg.setAttribute("viewBox", "0 0 24 24");
-      const checkPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      checkPath.setAttribute("d", "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z");
-      checkSvg.appendChild(checkPath);
-      item.appendChild(checkSvg);
-
-      item.addEventListener("click", (e) => {
-        e.stopPropagation();
-        setColor(p.hex);
-      });
-
-      grid.appendChild(item);
+    this._bindDrag(progBar, "seeking", (ev, bar) => {
+      const rect = bar.getBoundingClientRect();
+      const width = rect.width || 1;
+      const pct = Math.min(1, Math.max(0, (ev.clientX - rect.left) / width));
+      const dur = SpotiKitBridge.getDuration();
+      SpotiKitBridge.seek(pct * dur);
+      if (this.progressFill) this.progressFill.style.width = `${(pct * 100).toFixed(2)}%`;
     });
 
-    return [title, grid];
-  };
+    // 2. Transport Controls
+    const transport = el("div", "fr-cp-transport");
+    this.shuffleBtn = iconBtn(Icons.shuffle, () => SpotiKitBridge.toggleShuffle(), "fr-cp-btn fr-cp-btn-sm");
+    const prevBtn = iconBtn(Icons.prev, () => SpotiKitBridge.back(), "fr-cp-btn");
+    this.playBtn = iconBtn(Icons.play, () => SpotiKitBridge.togglePlay(), "fr-cp-btn fr-cp-btn-play");
+    const nextBtn = iconBtn(Icons.next, () => SpotiKitBridge.next(), "fr-cp-btn");
+    this.repeatBtn = iconBtn(Icons.repeat, () => SpotiKitBridge.toggleRepeat(), "fr-cp-btn fr-cp-btn-sm");
+    transport.append(this.shuffleBtn, prevBtn, this.playBtn, nextBtn, this.repeatBtn);
 
-  const [vibrantTitle, vibrantGrid] = createPresetGroup("Canlı Renkler", VIBRANT_PRESETS);
-  const [darkTitle, darkGrid] = createPresetGroup("Koyu & Zarif", DARK_PRESETS);
+    // 3. Slim Liquid Volume Bar
+    const volRow = el("div", "fr-cp-volume-row");
+    const volIcon = iconBtn(Icons.volume, () => SpotiKitBridge.toggleMute(), "fr-cp-btn fr-cp-btn-xs");
+    const volBar = el("div", "fr-cp-vol-bar");
+    this.volFill = el("div", "fr-cp-vol-fill");
+    volBar.appendChild(this.volFill);
+    volRow.append(volIcon, volBar);
 
-  popup.append(vibrantTitle, vibrantGrid, darkTitle, darkGrid);
-
-  // Rainbow Hue Slider
-  const sliderWrap = el("div", "fr-hue-slider-wrap");
-  const sliderTitle = el("div", "fr-color-popup-title", "Renk Skalası");
-  const hueSlider = document.createElement("input");
-  hueSlider.type = "range";
-  hueSlider.min = "0";
-  hueSlider.max = "360";
-  hueSlider.value = String(hexToHsl(currentColor).h);
-  hueSlider.className = "fr-hue-slider";
-
-  hueSlider.addEventListener("input", (e) => {
-    const h = parseInt(e.target.value, 10);
-    const currentHsl = hexToHsl(currentColor);
-    const s = currentHsl.s < 20 ? 80 : currentHsl.s;
-    const l = currentHsl.l < 15 || currentHsl.l > 85 ? 50 : currentHsl.l;
-    setColor(hslToHex(h, s, l), false);
-  });
-
-  sliderWrap.append(sliderTitle, hueSlider);
-  popup.appendChild(sliderWrap);
-
-  // Custom Hex Input row with hidden native color picker trigger
-  const hexRow = el("div", "fr-color-custom-row");
-
-  const previewBtn = el("button", "fr-color-wheel-btn");
-  previewBtn.setAttribute("type", "button");
-  previewBtn.setAttribute("title", "Renk Çarkı / Damlalık Aç");
-
-  const preview = el("span", "fr-color-preview-circle");
-  preview.style.backgroundColor = currentColor;
-
-  const nativePicker = document.createElement("input");
-  nativePicker.type = "color";
-  nativePicker.className = "fr-hidden-native-picker";
-  nativePicker.value = currentColor;
-  nativePicker.style.display = "none";
-
-  previewBtn.appendChild(preview);
-
-  previewBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    nativePicker.click();
-  });
-
-  nativePicker.addEventListener("input", (e) => {
-    setColor(e.target.value);
-  });
-
-  const hexInput = document.createElement("input");
-  hexInput.type = "text";
-  hexInput.className = "fr-color-text-input";
-  hexInput.maxLength = 7;
-  hexInput.value = currentColor.toUpperCase();
-
-  hexInput.addEventListener("input", (e) => {
-    let val = e.target.value.trim();
-    if (!val.startsWith("#")) val = "#" + val;
-    if (/^#[0-9a-fA-F]{6}$/.test(val)) {
-      setColor(val, false);
-    }
-  });
-
-  hexRow.append(previewBtn, nativePicker, hexInput);
-  popup.appendChild(hexRow);
-
-  const updateSwatches = () => {
-    swatchInner.style.backgroundColor = currentColor;
-    hexLabel.textContent = currentColor.toUpperCase();
-    preview.style.backgroundColor = currentColor;
-    nativePicker.value = currentColor;
-
-    if (document.activeElement !== hexInput) {
-      hexInput.value = currentColor.toUpperCase();
-    }
-    if (document.activeElement !== hueSlider) {
-      hueSlider.value = String(hexToHsl(currentColor).h);
-    }
-
-    popup.querySelectorAll(".fr-color-preset-item").forEach((item) => {
-      const itemHex = item.getAttribute("data-hex");
-      const isSelected = itemHex.toLowerCase() === currentColor.toLowerCase();
-      item.classList.toggle("fr-selected", isSelected);
+    this._bindDrag(volBar, "volSeeking", (ev, bar) => {
+      const rect = bar.getBoundingClientRect();
+      const width = rect.width || 1;
+      const pct = Math.min(1, Math.max(0, (ev.clientX - rect.left) / width));
+      SpotiKitBridge.setVolume(pct);
+      this._lastVolume = pct;
+      if (this.volFill) this.volFill.style.width = `${(pct * 100).toFixed(1)}%`;
     });
-  };
 
-  const setColor = (hex, updateSlider = true) => {
-    currentColor = hex.toLowerCase();
-    updateSwatches();
-    if (onChange) onChange(currentColor);
-  };
+    volRow.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const vol = Math.max(0, Math.min(1, SpotiKitBridge.getVolume() + dir * 0.05));
+      SpotiKitBridge.setVolume(vol);
+      this._lastVolume = vol;
+      if (this.volFill) this.volFill.style.width = `${(vol * 100).toFixed(1)}%`;
+    });
 
-  // Toggle popup on click
-  triggerBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const willOpen = !wrap.classList.contains("fr-open");
-    for (const other of activeColorPickers) {
-      other(null, true);
+    root.append(scrubWrap, transport, volRow);
+    this.root = root;
+    return root;
+  },
+
+  tick(progressMs, durationMs) {
+    if (!this.root) return;
+    const isPlaying = SpotiKitBridge.isPlaying();
+    const dur = Math.max(0, Number(durationMs) || 0);
+    const prog = Math.max(0, Math.min(dur || progressMs, Number(progressMs) || 0));
+
+    if (!this.seeking && dur > 0 && this.progressFill) {
+      const pct = Math.max(0, Math.min(100, (prog / dur) * 100));
+      this.progressFill.style.width = `${pct.toFixed(2)}%`;
     }
-    if (willOpen) {
-      wrap.classList.add("fr-open");
-      updateSwatches();
+
+    const curSec = Math.floor(prog / 1000);
+    if (curSec !== this._lastCurSec && this.timeCur) {
+      this._lastCurSec = curSec;
+      this.timeCur.textContent = formatMs(prog);
     }
-  });
 
-  wrap.append(triggerBtn, popup);
+    const remMs = Math.max(0, dur - prog);
+    const remSec = Math.floor(remMs / 1000);
+    if (remSec !== this._lastRemSec && this.timeRem) {
+      this._lastRemSec = remSec;
+      this.timeRem.textContent = `-${formatMs(remMs)}`;
+    }
 
-  return wrap;
-}
+    if (isPlaying !== this._wasPlaying && this.playBtn) {
+      this._wasPlaying = isPlaying;
+      this.playBtn.innerHTML = isPlaying ? Icons.pause : Icons.play;
+    }
 
-const CustomColorPicker = exports.CustomColorPicker = {
-  create: createCustomColorPicker,
-  destroyAll: destroyCustomColorPickers,
+    const shuf = SpotiKitBridge.getShuffle();
+    if (shuf !== this._wasShuffle && this.shuffleBtn) {
+      this._wasShuffle = shuf;
+      this.shuffleBtn.classList.toggle("fr-active", shuf);
+    }
+
+    const rep = SpotiKitBridge.getRepeat();
+    if (rep !== this._wasRepeat && this.repeatBtn) {
+      this._wasRepeat = rep;
+      this.repeatBtn.classList.toggle("fr-active", rep !== "off");
+      this.repeatBtn.innerHTML = rep === "track" ? Icons.repeatOne : Icons.repeat;
+    }
+
+    if (!this.volSeeking && this.volFill) {
+      const vol = SpotiKitBridge.getMute() ? 0 : SpotiKitBridge.getVolume();
+      if (Math.abs(vol - this._lastVolume) > 0.005) {
+        this._lastVolume = vol;
+        this.volFill.style.width = `${(vol * 100).toFixed(1)}%`;
+      }
+    }
+  },
+
+  destroy() {
+    this._dragAbortController?.abort();
+    this._dragAbortController = null;
+    this.seeking = false;
+    this.volSeeking = false;
+    this._resetCache();
+    this.root?.remove();
+    this.root = null;
+    this.progressFill = null;
+    this.timeCur = null;
+    this.timeRem = null;
+    this.playBtn = null;
+    this.shuffleBtn = null;
+    this.repeatBtn = null;
+    this.volFill = null;
+  },
 };
 
-// Exported functions
-exports.destroyCustomColorPickers = destroyCustomColorPickers;
-exports.createCustomColorPicker = createCustomColorPicker;
-
     },
 
-    "./components/CustomSelect.js": function(require, exports, module) {
-// --- ./components/CustomSelect.js ---
+    "./components/creator/CreatorChrome.js": function(require, exports, module) {
+// --- ./components/creator/CreatorChrome.js ---
 /**
- * Custom Liquid Glass Select Dropdown component.
- * Replaces ugly native HTML <select> popups with Apple TV / visionOS frosted glass styling.
- */
-const {  el  } = require("./utils/dom.js");
-
-// Global document click listener to close all dropdowns when clicking outside
-let initializedGlobalListener = false;
-let globalSelectAbortController = null;
-const activeSelects = new Set();
-
-function initGlobalListener() {
-  if (initializedGlobalListener) return;
-  initializedGlobalListener = true;
-  globalSelectAbortController = new AbortController();
-  const { signal } = globalSelectAbortController;
-
-  document.addEventListener(
-    "click",
-    (e) => {
-      for (const closeMenu of activeSelects) {
-        closeMenu(e);
-      }
-    },
-    { signal }
-  );
-
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.key === "Escape") {
-        for (const closeMenu of activeSelects) {
-          closeMenu(null, true);
-        }
-      }
-    },
-    { signal }
-  );
-}
-
-function destroyCustomSelects() {
-  activeSelects.clear();
-  if (globalSelectAbortController) {
-    globalSelectAbortController.abort();
-    globalSelectAbortController = null;
-  }
-  initializedGlobalListener = false;
-}
-
-/**
- * Creates a custom dropdown element.
- * @param {Object} config
- * @param {Array<{value: string, label: string}>} config.options
- * @param {string} config.value
- * @param {(val: string) => void} config.onChange
- * @returns {HTMLElement}
- */
-function createCustomSelect({ options, value, onChange }) {
-  initGlobalListener();
-
-  const wrap = el("div", "fr-select-wrap");
-  let currentValue = value;
-
-  // Selected label lookup (prefers shortLabel for the compact trigger button)
-  const getButtonLabel = (v) => {
-    const found = options.find((o) => o.value === v);
-    return found ? found.shortLabel || found.label : v;
-  };
-
-  // Button trigger
-  const btn = document.createElement("button");
-  btn.setAttribute("type", "button");
-  btn.className = "fr-select-btn";
-
-  const labelSpan = el("span", "fr-select-label", getButtonLabel(currentValue));
-  const arrowSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  arrowSvg.setAttribute("class", "fr-select-arrow");
-  arrowSvg.setAttribute("viewBox", "0 0 24 24");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z");
-  arrowSvg.appendChild(path);
-
-  btn.append(labelSpan, arrowSvg);
-
-  // Menu popup
-  const menu = el("div", "fr-select-menu");
-
-  const close = (e, force = false) => {
-    if (force || (e && !wrap.contains(e.target))) {
-      wrap.classList.remove("fr-open");
-    }
-  };
-  activeSelects.add(close);
-
-  // Render items
-  const renderItems = () => {
-    menu.innerHTML = "";
-    options.forEach((opt) => {
-      const isSelected = opt.value === currentValue;
-      const item = el("div", "fr-select-item" + (isSelected ? " fr-selected" : ""));
-
-      const leftCol = el("div", "fr-select-item-left");
-      const text = el("span", "fr-select-item-title", opt.label);
-      leftCol.appendChild(text);
-      if (opt.sublabel) {
-        leftCol.appendChild(el("span", "fr-select-item-sub", opt.sublabel));
-      }
-
-      const rightCol = el("div", "fr-select-item-right");
-      if (opt.badge) {
-        rightCol.appendChild(el("span", "fr-select-item-badge", opt.badge));
-      }
-
-      // Checkmark icon
-      const checkSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      checkSvg.setAttribute("class", "fr-check");
-      checkSvg.setAttribute("viewBox", "0 0 24 24");
-      const checkPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      checkPath.setAttribute("d", "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z");
-      checkSvg.appendChild(checkPath);
-      rightCol.appendChild(checkSvg);
-
-      item.append(leftCol, rightCol);
-
-      item.addEventListener("click", (e) => {
-        e.stopPropagation();
-        currentValue = opt.value;
-        labelSpan.textContent = getButtonLabel(opt.value);
-        wrap.classList.remove("fr-open");
-        renderItems();
-        if (onChange) onChange(opt.value);
-      });
-
-      menu.appendChild(item);
-    });
-  };
-
-  renderItems();
-
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const willOpen = !wrap.classList.contains("fr-open");
-    // Close other open selects
-    for (const closeOther of activeSelects) {
-      closeOther(null, true);
-    }
-    if (willOpen) {
-      wrap.classList.add("fr-open");
-    }
-  });
-
-  wrap.append(btn, menu);
-
-  // Method to programmatically set value
-  wrap.setValue = (newVal) => {
-    currentValue = newVal;
-    labelSpan.textContent = getButtonLabel(newVal);
-    renderItems();
-  };
-
-  return wrap;
-}
-
-const CustomSelect = exports.CustomSelect = {
-  create: createCustomSelect,
-  destroyAll: destroyCustomSelects,
-};
-
-// Exported functions
-exports.destroyCustomSelects = destroyCustomSelects;
-exports.createCustomSelect = createCustomSelect;
-
-    },
-
-    "./components/FullLyricsCreator.js": function(require, exports, module) {
-// --- ./components/FullLyricsCreator.js ---
-/**
- * FullLyricsCreator
- * Comprehensive studio lyrics editor & synchronizer for Fullscreen Reloaded.
- * - 100% compatible with Liquid Lyrics localStorage (`liquid-lyrics-custom-sync:<trackUri>`)
- *   and Spicy Lyrics universal JSON schema (`Static` | `Line` | `Syllable`).
- * - Supports Block (`line`), Karaoke (`word`), and Static (`static`) modes,
- *   Visual Sentence & Word Builder + Raw Text editor, Duet (`v2`), Background Vocals (`[bg]`),
- *   Interludes (`#interlude`), TTML/LRC/JSON/TXT import & export, and Local DB Library management.
+ * FullLyrics Creator header, step bar, and saved library drawer.
  */
 const {  el  } = require("./utils/dom.js");
 const {  Icons  } = require("./utils/icons.js");
 const {  t  } = require("./utils/i18n.js");
-const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
-const {  LyricsService  } = require("./services/LyricsService.js");
-const {  LyricsView  } = require("./components/LyricsView.js");
 const { 
-  getCustomSync,
   hasCustomSync,
-  saveCustomSync,
-  deleteCustomSync,
   listCustomSyncs,
-  extractTrackId,
-  normalizeTrackUri,
-  splitTextIntoTokens,
-  createLyricDraftLine,
-  createInterludeDraftLine,
-  createBackgroundDraftEntry,
-  parsePlainTextToDraftLines,
-  serializeDraftLinesToText,
-  isDraftLineComplete,
-  compileDraftToSpicyLyrics,
-  spicyLyricsToFullscreenLines,
-  fullscreenLinesToDraft,
-  importFileToDraft,
   exportDraftAsJSON,
   exportDraftAsTTML,
   exportDraftAsLRC,
-  CHANGE_EVENT,
  } = require("./services/CustomSyncStorage.js");
+const {  downloadFile, safeFileSlug  } = require("./components/creator/CreatorUtils.js");
 
-function formatCueTime(ms) {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return "--:--.--";
-  const totalCs = Math.floor(ms / 10);
-  const cs = totalCs % 100;
-  const totalSec = Math.floor(totalCs / 100);
-  const sec = totalSec % 60;
-  const min = Math.floor(totalSec / 60);
-  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
-}
+const CreatorChrome = exports.CreatorChrome = {
+  // ==========================================================================
+  // Main Render
+  // ==========================================================================
 
-function formatTransportTime(ms) {
-  const safe = Math.max(0, Math.floor(Number(ms) || 0));
-  const min = Math.floor(safe / 60000);
-  const sec = Math.floor((safe % 60000) / 1000);
-  const tenth = Math.floor((safe % 1000) / 100);
-  return `${min}:${String(sec).padStart(2, "0")}.${tenth}`;
-}
+  render() {
+    if (!this.modal || !this.draft) return;
 
-function downloadFile(filename, content, mimeType = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+    // Keep fileInput & toastEl
+    this.modal.innerHTML = "";
+    this.modal.append(this.fileInputEl, this.toastEl);
 
-function safeFileSlug(title, artist) {
-  const raw = [artist, title].filter(Boolean).join(" - ") || "lyrics";
-  return raw.replace(/[\\/:*?"<>|]+/g, "_").trim();
-}
+    this.modal.appendChild(this.buildHeader());
+    this.modal.appendChild(this.buildStepBar());
 
-const FullLyricsCreator = exports.FullLyricsCreator = {
-  root: null,
-  backdrop: null,
-  modal: null,
-  bodyEl: null,
-  fileInputEl: null,
-  toastEl: null,
-  _toastTimer: null,
+    if (this.libraryOpen) {
+      this.modal.appendChild(this.buildLibraryDrawer());
+    }
 
-  isOpen: false,
-  app: null,
-  step: "text", // "text" | "sync" | "preview"
-  textSubMode: "visual", // "visual" | "raw"
-  libraryOpen: false,
-  moreMenuOpen: false,
+    const body = el("div", "fr-creator-body");
+    this.bodyEl = body;
+    this.renderStepContent(body);
+    this.modal.appendChild(body);
 
-  draft: null,
-  rawTextCache: "",
-  activeTarget: {
-    type: "line", // "line" | "token" | "lineEnd" | "bgToken" | "bgEnd" | "end"
-    lineIdx: 0,
-    tokenIdx: 0,
-    bgIdx: 0,
+    this.modal.appendChild(this.buildTransportFooter());
   },
 
-  // Live preview & transport state
-  _rafId: null,
-  _previewLines: [],
-  _previewLineEls: [],
-  _previewType: "none",
-  _lastKnownProgress: 0,
-  _lastKnownTime: 0,
-  _lastKnownPlaying: false,
-  _scrubbing: false,
-  _abortController: null,
-  _dragAbortController: null,
+  buildHeader() {
+    const header = el("div", "fr-creator-header");
 
-  build(app) {
-    this._abortController?.abort();
-    this._abortController = new AbortController();
-    const { signal } = this._abortController;
+    // Left: Title & Track Meta
+    const titleWrap = el("div", "fr-creator-title-wrap");
+    const topRow = el("div", "fr-creator-title-row");
+    const h2 = el("h2", "fr-creator-title", t("creatorTitle"));
+    topRow.appendChild(h2);
 
-    this.app = app;
-    const backdrop = el("div", "fr-creator-backdrop");
-    backdrop.addEventListener("mousedown", (e) => {
-      if (e.target === backdrop) this.close();
+    if (hasCustomSync(this.draft.trackUri || this.draft.trackId)) {
+      const badge = el("span", "fr-creator-saved-pill", t("creatorSavedBadge"));
+      topRow.appendChild(badge);
+    }
+
+    const sub = el(
+      "div",
+      "fr-creator-sub",
+      `${this.draft.title || "—"} — ${this.draft.artist || "—"}`
+    );
+    titleWrap.append(topRow, sub);
+
+    // Center: Mode Switcher (Block / Karaoke / Static)
+    const modeSwitch = el("div", "fr-creator-mode-switch");
+    const modes = [
+      { id: "line", label: t("creatorModeBlock") },
+      { id: "word", label: t("creatorModeKaraoke") },
+      { id: "static", label: t("creatorModeStatic") },
+    ];
+    for (const m of modes) {
+      const btn = el(
+        "button",
+        `fr-creator-mode-btn${this.draft.syncMode === m.id ? " fr-active" : ""}`,
+        m.label
+      );
+      btn.type = "button";
+      btn.addEventListener("click", () => this.setSyncMode(m.id));
+      modeSwitch.appendChild(btn);
+    }
+
+    // Right: Pull Online, Library, More Menu, Save, Close
+    const actions = el("div", "fr-creator-header-actions");
+
+    const pullBtn = el("button", "fr-creator-btn fr-creator-btn-ghost");
+    pullBtn.type = "button";
+    pullBtn.innerHTML = `${Icons.wand}<span>${t("creatorLoadCurrent")}</span>`;
+    pullBtn.addEventListener("click", () => this.pullOnlineLyrics());
+
+    const libCount = listCustomSyncs().length;
+    const libBtn = el(
+      "button",
+      `fr-creator-btn fr-creator-btn-ghost${this.libraryOpen ? " fr-active" : ""}`
+    );
+    libBtn.type = "button";
+    libBtn.innerHTML = `${Icons.library}<span>Local DB (${libCount})</span>`;
+    libBtn.addEventListener("click", () => {
+      this.libraryOpen = !this.libraryOpen;
+      this.moreMenuOpen = false;
+      this.render();
     });
 
-    const modal = el("div", "fr-creator-modal");
-    modal.setAttribute("role", "dialog");
-    modal.setAttribute("aria-label", t("creatorTitle"));
-
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.accept = ".json,.ttml,.xml,.lrc,.txt";
-    fileInput.hidden = true;
-    fileInput.addEventListener("change", () => {
-      const file = fileInput.files?.[0];
-      fileInput.value = "";
-      if (file) this.handleImportFile(file);
+    // More dropdown (Import / Export JSON, TTML, LRC / Delete)
+    const moreWrap = el("div", "fr-creator-more-wrap");
+    const moreBtn = el(
+      "button",
+      `fr-creator-icon-btn${this.moreMenuOpen ? " fr-active" : ""}`
+    );
+    moreBtn.type = "button";
+    moreBtn.innerHTML = Icons.more;
+    moreBtn.title = "Import / Export";
+    moreBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.moreMenuOpen = !this.moreMenuOpen;
+      this.libraryOpen = false;
+      this.render();
     });
+    moreWrap.appendChild(moreBtn);
 
-    const toastEl = el("div", "fr-creator-toast");
+    if (this.moreMenuOpen) {
+      const menu = el("div", "fr-creator-dropdown");
+      const addMenuItem = (iconSvg, label, onClick, danger = false) => {
+        const item = el(
+          "button",
+          `fr-creator-dropdown-item${danger ? " fr-danger" : ""}`
+        );
+        item.type = "button";
+        item.innerHTML = `${iconSvg}<span>${label}</span>`;
+        item.addEventListener("click", () => {
+          this.moreMenuOpen = false;
+          onClick();
+        });
+        menu.appendChild(item);
+      };
 
-    modal.append(fileInput, toastEl);
-    backdrop.appendChild(modal);
+      addMenuItem(Icons.upload, t("creatorImport"), () => this.fileInputEl.click());
+      addMenuItem(Icons.download, t("creatorExportJson"), () => {
+        this.syncRawTextToDraft();
+        const slug = safeFileSlug(this.draft.title, this.draft.artist);
+        downloadFile(`${slug}.liquid-lyrics.json`, exportDraftAsJSON(this.draft), "application/json");
+      });
+      addMenuItem(Icons.download, t("creatorExportTtml"), () => {
+        this.syncRawTextToDraft();
+        const slug = safeFileSlug(this.draft.title, this.draft.artist);
+        downloadFile(`${slug}.ttml`, exportDraftAsTTML(this.draft), "application/xml");
+      });
+      addMenuItem(Icons.download, t("creatorExportLrc"), () => {
+        this.syncRawTextToDraft();
+        const slug = safeFileSlug(this.draft.title, this.draft.artist);
+        downloadFile(`${slug}.lrc`, exportDraftAsLRC(this.draft), "text/plain");
+      });
 
-    this.root = backdrop;
-    this.backdrop = backdrop;
-    this.modal = modal;
-    this.fileInputEl = fileInput;
-    this.toastEl = toastEl;
+      if (hasCustomSync(this.draft.trackUri || this.draft.trackId)) {
+        addMenuItem(
+          Icons.trash,
+          t("creatorDeleteSync"),
+          () => this.handleDeleteFromLocalDB(),
+          true
+        );
+      }
 
-    // Listen to external or internal custom sync changes
-    window.addEventListener(
-      CHANGE_EVENT,
-      () => {
-        if (!this.root || !this.app?._mounted || SpotiKitBridge.isStopped()) return;
-        LyricsService.clearCache();
-        if (this.app?.currentTrack) {
-          LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
-        }
-      },
-      { signal }
+      moreWrap.appendChild(menu);
+    }
+
+    const saveBtn = el("button", "fr-creator-btn fr-creator-btn-primary");
+    saveBtn.type = "button";
+    saveBtn.innerHTML = `${Icons.check}<span>${t("creatorSaveBtn")}</span>`;
+    saveBtn.addEventListener("click", () => this.handleSaveToLocalDB());
+
+    const closeBtn = el("button", "fr-creator-icon-btn");
+    closeBtn.type = "button";
+    closeBtn.innerHTML = Icons.close;
+    closeBtn.addEventListener("click", () => this.close());
+
+    actions.append(pullBtn, libBtn, moreWrap, saveBtn, closeBtn);
+    header.append(titleWrap, modeSwitch, actions);
+    return header;
+  },
+
+  buildStepBar() {
+    const bar = el("div", "fr-creator-steps");
+    const steps = [
+      { id: "text", label: t("creatorStepText") },
+      { id: "sync", label: t("creatorStepSync") },
+      { id: "preview", label: t("creatorStepPreview") },
+    ];
+    for (const s of steps) {
+      const btn = el(
+        "button",
+        `fr-creator-step-btn${this.step === s.id ? " fr-active" : ""}`,
+        s.label
+      );
+      btn.type = "button";
+      btn.addEventListener("click", () => this.setStep(s.id));
+      bar.appendChild(btn);
+    }
+    return bar;
+  },
+
+  buildLibraryDrawer() {
+    const drawer = el("div", "fr-creator-library");
+    const head = el("div", "fr-creator-library-head");
+    head.appendChild(
+      el(
+        "span",
+        "fr-creator-library-title",
+        `${t("creatorSavedLibrary")} (liquid-lyrics-custom-sync)`
+      )
     );
 
-    return backdrop;
-  },
+    const list = listCustomSyncs();
+    const grid = el("div", "fr-creator-library-list");
 
-  showToast(msg) {
-    if (!this.toastEl) return;
-    this.toastEl.textContent = msg;
-    this.toastEl.classList.add("fr-show");
-    clearTimeout(this._toastTimer);
-    this._toastTimer = setTimeout(() => {
-      this.toastEl?.classList.remove("fr-show");
-    }, 2600);
-  },
-
-  getCurrentTrackInfo() {
-    const track = this.app?.currentTrack || SpotiKitBridge.getCurrentTrack() || {};
-    const meta = track.metadata || {};
-    const trackUri = normalizeTrackUri(track.uri || "");
-    const trackId = extractTrackId(trackUri || track.id || "");
-    const title = meta.title || track.name || t("unknownTitle");
-    const artist =
-      track.artists && track.artists.length
-        ? track.artists.map((a) => a.name || a.displayName || "").filter(Boolean).join(", ")
-        : meta.artist_name || t("unknownArtist");
-    const durationMs = Number(meta.duration) || SpotiKitBridge.getDuration() || 180000;
-    return { track, trackUri, trackId, title, artist, durationMs };
-  },
-
-  async openForCurrentTrack() {
-    const info = this.getCurrentTrackInfo();
-    const saved = getCustomSync(info.trackUri || info.trackId);
-
-    if (saved && saved.draft) {
-      const d = saved.draft;
-      const inferredSyncMode =
-        d.syncMode ||
-        (saved.lyrics?.Type === "Static"
-          ? "static"
-          : saved.mode === "word" || saved.lyrics?.Type === "Syllable"
-          ? "word"
-          : "line");
-      this.draft = {
-        trackId: info.trackId || d.trackId,
-        trackUri: info.trackUri || d.trackUri,
-        title: info.title || d.title,
-        artist: info.artist || d.artist,
-        durationMs: info.durationMs || d.durationMs || 180000,
-        mode: inferredSyncMode === "word" ? "word" : "line",
-        syncMode: inferredSyncMode,
-        credit: d.credit ?? saved.credit ?? "",
-        lines: (d.lines || []).map((l) =>
-          l.kind === "interlude"
-            ? { kind: "interlude", start: l.start ?? null, end: l.end ?? null }
-            : {
-                kind: "lyric",
-                text: l.text || "",
-                isDuet: Boolean(l.isDuet),
-                tokens: (l.tokens || splitTextIntoTokens(l.text || "")).map((tok) => ({
-                  text: tok.text,
-                  start: tok.start ?? null,
-                  end: tok.end ?? null,
-                })),
-                backgrounds: (l.backgrounds || []).map((b) => ({
-                  text: b.text || "",
-                  tokens: (b.tokens || splitTextIntoTokens(b.text || "")).map((bt) => ({
-                    text: bt.text,
-                    start: bt.start ?? null,
-                    end: bt.end ?? null,
-                  })),
-                  start: b.start ?? null,
-                  end: b.end ?? null,
-                })),
-                start: l.start ?? null,
-                end: l.end ?? null,
-              }
-        ),
-        endMs: d.endMs ?? info.durationMs ?? null,
-        updatedAt: d.updatedAt || Date.now(),
-      };
-      this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
-      this.step = this.draft.lines.length > 0 ? "sync" : "text";
-    } else if (LyricsView.lines && LyricsView.lines.length > 0) {
-      // Pre-populate from currently displayed lyrics in LyricsView!
-      this.draft = fullscreenLinesToDraft(
-        {
-          type: LyricsView.syncType,
-          lines: LyricsView.lines,
-        },
-        info
+    if (!list.length) {
+      grid.appendChild(
+        el(
+          "div",
+          "fr-creator-empty-hint",
+          "Henüz Local DB'de kayıtlı şarkı sözü bulunmuyor."
+        )
       );
-      this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
-      this.step = "text";
     } else {
-      this.draft = {
-        trackId: info.trackId,
-        trackUri: info.trackUri,
-        title: info.title,
-        artist: info.artist,
-        durationMs: info.durationMs,
-        mode: "word",
-        syncMode: "word",
-        credit: "",
-        lines: [],
-        endMs: info.durationMs || null,
-        updatedAt: Date.now(),
-      };
-      this.rawTextCache = "";
-      this.step = "text";
+      for (const item of list) {
+        const row = el("div", "fr-creator-library-item");
+        const meta = el("div", "fr-creator-library-meta");
+        meta.append(
+          el("div", "fr-creator-library-song", item.title || item.trackId),
+          el(
+            "div",
+            "fr-creator-library-artist",
+            `${item.artist || "—"} · ${item.mode === "word" ? "Karaoke (Word)" : "Block (Line)"}`
+          )
+        );
+
+        const acts = el("div", "fr-creator-library-actions");
+        const loadBtn = el("button", "fr-creator-mini-btn", "Editöre Yükle");
+        loadBtn.type = "button";
+        loadBtn.addEventListener("click", () => {
+          const rec = getCustomSync(item.trackUri || item.trackId);
+          if (rec && rec.draft) {
+            this.draft = {
+              ...rec.draft,
+              syncMode:
+                rec.draft.syncMode ||
+                (rec.lyrics?.Type === "Static"
+                  ? "static"
+                  : rec.mode === "word"
+                  ? "word"
+                  : "line"),
+            };
+            this.rawTextCache = serializeDraftLinesToText(this.draft.lines || []);
+            this.libraryOpen = false;
+            this.render();
+            this.showToast(`Yüklendi: ${item.title}`);
+          }
+        });
+
+        const expBtn = el("button", "fr-creator-mini-btn", ".json");
+        expBtn.type = "button";
+        expBtn.addEventListener("click", () => {
+          const rec = getCustomSync(item.trackUri || item.trackId);
+          if (rec) {
+            const slug = safeFileSlug(rec.title, rec.artist);
+            downloadFile(
+              `${slug}.liquid-lyrics.json`,
+              JSON.stringify(rec, null, 2),
+              "application/json"
+            );
+          }
+        });
+
+        const delBtn = el("button", "fr-creator-mini-btn fr-danger", "Sil");
+        delBtn.type = "button";
+        delBtn.addEventListener("click", () => {
+          this.handleDeleteFromLocalDB(item.trackUri || item.trackId);
+        });
+
+        acts.append(loadBtn, expBtn, delBtn);
+        row.append(meta, acts);
+        grid.appendChild(row);
+      }
     }
 
-    this.libraryOpen = false;
-    this.moreMenuOpen = false;
-    this.activeTarget = this.findFirstIncompleteTarget();
-    this.isOpen = true;
-    this.root.classList.add("fr-show");
-    this.render();
-    this.startTransportLoop();
-    this.bindKeyHandler();
+    drawer.append(head, grid);
+    return drawer;
   },
 
-  toggleOpen() {
-    if (this.isOpen) this.close();
-    else this.openForCurrentTrack();
-  },
-
-  close() {
-    if (!this.isOpen) return;
-    this.isOpen = false;
-    this.libraryOpen = false;
-    this.moreMenuOpen = false;
-    this.root?.classList.remove("fr-show");
-    this.stopTransportLoop();
-    this.unbindKeyHandler();
-  },
-
-  // ==========================================================================
-  // Mode & Step Transitions
-  // ==========================================================================
-
-  syncRawTextToDraft() {
-    if (this.step === "text" && this.textSubMode === "raw") {
-      this.draft.lines = parsePlainTextToDraftLines(this.rawTextCache, this.draft.lines);
+  renderStepContent(container) {
+    container.innerHTML = "";
+    if (this.step === "text") {
+      this.renderTextAndBuilderStep(container);
+    } else if (this.step === "sync") {
+      this.renderSyncStep(container);
+    } else {
+      this.renderPreviewStep(container);
     }
   },
+};
 
-  setSyncMode(newMode) {
-    if (!this.draft || this.draft.syncMode === newMode) return;
-    this.syncRawTextToDraft();
+    },
 
-    // Carry timestamps smoothly between line <-> word modes
-    for (const line of this.draft.lines) {
-      if (!line || line.kind !== "lyric") continue;
-      if (newMode === "line" && line.start == null && line.tokens?.[0]?.start != null) {
-        line.start = line.tokens[0].start;
-      } else if (newMode === "word" && line.start != null && line.tokens?.length) {
-        if (line.tokens[0].start == null) {
-          line.tokens[0].start = line.start;
+    "./components/creator/CreatorPreviewStep.js": function(require, exports, module) {
+// --- ./components/creator/CreatorPreviewStep.js ---
+/**
+ * FullLyrics Creator Step 3: Live interactive preview and transport footer.
+ */
+const {  el  } = require("./utils/dom.js");
+const {  Icons  } = require("./utils/icons.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
+const { 
+  compileDraftToSpicyLyrics,
+  spicyLyricsToFullscreenLines,
+ } = require("./services/CustomSyncStorage.js");
+const {  formatTransportTime  } = require("./components/creator/CreatorUtils.js");
+
+const CreatorPreviewStep = exports.CreatorPreviewStep = {
+  // ==========================================================================
+  // STEP 3: Live Interactive Preview
+  // ==========================================================================
+
+  renderPreviewStep(container) {
+    const wrap = el("div", "fr-creator-preview-step");
+    const compiled = compileDraftToSpicyLyrics(this.draft);
+    const resolved = spicyLyricsToFullscreenLines(compiled, "FullLyrics Preview");
+
+    if (!resolved || !resolved.lines || !resolved.lines.length) {
+      wrap.appendChild(
+        el(
+          "div",
+          "fr-creator-empty-box",
+          "Önizleme için en az bir satırı zamanlayın veya 'Statik' modunu seçin."
+        )
+      );
+      container.appendChild(wrap);
+      this._previewLines = [];
+      this._previewLineEls = [];
+      return;
+    }
+
+    this._previewLines = resolved.lines;
+    this._previewType = resolved.type;
+    this._previewLineEls = [];
+
+    const scrollBox = el("div", "fr-creator-preview-scroll");
+    this.previewScrollEl = scrollBox;
+
+    resolved.lines.forEach((line) => {
+      const row = el(
+        "div",
+        `fr-creator-preview-line${line.isDuet ? " fr-duet-right" : ""}`
+      );
+
+      if (resolved.type !== "unsynced") {
+        row.addEventListener("click", () => {
+          this.seek(line.startMs || 0, true);
+        });
+      }
+
+      const mainWrap = el("div", "fr-creator-preview-words");
+      line._wordEls = (line.words || []).map((w) => {
+        const span = el("span", "fr-creator-preview-word", w.text || "");
+        if (resolved.type !== "unsynced" && w.startMs != null) {
+          span.style.cursor = "pointer";
+          span.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.seek(w.startMs, true);
+          });
+        }
+        mainWrap.appendChild(span);
+        return { ...w, el: span };
+      });
+      row.appendChild(mainWrap);
+
+      if (line.bgVocal && line.bgVocal.text) {
+        const bgWrap = el("div", "fr-creator-preview-bg", line.bgVocal.text);
+        if (resolved.type !== "unsynced" && line.bgVocal.startMs != null) {
+          bgWrap.style.cursor = "pointer";
+          bgWrap.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.seek(line.bgVocal.startMs, true);
+          });
+        }
+        row.appendChild(bgWrap);
+      }
+
+      scrollBox.appendChild(row);
+      this._previewLineEls.push(row);
+    });
+
+    wrap.appendChild(scrollBox);
+    container.appendChild(wrap);
+    this.updateLivePreview(this.getAccurateProgressMs());
+  },
+
+  updateLivePreview(progressMs) {
+    if (this.step !== "preview" || !this._previewLines.length) return;
+    let activeIdx = -1;
+
+    for (let i = 0; i < this._previewLines.length; i++) {
+      const l = this._previewLines[i];
+      const nextStart = this._previewLines[i + 1]?.startMs ?? (l.endMs || l.startMs + 4000);
+      const endMs = Math.max(l.endMs || 0, nextStart);
+      if (progressMs >= l.startMs && progressMs < endMs) {
+        activeIdx = i;
+        break;
+      }
+    }
+
+    for (let i = 0; i < this._previewLineEls.length; i++) {
+      const rowEl = this._previewLineEls[i];
+      const l = this._previewLines[i];
+      const isCurrent = i === activeIdx;
+      const isPast = activeIdx > i || (activeIdx === -1 && progressMs > (l.endMs || 0));
+
+      rowEl.classList.toggle("fr-active", isCurrent);
+      rowEl.classList.toggle("fr-past", isPast);
+
+      if (Array.isArray(l._wordEls)) {
+        for (const w of l._wordEls) {
+          const wDone = isPast || (isCurrent && progressMs >= (w.endMs || l.endMs || 0));
+          const wActive =
+            isCurrent && progressMs >= (w.startMs || 0) && progressMs < (w.endMs || l.endMs || 0);
+          w.el.classList.toggle("fr-w-active", wActive);
+          w.el.classList.toggle("fr-w-done", wDone);
         }
       }
     }
 
-    this.draft.syncMode = newMode;
-    this.draft.mode = newMode === "word" ? "word" : "line";
-    this.activeTarget = this.findFirstIncompleteTarget();
-    this.render();
-  },
-
-  setStep(nextStep) {
-    if (nextStep === this.step) return;
-    this.syncRawTextToDraft();
-    this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
-    this.step = nextStep;
-    if (nextStep === "sync") {
-      this.activeTarget = this.findFirstIncompleteTarget();
+    if (activeIdx >= 0 && this._previewLineEls[activeIdx] && this._lastPreviewIdx !== activeIdx) {
+      this._lastPreviewIdx = activeIdx;
+      this._previewLineEls[activeIdx].scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
     }
-    this.render();
   },
 
+  seek(ms, autoPlay = true) {
+    const safeMs = Math.max(0, Math.round(Number(ms) || 0));
+    this._lastKnownProgress = safeMs;
+    this._lastKnownTime = performance.now();
+    this._lastKnownPlaying = SpotiKitBridge.isPlaying() || autoPlay;
+
+    SpotiKitBridge.seek(safeMs);
+
+    if (autoPlay && !SpotiKitBridge.isPlaying()) {
+      SpotiKitBridge.togglePlay();
+    }
+
+    if (this.transportCurEl) {
+      this.transportCurEl.textContent = formatTransportTime(safeMs);
+    }
+    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
+    if (this.transportFillEl && dur > 0) {
+      const pct = Math.max(0, Math.min(100, (safeMs / dur) * 100));
+      this.transportFillEl.style.width = `${pct.toFixed(2)}%`;
+    }
+    if (this.step === "preview") {
+      this.updateLivePreview(safeMs);
+    }
+  },
+
+  // ==========================================================================
+  // Bottom Studio Transport Bar & High-Precision Progress Loop
+  // ==========================================================================
+
+  buildTransportFooter() {
+    const footer = el("div", "fr-creator-transport");
+
+    const playBtn = el("button", "fr-creator-play-btn");
+    playBtn.type = "button";
+    playBtn.innerHTML = SpotiKitBridge.isPlaying() ? Icons.pause : Icons.play;
+    playBtn.addEventListener("click", () => SpotiKitBridge.togglePlay());
+    this.transportPlayBtn = playBtn;
+
+    const back5Btn = el("button", "fr-creator-mini-btn", "-3s");
+    back5Btn.type = "button";
+    back5Btn.addEventListener("click", () => {
+      this.seek(Math.max(0, this.getAccurateProgressMs() - 3000), false);
+    });
+
+    const fwd5Btn = el("button", "fr-creator-mini-btn", "+3s");
+    fwd5Btn.type = "button";
+    fwd5Btn.addEventListener("click", () => {
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
+      this.seek(Math.min(dur, this.getAccurateProgressMs() + 3000), false);
+    });
+
+    const curTimeEl = el("span", "fr-creator-transport-time", "0:00.0");
+    this.transportCurEl = curTimeEl;
+
+    const seekWrap = el("div", "fr-creator-seek-bar");
+    const seekFill = el("div", "fr-creator-seek-fill");
+    this.transportFillEl = seekFill;
+    seekWrap.appendChild(seekFill);
+
+    const seekFromMouse = (e) => {
+      const rect = seekWrap.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1)));
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
+      this.seek(Math.round(pct * dur), false);
+    };
+
+    seekWrap.addEventListener("mousedown", (e) => {
+      this._dragAbortController?.abort();
+      const ac = new AbortController();
+      this._dragAbortController = ac;
+      this._scrubbing = true;
+      seekFromMouse(e);
+      const onMove = (ev) => seekFromMouse(ev);
+      const onUp = () => {
+        this._scrubbing = false;
+        ac.abort();
+        if (this._dragAbortController === ac) {
+          this._dragAbortController = null;
+        }
+      };
+      window.addEventListener("mousemove", onMove, { signal: ac.signal });
+      window.addEventListener("mouseup", onUp, { signal: ac.signal });
+    });
+
+    const durTimeEl = el(
+      "span",
+      "fr-creator-transport-time",
+      formatTransportTime(SpotiKitBridge.getDuration() || this.draft?.durationMs || 0)
+    );
+    this.transportDurEl = durTimeEl;
+
+    footer.append(playBtn, back5Btn, fwd5Btn, curTimeEl, seekWrap, durTimeEl);
+    return footer;
+  },
+
+  getAccurateProgressMs() {
+    const raw = SpotiKitBridge.getProgress();
+    const playing = SpotiKitBridge.isPlaying();
+    const now = performance.now();
+
+    if (raw !== this._lastKnownProgress || playing !== this._lastKnownPlaying) {
+      this._lastKnownProgress = raw;
+      this._lastKnownTime = now;
+      this._lastKnownPlaying = playing;
+    }
+
+    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || Infinity;
+    return playing
+      ? Math.min(dur, this._lastKnownProgress + (now - this._lastKnownTime))
+      : raw;
+  },
+
+  startTransportLoop() {
+    this.stopTransportLoop();
+    const tick = () => {
+      if (!this.isOpen) return;
+      const progress = this.getAccurateProgressMs();
+      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
+      const playing = SpotiKitBridge.isPlaying();
+
+      if (this.transportPlayBtn && this._wasTransportPlaying !== playing) {
+        this._wasTransportPlaying = playing;
+        this.transportPlayBtn.innerHTML = playing ? Icons.pause : Icons.play;
+      }
+
+      if (this.transportCurEl) {
+        this.transportCurEl.textContent = formatTransportTime(progress);
+      }
+      if (this.transportDurEl) {
+        this.transportDurEl.textContent = formatTransportTime(dur);
+      }
+      if (this.transportFillEl) {
+        const pct = Math.max(0, Math.min(100, (progress / dur) * 100));
+        this.transportFillEl.style.width = `${pct.toFixed(2)}%`;
+      }
+
+      if (this.step === "preview") {
+        this.updateLivePreview(progress);
+      }
+
+      this._rafId = requestAnimationFrame(tick);
+    };
+    this._rafId = requestAnimationFrame(tick);
+  },
+
+  stopTransportLoop() {
+    if (this._rafId) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+  },
+};
+
+    },
+
+    "./components/creator/CreatorSyncEngine.js": function(require, exports, module) {
+// --- ./components/creator/CreatorSyncEngine.js ---
+/**
+ * FullLyrics Creator actions (pull online, auto-spread, save/delete) and cue stamping engine.
+ */
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
+const {  LyricsService  } = require("./services/LyricsService.js");
+const {  LyricsView  } = require("./components/LyricsView.js");
+const { 
+  saveCustomSync,
+  deleteCustomSync,
+  extractTrackId,
+  normalizeTrackUri,
+  compileDraftToSpicyLyrics,
+  fullscreenLinesToDraft,
+  serializeDraftLinesToText,
+ } = require("./services/CustomSyncStorage.js");
+const {  formatCueTime  } = require("./components/creator/CreatorUtils.js");
+
+const CreatorSyncEngine = exports.CreatorSyncEngine = {
   // ==========================================================================
   // Actions: Pull Online Lyrics, Auto-Spread Words, Import, Export, Save, Delete
   // ==========================================================================
@@ -2499,755 +2547,21 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
       this.bodyEl.querySelector(".fr-creator-sync-row.fr-active");
     activeChip?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   },
-
-  // ==========================================================================
-  // Keyboard Shortcuts in Studio
-  // ==========================================================================
-
-  bindKeyHandler() {
-    if (this._keyHandler) return;
-    this._keyHandler = (e) => {
-      if (!this.isOpen) return;
-      const target = e.target;
-      const isElement =
-        typeof HTMLElement !== "undefined"
-          ? target instanceof HTMLElement
-          : target && typeof target.tagName === "string";
-      const isInput =
-        isElement &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (this.libraryOpen || this.moreMenuOpen) {
-          this.libraryOpen = false;
-          this.moreMenuOpen = false;
-          this.render();
-          return;
-        }
-        this.close();
-        return;
-      }
-
-      if (isInput || this.step !== "sync") return;
-
-      // Space or Right Alt -> Stamp Cue
-      if (e.code === "Space" || e.code === "AltRight") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.stampCurrentCue();
-        return;
-      }
-
-      // P or K -> Toggle Play/Pause without stamping
-      if (e.key === "p" || e.key === "P" || e.key === "k" || e.key === "K") {
-        e.preventDefault();
-        e.stopPropagation();
-        SpotiKitBridge.togglePlay();
-        return;
-      }
-
-      // Backspace -> Undo last cue
-      if (e.key === "Backspace") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.undoLastCue();
-        return;
-      }
-
-      // Delete -> Clear active cue
-      if (e.key === "Delete") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.setTargetTime(this.activeTarget, null);
-        this.renderSyncListOnly();
-        return;
-      }
-
-      // Arrow Up / Down -> Move between targets
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.moveActiveTarget(-1, false);
-        this.renderSyncListOnly();
-        this.scrollActiveTargetIntoView();
-        return;
-      }
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.moveActiveTarget(1, false);
-        this.renderSyncListOnly();
-        this.scrollActiveTargetIntoView();
-        return;
-      }
-
-      // Arrow Left / Right -> Nudge active target time (±100ms, or ±300ms with Shift)
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        e.preventDefault();
-        e.stopPropagation();
-        const cur = this.getTargetTime(this.activeTarget);
-        if (cur != null) {
-          const delta = (e.shiftKey ? 300 : 100) * (e.key === "ArrowLeft" ? -1 : 1);
-          this.setTargetTime(this.activeTarget, Math.max(0, cur + delta));
-          this.renderSyncListOnly();
-        }
-      }
-    };
-    window.addEventListener("keydown", this._keyHandler, true);
-  },
-
-  unbindKeyHandler() {
-    if (!this._keyHandler) return;
-    window.removeEventListener("keydown", this._keyHandler, true);
-    this._keyHandler = null;
-  },
-
-  // ==========================================================================
-  // Main Render
-  // ==========================================================================
-
-  render() {
-    if (!this.modal || !this.draft) return;
-
-    // Keep fileInput & toastEl
-    this.modal.innerHTML = "";
-    this.modal.append(this.fileInputEl, this.toastEl);
-
-    this.modal.appendChild(this.buildHeader());
-    this.modal.appendChild(this.buildStepBar());
-
-    if (this.libraryOpen) {
-      this.modal.appendChild(this.buildLibraryDrawer());
-    }
-
-    const body = el("div", "fr-creator-body");
-    this.bodyEl = body;
-    this.renderStepContent(body);
-    this.modal.appendChild(body);
-
-    this.modal.appendChild(this.buildTransportFooter());
-  },
-
-  buildHeader() {
-    const header = el("div", "fr-creator-header");
-
-    // Left: Title & Track Meta
-    const titleWrap = el("div", "fr-creator-title-wrap");
-    const topRow = el("div", "fr-creator-title-row");
-    const h2 = el("h2", "fr-creator-title", t("creatorTitle"));
-    topRow.appendChild(h2);
-
-    if (hasCustomSync(this.draft.trackUri || this.draft.trackId)) {
-      const badge = el("span", "fr-creator-saved-pill", t("creatorSavedBadge"));
-      topRow.appendChild(badge);
-    }
-
-    const sub = el(
-      "div",
-      "fr-creator-sub",
-      `${this.draft.title || "—"} — ${this.draft.artist || "—"}`
-    );
-    titleWrap.append(topRow, sub);
-
-    // Center: Mode Switcher (Block / Karaoke / Static)
-    const modeSwitch = el("div", "fr-creator-mode-switch");
-    const modes = [
-      { id: "line", label: t("creatorModeBlock") },
-      { id: "word", label: t("creatorModeKaraoke") },
-      { id: "static", label: t("creatorModeStatic") },
-    ];
-    for (const m of modes) {
-      const btn = el(
-        "button",
-        `fr-creator-mode-btn${this.draft.syncMode === m.id ? " fr-active" : ""}`,
-        m.label
-      );
-      btn.type = "button";
-      btn.addEventListener("click", () => this.setSyncMode(m.id));
-      modeSwitch.appendChild(btn);
-    }
-
-    // Right: Pull Online, Library, More Menu, Save, Close
-    const actions = el("div", "fr-creator-header-actions");
-
-    const pullBtn = el("button", "fr-creator-btn fr-creator-btn-ghost");
-    pullBtn.type = "button";
-    pullBtn.innerHTML = `${Icons.wand}<span>${t("creatorLoadCurrent")}</span>`;
-    pullBtn.addEventListener("click", () => this.pullOnlineLyrics());
-
-    const libCount = listCustomSyncs().length;
-    const libBtn = el(
-      "button",
-      `fr-creator-btn fr-creator-btn-ghost${this.libraryOpen ? " fr-active" : ""}`
-    );
-    libBtn.type = "button";
-    libBtn.innerHTML = `${Icons.library}<span>Local DB (${libCount})</span>`;
-    libBtn.addEventListener("click", () => {
-      this.libraryOpen = !this.libraryOpen;
-      this.moreMenuOpen = false;
-      this.render();
-    });
-
-    // More dropdown (Import / Export JSON, TTML, LRC / Delete)
-    const moreWrap = el("div", "fr-creator-more-wrap");
-    const moreBtn = el(
-      "button",
-      `fr-creator-icon-btn${this.moreMenuOpen ? " fr-active" : ""}`
-    );
-    moreBtn.type = "button";
-    moreBtn.innerHTML = Icons.more;
-    moreBtn.title = "Import / Export";
-    moreBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.moreMenuOpen = !this.moreMenuOpen;
-      this.libraryOpen = false;
-      this.render();
-    });
-    moreWrap.appendChild(moreBtn);
-
-    if (this.moreMenuOpen) {
-      const menu = el("div", "fr-creator-dropdown");
-      const addMenuItem = (iconSvg, label, onClick, danger = false) => {
-        const item = el(
-          "button",
-          `fr-creator-dropdown-item${danger ? " fr-danger" : ""}`
-        );
-        item.type = "button";
-        item.innerHTML = `${iconSvg}<span>${label}</span>`;
-        item.addEventListener("click", () => {
-          this.moreMenuOpen = false;
-          onClick();
-        });
-        menu.appendChild(item);
-      };
-
-      addMenuItem(Icons.upload, t("creatorImport"), () => this.fileInputEl.click());
-      addMenuItem(Icons.download, t("creatorExportJson"), () => {
-        this.syncRawTextToDraft();
-        const slug = safeFileSlug(this.draft.title, this.draft.artist);
-        downloadFile(`${slug}.liquid-lyrics.json`, exportDraftAsJSON(this.draft), "application/json");
-      });
-      addMenuItem(Icons.download, t("creatorExportTtml"), () => {
-        this.syncRawTextToDraft();
-        const slug = safeFileSlug(this.draft.title, this.draft.artist);
-        downloadFile(`${slug}.ttml`, exportDraftAsTTML(this.draft), "application/xml");
-      });
-      addMenuItem(Icons.download, t("creatorExportLrc"), () => {
-        this.syncRawTextToDraft();
-        const slug = safeFileSlug(this.draft.title, this.draft.artist);
-        downloadFile(`${slug}.lrc`, exportDraftAsLRC(this.draft), "text/plain");
-      });
-
-      if (hasCustomSync(this.draft.trackUri || this.draft.trackId)) {
-        addMenuItem(
-          Icons.trash,
-          t("creatorDeleteSync"),
-          () => this.handleDeleteFromLocalDB(),
-          true
-        );
-      }
-
-      moreWrap.appendChild(menu);
-    }
-
-    const saveBtn = el("button", "fr-creator-btn fr-creator-btn-primary");
-    saveBtn.type = "button";
-    saveBtn.innerHTML = `${Icons.check}<span>${t("creatorSaveBtn")}</span>`;
-    saveBtn.addEventListener("click", () => this.handleSaveToLocalDB());
-
-    const closeBtn = el("button", "fr-creator-icon-btn");
-    closeBtn.type = "button";
-    closeBtn.innerHTML = Icons.close;
-    closeBtn.addEventListener("click", () => this.close());
-
-    actions.append(pullBtn, libBtn, moreWrap, saveBtn, closeBtn);
-    header.append(titleWrap, modeSwitch, actions);
-    return header;
-  },
-
-  buildStepBar() {
-    const bar = el("div", "fr-creator-steps");
-    const steps = [
-      { id: "text", label: t("creatorStepText") },
-      { id: "sync", label: t("creatorStepSync") },
-      { id: "preview", label: t("creatorStepPreview") },
-    ];
-    for (const s of steps) {
-      const btn = el(
-        "button",
-        `fr-creator-step-btn${this.step === s.id ? " fr-active" : ""}`,
-        s.label
-      );
-      btn.type = "button";
-      btn.addEventListener("click", () => this.setStep(s.id));
-      bar.appendChild(btn);
-    }
-    return bar;
-  },
-
-  buildLibraryDrawer() {
-    const drawer = el("div", "fr-creator-library");
-    const head = el("div", "fr-creator-library-head");
-    head.appendChild(
-      el(
-        "span",
-        "fr-creator-library-title",
-        `${t("creatorSavedLibrary")} (liquid-lyrics-custom-sync)`
-      )
-    );
-
-    const list = listCustomSyncs();
-    const grid = el("div", "fr-creator-library-list");
-
-    if (!list.length) {
-      grid.appendChild(
-        el(
-          "div",
-          "fr-creator-empty-hint",
-          "Henüz Local DB'de kayıtlı şarkı sözü bulunmuyor."
-        )
-      );
-    } else {
-      for (const item of list) {
-        const row = el("div", "fr-creator-library-item");
-        const meta = el("div", "fr-creator-library-meta");
-        meta.append(
-          el("div", "fr-creator-library-song", item.title || item.trackId),
-          el(
-            "div",
-            "fr-creator-library-artist",
-            `${item.artist || "—"} · ${item.mode === "word" ? "Karaoke (Word)" : "Block (Line)"}`
-          )
-        );
-
-        const acts = el("div", "fr-creator-library-actions");
-        const loadBtn = el("button", "fr-creator-mini-btn", "Editöre Yükle");
-        loadBtn.type = "button";
-        loadBtn.addEventListener("click", () => {
-          const rec = getCustomSync(item.trackUri || item.trackId);
-          if (rec && rec.draft) {
-            this.draft = {
-              ...rec.draft,
-              syncMode:
-                rec.draft.syncMode ||
-                (rec.lyrics?.Type === "Static"
-                  ? "static"
-                  : rec.mode === "word"
-                  ? "word"
-                  : "line"),
-            };
-            this.rawTextCache = serializeDraftLinesToText(this.draft.lines || []);
-            this.libraryOpen = false;
-            this.render();
-            this.showToast(`Yüklendi: ${item.title}`);
-          }
-        });
-
-        const expBtn = el("button", "fr-creator-mini-btn", ".json");
-        expBtn.type = "button";
-        expBtn.addEventListener("click", () => {
-          const rec = getCustomSync(item.trackUri || item.trackId);
-          if (rec) {
-            const slug = safeFileSlug(rec.title, rec.artist);
-            downloadFile(
-              `${slug}.liquid-lyrics.json`,
-              JSON.stringify(rec, null, 2),
-              "application/json"
-            );
-          }
-        });
-
-        const delBtn = el("button", "fr-creator-mini-btn fr-danger", "Sil");
-        delBtn.type = "button";
-        delBtn.addEventListener("click", () => {
-          this.handleDeleteFromLocalDB(item.trackUri || item.trackId);
-        });
-
-        acts.append(loadBtn, expBtn, delBtn);
-        row.append(meta, acts);
-        grid.appendChild(row);
-      }
-    }
-
-    drawer.append(head, grid);
-    return drawer;
-  },
-
-  renderStepContent(container) {
-    container.innerHTML = "";
-    if (this.step === "text") {
-      this.renderTextAndBuilderStep(container);
-    } else if (this.step === "sync") {
-      this.renderSyncStep(container);
-    } else {
-      this.renderPreviewStep(container);
-    }
-  },
-
-  // ==========================================================================
-  // STEP 1: Text & Visual Sentence / Word Builder
-  // ==========================================================================
-
-  renderTextAndBuilderStep(container) {
-    const wrap = el("div", "fr-creator-text-step");
-
-    // Sub-toolbar: Switch between Visual Builder & Raw Text + Quick Add Actions
-    const toolbar = el("div", "fr-creator-subtoolbar");
-    const subSwitch = el("div", "fr-creator-subswitch");
-
-    const visBtn = el(
-      "button",
-      `fr-creator-subbtn${this.textSubMode === "visual" ? " fr-active" : ""}`,
-      t("creatorVisualBuilder")
-    );
-    visBtn.type = "button";
-    visBtn.addEventListener("click", () => {
-      if (this.textSubMode === "raw") {
-        this.draft.lines = parsePlainTextToDraftLines(this.rawTextCache, this.draft.lines);
-      }
-      this.textSubMode = "visual";
-      this.renderStepContent(this.bodyEl);
-    });
-
-    const rawBtn = el(
-      "button",
-      `fr-creator-subbtn${this.textSubMode === "raw" ? " fr-active" : ""}`,
-      t("creatorRawText")
-    );
-    rawBtn.type = "button";
-    rawBtn.addEventListener("click", () => {
-      this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
-      this.textSubMode = "raw";
-      this.renderStepContent(this.bodyEl);
-    });
-
-    subSwitch.append(visBtn, rawBtn);
-
-    const quickBtns = el("div", "fr-creator-quick-actions");
-    if (this.textSubMode === "visual") {
-      const addLineBtn = el("button", "fr-creator-chip-btn", t("creatorAddSentence"));
-      addLineBtn.type = "button";
-      addLineBtn.addEventListener("click", () => {
-        this.draft.lines.push(createLyricDraftLine("Yeni söz satırı", false));
-        this.renderStepContent(this.bodyEl);
-      });
-
-      const addWordLineBtn = el("button", "fr-creator-chip-btn", "+ Tek Kelime Ekle");
-      addWordLineBtn.type = "button";
-      addWordLineBtn.addEventListener("click", () => {
-        const last = this.draft.lines[this.draft.lines.length - 1];
-        if (last && last.kind === "lyric") {
-          last.tokens.push({ text: "kelime", start: null, end: null });
-          last.text = last.tokens.map((tok) => tok.text).join(" ");
-        } else {
-          this.draft.lines.push(createLyricDraftLine("kelime", false));
-        }
-        this.renderStepContent(this.bodyEl);
-      });
-
-      const addIntBtn = el("button", "fr-creator-chip-btn", t("creatorAddInterlude"));
-      addIntBtn.type = "button";
-      addIntBtn.addEventListener("click", () => {
-        this.draft.lines.push(createInterludeDraftLine());
-        this.renderStepContent(this.bodyEl);
-      });
-
-      quickBtns.append(addLineBtn, addWordLineBtn, addIntBtn);
-    } else {
-      const insInterlude = el("button", "fr-creator-chip-btn", "+ #interlude");
-      insInterlude.type = "button";
-      insInterlude.addEventListener("click", () => {
-        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "#interlude";
-        this.renderStepContent(this.bodyEl);
-      });
-
-      const insBg = el("button", "fr-creator-chip-btn", "+ [Arka Vokal]");
-      insBg.type = "button";
-      insBg.addEventListener("click", () => {
-        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "[arka vokal]";
-        this.renderStepContent(this.bodyEl);
-      });
-
-      const insDuet = el("button", "fr-creator-chip-btn", "+ v2: Düet Satırı");
-      insDuet.type = "button";
-      insDuet.addEventListener("click", () => {
-        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "v2: ";
-        this.renderStepContent(this.bodyEl);
-      });
-
-      quickBtns.append(insInterlude, insBg, insDuet);
-    }
-
-    toolbar.append(subSwitch, quickBtns);
-    wrap.appendChild(toolbar);
-
-    if (this.textSubMode === "raw") {
-      const ta = document.createElement("textarea");
-      ta.className = "fr-creator-textarea";
-      ta.placeholder = t("creatorTextPlaceholder");
-      ta.value = this.rawTextCache;
-      ta.addEventListener("input", () => {
-        this.rawTextCache = ta.value;
-        this.draft.lines = parsePlainTextToDraftLines(this.rawTextCache, this.draft.lines);
-      });
-      wrap.appendChild(ta);
-    } else {
-      const builderList = el("div", "fr-creator-builder-list");
-      if (!this.draft.lines.length) {
-        const emptyBox = el("div", "fr-creator-empty-box");
-        emptyBox.append(
-          el(
-            "p",
-            null,
-            "Henüz satır yok. Yukarıdan '+ Cümle Ekle'ye tıklayın, 'Aktif Sözleri Çek' ile şarkının mevcut sözlerini getirin veya 'Toplu Metin' sekmesinden yapıştırın."
-          )
-        );
-        builderList.appendChild(emptyBox);
-      } else {
-        this.draft.lines.forEach((line, idx) => {
-          builderList.appendChild(this.buildVisualLineCard(line, idx));
-        });
-      }
-      wrap.appendChild(builderList);
-    }
-
-    // Credit input at bottom
-    const creditRow = el("div", "fr-creator-credit-row");
-    const creditInput = document.createElement("input");
-    creditInput.type = "text";
-    creditInput.className = "fr-creator-credit-input";
-    creditInput.placeholder = t("creatorCreditPlaceholder");
-    creditInput.value = this.draft.credit || "";
-    creditInput.addEventListener("input", () => {
-      this.draft.credit = creditInput.value;
-    });
-    creditRow.appendChild(creditInput);
-    wrap.appendChild(creditRow);
-
-    container.appendChild(wrap);
-  },
-
-  buildVisualLineCard(line, lineIdx) {
-    const card = el(
-      "div",
-      `fr-creator-line-card${line.kind === "interlude" ? " fr-is-interlude" : ""}${
-        line.isDuet ? " fr-is-duet" : ""
-      }`
-    );
-
-    const top = el("div", "fr-creator-line-card-top");
-    const badge = el("span", "fr-creator-line-num", `#${lineIdx + 1}`);
-    top.appendChild(badge);
-
-    if (line.kind === "interlude") {
-      top.appendChild(
-        el("span", "fr-creator-interlude-title", "♪ Enstrümantal Ara (#interlude • • •)")
-      );
-    } else {
-      const sentenceInput = document.createElement("input");
-      sentenceInput.type = "text";
-      sentenceInput.className = "fr-creator-line-input";
-      sentenceInput.placeholder = "Cümle veya söz satırı yazın...";
-      sentenceInput.value = line.text || "";
-      sentenceInput.addEventListener("change", () => {
-        const clean = sentenceInput.value.trim();
-        line.text = clean;
-        line.tokens = splitTextIntoTokens(clean, line.tokens || []);
-        this.renderStepContent(this.bodyEl);
-      });
-      top.appendChild(sentenceInput);
-    }
-
-    const controls = el("div", "fr-creator-line-card-controls");
-
-    const lineStartMs = line.start ?? line.tokens?.[0]?.start ?? null;
-    if (lineStartMs != null) {
-      const playLineBtn = el("button", "fr-creator-mini-icon-btn");
-      playLineBtn.type = "button";
-      playLineBtn.innerHTML = Icons.play;
-      playLineBtn.title = `Bu satırdan oynat (${formatCueTime(lineStartMs)})`;
-      playLineBtn.addEventListener("click", () => this.seek(lineStartMs, true));
-      controls.appendChild(playLineBtn);
-    }
-
-    if (line.kind === "lyric") {
-      // Duet v2 toggle
-      const duetBtn = el(
-        "button",
-        `fr-creator-mini-btn${line.isDuet ? " fr-active-duet" : ""}`,
-        t("creatorDuetToggle")
-      );
-      duetBtn.type = "button";
-      duetBtn.title = "Sağ hizalı Düet şarkıcı (OppositeAligned / v2)";
-      duetBtn.addEventListener("click", () => {
-        line.isDuet = !line.isDuet;
-        this.renderStepContent(this.bodyEl);
-      });
-
-      // + Word button
-      const addWordBtn = el("button", "fr-creator-mini-btn", t("creatorAddWord"));
-      addWordBtn.type = "button";
-      addWordBtn.addEventListener("click", () => {
-        line.tokens.push({ text: "kelime", start: null, end: null });
-        line.text = line.tokens.map((t) => t.text).join(" ");
-        this.renderStepContent(this.bodyEl);
-      });
-
-      // + Background Vocal button
-      const addBgBtn = el("button", "fr-creator-mini-btn", t("creatorAddBgVocal"));
-      addBgBtn.type = "button";
-      addBgBtn.addEventListener("click", () => {
-        line.backgrounds = line.backgrounds || [];
-        line.backgrounds.push(createBackgroundDraftEntry("arka vokal"));
-        this.renderStepContent(this.bodyEl);
-      });
-
-      controls.append(duetBtn, addWordBtn, addBgBtn);
-    }
-
-    // Insert lyric line below
-    const insBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına Satır");
-    insBelowBtn.type = "button";
-    insBelowBtn.title = "Bu satırın hemen altına yeni söz satırı ekle";
-    insBelowBtn.addEventListener("click", () => {
-      this.draft.lines.splice(lineIdx + 1, 0, createLyricDraftLine("", false));
-      this.renderStepContent(this.bodyEl);
-    });
-
-    // Insert interlude below
-    const insIntBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına İnterlude");
-    insIntBelowBtn.type = "button";
-    insIntBelowBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
-    insIntBelowBtn.addEventListener("click", () => {
-      this.draft.lines.splice(lineIdx + 1, 0, createInterludeDraftLine());
-      this.renderStepContent(this.bodyEl);
-    });
-
-    // Move Up / Down
-    const upBtn = el("button", "fr-creator-mini-icon-btn");
-    upBtn.type = "button";
-    upBtn.innerHTML = Icons.up;
-    upBtn.disabled = lineIdx === 0;
-    upBtn.addEventListener("click", () => {
-      if (lineIdx <= 0) return;
-      const tmp = this.draft.lines[lineIdx - 1];
-      this.draft.lines[lineIdx - 1] = this.draft.lines[lineIdx];
-      this.draft.lines[lineIdx] = tmp;
-      this.renderStepContent(this.bodyEl);
-    });
-
-    const downBtn = el("button", "fr-creator-mini-icon-btn");
-    downBtn.type = "button";
-    downBtn.innerHTML = Icons.down;
-    downBtn.disabled = lineIdx >= this.draft.lines.length - 1;
-    downBtn.addEventListener("click", () => {
-      if (lineIdx >= this.draft.lines.length - 1) return;
-      const tmp = this.draft.lines[lineIdx + 1];
-      this.draft.lines[lineIdx + 1] = this.draft.lines[lineIdx];
-      this.draft.lines[lineIdx] = tmp;
-      this.renderStepContent(this.bodyEl);
-    });
-
-    // Delete line
-    const delBtn = el("button", "fr-creator-mini-icon-btn fr-danger");
-    delBtn.type = "button";
-    delBtn.innerHTML = Icons.trash;
-    delBtn.addEventListener("click", () => {
-      this.draft.lines.splice(lineIdx, 1);
-      this.renderStepContent(this.bodyEl);
-    });
-
-    controls.append(insBelowBtn, insIntBelowBtn, upBtn, downBtn, delBtn);
-    top.appendChild(controls);
-    card.appendChild(top);
-
-    // Individual Word Pills Editor (for Lyric lines)
-    if (line.kind === "lyric" && Array.isArray(line.tokens) && line.tokens.length > 0) {
-      const wordsWrap = el("div", "fr-creator-word-pills");
-      line.tokens.forEach((tok, tokIdx) => {
-        const pill = el("div", "fr-creator-word-pill");
-        const wInput = document.createElement("input");
-        wInput.type = "text";
-        wInput.className = "fr-creator-word-pill-input";
-        wInput.value = tok.text;
-        wInput.size = Math.max(2, tok.text.length);
-        wInput.addEventListener("change", () => {
-          const val = wInput.value.trim();
-          if (!val) {
-            line.tokens.splice(tokIdx, 1);
-          } else if (val.includes(" ")) {
-            // If user typed space inside a word pill, automatically split it into multiple words!
-            const subParts = val.split(/\s+/).filter(Boolean);
-            const newToks = subParts.map((sp, sIdx) => ({
-              text: sp,
-              start: sIdx === 0 ? tok.start : null,
-              end: sIdx === subParts.length - 1 ? tok.end : null,
-            }));
-            line.tokens.splice(tokIdx, 1, ...newToks);
-          } else {
-            tok.text = val;
-          }
-          line.text = line.tokens.map((t) => t.text).join(" ");
-          this.renderStepContent(this.bodyEl);
-        });
-
-        const delWordBtn = el("button", "fr-creator-word-pill-del", "×");
-        delWordBtn.type = "button";
-        delWordBtn.title = "Kelimeyi sil";
-        delWordBtn.addEventListener("click", () => {
-          line.tokens.splice(tokIdx, 1);
-          line.text = line.tokens.map((t) => t.text).join(" ");
-          this.renderStepContent(this.bodyEl);
-        });
-
-        pill.append(wInput, delWordBtn);
-        wordsWrap.appendChild(pill);
-      });
-      card.appendChild(wordsWrap);
-    }
-
-    // Background Vocals Editor inside the card
-    if (line.kind === "lyric" && Array.isArray(line.backgrounds) && line.backgrounds.length > 0) {
-      const bgContainer = el("div", "fr-creator-bg-list");
-      line.backgrounds.forEach((bg, bgIdx) => {
-        const bgRow = el("div", "fr-creator-bg-edit-row");
-        const bgTag = el("span", "fr-creator-bg-badge", "[Arka Vokal]");
-        const bgInput = document.createElement("input");
-        bgInput.type = "text";
-        bgInput.className = "fr-creator-bg-input";
-        bgInput.value = bg.text || "";
-        bgInput.placeholder = "Arka vokal sözleri...";
-        bgInput.addEventListener("change", () => {
-          const cleanBg = bgInput.value.trim();
-          if (!cleanBg) {
-            line.backgrounds.splice(bgIdx, 1);
-          } else {
-            bg.text = cleanBg;
-            bg.tokens = splitTextIntoTokens(cleanBg, bg.tokens || []);
-          }
-          this.renderStepContent(this.bodyEl);
-        });
-
-        const delBg = el("button", "fr-creator-mini-btn fr-danger", "×");
-        delBg.type = "button";
-        delBg.addEventListener("click", () => {
-          line.backgrounds.splice(bgIdx, 1);
-          this.renderStepContent(this.bodyEl);
-        });
-
-        bgRow.append(bgTag, bgInput, delBg);
-        bgContainer.appendChild(bgRow);
-      });
-      card.appendChild(bgContainer);
-    }
-
-    return card;
-  },
-
+};
+
+    },
+
+    "./components/creator/CreatorSyncStep.js": function(require, exports, module) {
+// --- ./components/creator/CreatorSyncStep.js ---
+/**
+ * FullLyrics Creator Step 2: Block & Karaoke word-by-word sync studio.
+ */
+const {  el  } = require("./utils/dom.js");
+const {  t  } = require("./utils/i18n.js");
+const {  isDraftLineComplete  } = require("./services/CustomSyncStorage.js");
+const {  formatCueTime  } = require("./components/creator/CreatorUtils.js");
+
+const CreatorSyncStep = exports.CreatorSyncStep = {
   // ==========================================================================
   // STEP 2: Sync Studio (Block & Karaoke Word-by-Word Synchronizer)
   // ==========================================================================
@@ -3876,278 +3190,1323 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
 
     return card;
   },
+};
 
+    },
+
+    "./components/creator/CreatorTextStep.js": function(require, exports, module) {
+// --- ./components/creator/CreatorTextStep.js ---
+/**
+ * FullLyrics Creator Step 1: Visual sentence/word builder and raw text editor.
+ */
+const {  el  } = require("./utils/dom.js");
+const {  t  } = require("./utils/i18n.js");
+const { 
+  splitTextIntoTokens,
+  createLyricDraftLine,
+  createInterludeDraftLine,
+  createBackgroundDraftEntry,
+  serializeDraftLinesToText,
+ } = require("./services/CustomSyncStorage.js");
+
+const CreatorTextStep = exports.CreatorTextStep = {
   // ==========================================================================
-  // STEP 3: Live Interactive Preview
+  // STEP 1: Text & Visual Sentence / Word Builder
   // ==========================================================================
 
-  renderPreviewStep(container) {
-    const wrap = el("div", "fr-creator-preview-step");
-    const compiled = compileDraftToSpicyLyrics(this.draft);
-    const resolved = spicyLyricsToFullscreenLines(compiled, "FullLyrics Preview");
+  renderTextAndBuilderStep(container) {
+    const wrap = el("div", "fr-creator-text-step");
 
-    if (!resolved || !resolved.lines || !resolved.lines.length) {
-      wrap.appendChild(
-        el(
-          "div",
-          "fr-creator-empty-box",
-          "Önizleme için en az bir satırı zamanlayın veya 'Statik' modunu seçin."
-        )
-      );
-      container.appendChild(wrap);
-      this._previewLines = [];
-      this._previewLineEls = [];
-      return;
+    // Sub-toolbar: Switch between Visual Builder & Raw Text + Quick Add Actions
+    const toolbar = el("div", "fr-creator-subtoolbar");
+    const subSwitch = el("div", "fr-creator-subswitch");
+
+    const visBtn = el(
+      "button",
+      `fr-creator-subbtn${this.textSubMode === "visual" ? " fr-active" : ""}`,
+      t("creatorVisualBuilder")
+    );
+    visBtn.type = "button";
+    visBtn.addEventListener("click", () => {
+      if (this.textSubMode === "raw") {
+        this.draft.lines = parsePlainTextToDraftLines(this.rawTextCache, this.draft.lines);
+      }
+      this.textSubMode = "visual";
+      this.renderStepContent(this.bodyEl);
+    });
+
+    const rawBtn = el(
+      "button",
+      `fr-creator-subbtn${this.textSubMode === "raw" ? " fr-active" : ""}`,
+      t("creatorRawText")
+    );
+    rawBtn.type = "button";
+    rawBtn.addEventListener("click", () => {
+      this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
+      this.textSubMode = "raw";
+      this.renderStepContent(this.bodyEl);
+    });
+
+    subSwitch.append(visBtn, rawBtn);
+
+    const quickBtns = el("div", "fr-creator-quick-actions");
+    if (this.textSubMode === "visual") {
+      const addLineBtn = el("button", "fr-creator-chip-btn", t("creatorAddSentence"));
+      addLineBtn.type = "button";
+      addLineBtn.addEventListener("click", () => {
+        this.draft.lines.push(createLyricDraftLine("Yeni söz satırı", false));
+        this.renderStepContent(this.bodyEl);
+      });
+
+      const addWordLineBtn = el("button", "fr-creator-chip-btn", "+ Tek Kelime Ekle");
+      addWordLineBtn.type = "button";
+      addWordLineBtn.addEventListener("click", () => {
+        const last = this.draft.lines[this.draft.lines.length - 1];
+        if (last && last.kind === "lyric") {
+          last.tokens.push({ text: "kelime", start: null, end: null });
+          last.text = last.tokens.map((tok) => tok.text).join(" ");
+        } else {
+          this.draft.lines.push(createLyricDraftLine("kelime", false));
+        }
+        this.renderStepContent(this.bodyEl);
+      });
+
+      const addIntBtn = el("button", "fr-creator-chip-btn", t("creatorAddInterlude"));
+      addIntBtn.type = "button";
+      addIntBtn.addEventListener("click", () => {
+        this.draft.lines.push(createInterludeDraftLine());
+        this.renderStepContent(this.bodyEl);
+      });
+
+      quickBtns.append(addLineBtn, addWordLineBtn, addIntBtn);
+    } else {
+      const insInterlude = el("button", "fr-creator-chip-btn", "+ #interlude");
+      insInterlude.type = "button";
+      insInterlude.addEventListener("click", () => {
+        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "#interlude";
+        this.renderStepContent(this.bodyEl);
+      });
+
+      const insBg = el("button", "fr-creator-chip-btn", "+ [Arka Vokal]");
+      insBg.type = "button";
+      insBg.addEventListener("click", () => {
+        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "[arka vokal]";
+        this.renderStepContent(this.bodyEl);
+      });
+
+      const insDuet = el("button", "fr-creator-chip-btn", "+ v2: Düet Satırı");
+      insDuet.type = "button";
+      insDuet.addEventListener("click", () => {
+        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "v2: ";
+        this.renderStepContent(this.bodyEl);
+      });
+
+      quickBtns.append(insInterlude, insBg, insDuet);
     }
 
-    this._previewLines = resolved.lines;
-    this._previewType = resolved.type;
-    this._previewLineEls = [];
+    toolbar.append(subSwitch, quickBtns);
+    wrap.appendChild(toolbar);
 
-    const scrollBox = el("div", "fr-creator-preview-scroll");
-    this.previewScrollEl = scrollBox;
-
-    resolved.lines.forEach((line) => {
-      const row = el(
-        "div",
-        `fr-creator-preview-line${line.isDuet ? " fr-duet-right" : ""}`
-      );
-
-      if (resolved.type !== "unsynced") {
-        row.addEventListener("click", () => {
-          this.seek(line.startMs || 0, true);
+    if (this.textSubMode === "raw") {
+      const ta = document.createElement("textarea");
+      ta.className = "fr-creator-textarea";
+      ta.placeholder = t("creatorTextPlaceholder");
+      ta.value = this.rawTextCache;
+      ta.addEventListener("input", () => {
+        this.rawTextCache = ta.value;
+        this.draft.lines = parsePlainTextToDraftLines(this.rawTextCache, this.draft.lines);
+      });
+      wrap.appendChild(ta);
+    } else {
+      const builderList = el("div", "fr-creator-builder-list");
+      if (!this.draft.lines.length) {
+        const emptyBox = el("div", "fr-creator-empty-box");
+        emptyBox.append(
+          el(
+            "p",
+            null,
+            "Henüz satır yok. Yukarıdan '+ Cümle Ekle'ye tıklayın, 'Aktif Sözleri Çek' ile şarkının mevcut sözlerini getirin veya 'Toplu Metin' sekmesinden yapıştırın."
+          )
+        );
+        builderList.appendChild(emptyBox);
+      } else {
+        this.draft.lines.forEach((line, idx) => {
+          builderList.appendChild(this.buildVisualLineCard(line, idx));
         });
       }
+      wrap.appendChild(builderList);
+    }
 
-      const mainWrap = el("div", "fr-creator-preview-words");
-      line._wordEls = (line.words || []).map((w) => {
-        const span = el("span", "fr-creator-preview-word", w.text || "");
-        if (resolved.type !== "unsynced" && w.startMs != null) {
-          span.style.cursor = "pointer";
-          span.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.seek(w.startMs, true);
-          });
-        }
-        mainWrap.appendChild(span);
-        return { ...w, el: span };
-      });
-      row.appendChild(mainWrap);
-
-      if (line.bgVocal && line.bgVocal.text) {
-        const bgWrap = el("div", "fr-creator-preview-bg", line.bgVocal.text);
-        if (resolved.type !== "unsynced" && line.bgVocal.startMs != null) {
-          bgWrap.style.cursor = "pointer";
-          bgWrap.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.seek(line.bgVocal.startMs, true);
-          });
-        }
-        row.appendChild(bgWrap);
-      }
-
-      scrollBox.appendChild(row);
-      this._previewLineEls.push(row);
+    // Credit input at bottom
+    const creditRow = el("div", "fr-creator-credit-row");
+    const creditInput = document.createElement("input");
+    creditInput.type = "text";
+    creditInput.className = "fr-creator-credit-input";
+    creditInput.placeholder = t("creatorCreditPlaceholder");
+    creditInput.value = this.draft.credit || "";
+    creditInput.addEventListener("input", () => {
+      this.draft.credit = creditInput.value;
     });
+    creditRow.appendChild(creditInput);
+    wrap.appendChild(creditRow);
 
-    wrap.appendChild(scrollBox);
     container.appendChild(wrap);
-    this.updateLivePreview(this.getAccurateProgressMs());
   },
 
-  updateLivePreview(progressMs) {
-    if (this.step !== "preview" || !this._previewLines.length) return;
-    let activeIdx = -1;
-
-    for (let i = 0; i < this._previewLines.length; i++) {
-      const l = this._previewLines[i];
-      const nextStart = this._previewLines[i + 1]?.startMs ?? (l.endMs || l.startMs + 4000);
-      const endMs = Math.max(l.endMs || 0, nextStart);
-      if (progressMs >= l.startMs && progressMs < endMs) {
-        activeIdx = i;
-        break;
-      }
-    }
-
-    for (let i = 0; i < this._previewLineEls.length; i++) {
-      const rowEl = this._previewLineEls[i];
-      const l = this._previewLines[i];
-      const isCurrent = i === activeIdx;
-      const isPast = activeIdx > i || (activeIdx === -1 && progressMs > (l.endMs || 0));
-
-      rowEl.classList.toggle("fr-active", isCurrent);
-      rowEl.classList.toggle("fr-past", isPast);
-
-      if (Array.isArray(l._wordEls)) {
-        for (const w of l._wordEls) {
-          const wDone = isPast || (isCurrent && progressMs >= (w.endMs || l.endMs || 0));
-          const wActive =
-            isCurrent && progressMs >= (w.startMs || 0) && progressMs < (w.endMs || l.endMs || 0);
-          w.el.classList.toggle("fr-w-active", wActive);
-          w.el.classList.toggle("fr-w-done", wDone);
-        }
-      }
-    }
-
-    if (activeIdx >= 0 && this._previewLineEls[activeIdx] && this._lastPreviewIdx !== activeIdx) {
-      this._lastPreviewIdx = activeIdx;
-      this._previewLineEls[activeIdx].scrollIntoView({
-        block: "center",
-        behavior: "smooth",
-      });
-    }
-  },
-
-  seek(ms, autoPlay = true) {
-    const safeMs = Math.max(0, Math.round(Number(ms) || 0));
-    this._lastKnownProgress = safeMs;
-    this._lastKnownTime = performance.now();
-    this._lastKnownPlaying = SpotiKitBridge.isPlaying() || autoPlay;
-
-    SpotiKitBridge.seek(safeMs);
-
-    if (autoPlay && !SpotiKitBridge.isPlaying()) {
-      SpotiKitBridge.togglePlay();
-    }
-
-    if (this.transportCurEl) {
-      this.transportCurEl.textContent = formatTransportTime(safeMs);
-    }
-    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
-    if (this.transportFillEl && dur > 0) {
-      const pct = Math.max(0, Math.min(100, (safeMs / dur) * 100));
-      this.transportFillEl.style.width = `${pct.toFixed(2)}%`;
-    }
-    if (this.step === "preview") {
-      this.updateLivePreview(safeMs);
-    }
-  },
-
-  // ==========================================================================
-  // Bottom Studio Transport Bar & High-Precision Progress Loop
-  // ==========================================================================
-
-  buildTransportFooter() {
-    const footer = el("div", "fr-creator-transport");
-
-    const playBtn = el("button", "fr-creator-play-btn");
-    playBtn.type = "button";
-    playBtn.innerHTML = SpotiKitBridge.isPlaying() ? Icons.pause : Icons.play;
-    playBtn.addEventListener("click", () => SpotiKitBridge.togglePlay());
-    this.transportPlayBtn = playBtn;
-
-    const back5Btn = el("button", "fr-creator-mini-btn", "-3s");
-    back5Btn.type = "button";
-    back5Btn.addEventListener("click", () => {
-      this.seek(Math.max(0, this.getAccurateProgressMs() - 3000), false);
-    });
-
-    const fwd5Btn = el("button", "fr-creator-mini-btn", "+3s");
-    fwd5Btn.type = "button";
-    fwd5Btn.addEventListener("click", () => {
-      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
-      this.seek(Math.min(dur, this.getAccurateProgressMs() + 3000), false);
-    });
-
-    const curTimeEl = el("span", "fr-creator-transport-time", "0:00.0");
-    this.transportCurEl = curTimeEl;
-
-    const seekWrap = el("div", "fr-creator-seek-bar");
-    const seekFill = el("div", "fr-creator-seek-fill");
-    this.transportFillEl = seekFill;
-    seekWrap.appendChild(seekFill);
-
-    const seekFromMouse = (e) => {
-      const rect = seekWrap.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / (rect.width || 1)));
-      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 180000;
-      this.seek(Math.round(pct * dur), false);
-    };
-
-    seekWrap.addEventListener("mousedown", (e) => {
-      this._dragAbortController?.abort();
-      const ac = new AbortController();
-      this._dragAbortController = ac;
-      this._scrubbing = true;
-      seekFromMouse(e);
-      const onMove = (ev) => seekFromMouse(ev);
-      const onUp = () => {
-        this._scrubbing = false;
-        ac.abort();
-        if (this._dragAbortController === ac) {
-          this._dragAbortController = null;
-        }
-      };
-      window.addEventListener("mousemove", onMove, { signal: ac.signal });
-      window.addEventListener("mouseup", onUp, { signal: ac.signal });
-    });
-
-    const durTimeEl = el(
-      "span",
-      "fr-creator-transport-time",
-      formatTransportTime(SpotiKitBridge.getDuration() || this.draft?.durationMs || 0)
+  buildVisualLineCard(line, lineIdx) {
+    const card = el(
+      "div",
+      `fr-creator-line-card${line.kind === "interlude" ? " fr-is-interlude" : ""}${
+        line.isDuet ? " fr-is-duet" : ""
+      }`
     );
-    this.transportDurEl = durTimeEl;
 
-    footer.append(playBtn, back5Btn, fwd5Btn, curTimeEl, seekWrap, durTimeEl);
-    return footer;
-  },
+    const top = el("div", "fr-creator-line-card-top");
+    const badge = el("span", "fr-creator-line-num", `#${lineIdx + 1}`);
+    top.appendChild(badge);
 
-  getAccurateProgressMs() {
-    const raw = SpotiKitBridge.getProgress();
-    const playing = SpotiKitBridge.isPlaying();
-    const now = performance.now();
-
-    if (raw !== this._lastKnownProgress || playing !== this._lastKnownPlaying) {
-      this._lastKnownProgress = raw;
-      this._lastKnownTime = now;
-      this._lastKnownPlaying = playing;
+    if (line.kind === "interlude") {
+      top.appendChild(
+        el("span", "fr-creator-interlude-title", "♪ Enstrümantal Ara (#interlude • • •)")
+      );
+    } else {
+      const sentenceInput = document.createElement("input");
+      sentenceInput.type = "text";
+      sentenceInput.className = "fr-creator-line-input";
+      sentenceInput.placeholder = "Cümle veya söz satırı yazın...";
+      sentenceInput.value = line.text || "";
+      sentenceInput.addEventListener("change", () => {
+        const clean = sentenceInput.value.trim();
+        line.text = clean;
+        line.tokens = splitTextIntoTokens(clean, line.tokens || []);
+        this.renderStepContent(this.bodyEl);
+      });
+      top.appendChild(sentenceInput);
     }
 
-    const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || Infinity;
-    return playing
-      ? Math.min(dur, this._lastKnownProgress + (now - this._lastKnownTime))
-      : raw;
+    const controls = el("div", "fr-creator-line-card-controls");
+
+    const lineStartMs = line.start ?? line.tokens?.[0]?.start ?? null;
+    if (lineStartMs != null) {
+      const playLineBtn = el("button", "fr-creator-mini-icon-btn");
+      playLineBtn.type = "button";
+      playLineBtn.innerHTML = Icons.play;
+      playLineBtn.title = `Bu satırdan oynat (${formatCueTime(lineStartMs)})`;
+      playLineBtn.addEventListener("click", () => this.seek(lineStartMs, true));
+      controls.appendChild(playLineBtn);
+    }
+
+    if (line.kind === "lyric") {
+      // Duet v2 toggle
+      const duetBtn = el(
+        "button",
+        `fr-creator-mini-btn${line.isDuet ? " fr-active-duet" : ""}`,
+        t("creatorDuetToggle")
+      );
+      duetBtn.type = "button";
+      duetBtn.title = "Sağ hizalı Düet şarkıcı (OppositeAligned / v2)";
+      duetBtn.addEventListener("click", () => {
+        line.isDuet = !line.isDuet;
+        this.renderStepContent(this.bodyEl);
+      });
+
+      // + Word button
+      const addWordBtn = el("button", "fr-creator-mini-btn", t("creatorAddWord"));
+      addWordBtn.type = "button";
+      addWordBtn.addEventListener("click", () => {
+        line.tokens.push({ text: "kelime", start: null, end: null });
+        line.text = line.tokens.map((t) => t.text).join(" ");
+        this.renderStepContent(this.bodyEl);
+      });
+
+      // + Background Vocal button
+      const addBgBtn = el("button", "fr-creator-mini-btn", t("creatorAddBgVocal"));
+      addBgBtn.type = "button";
+      addBgBtn.addEventListener("click", () => {
+        line.backgrounds = line.backgrounds || [];
+        line.backgrounds.push(createBackgroundDraftEntry("arka vokal"));
+        this.renderStepContent(this.bodyEl);
+      });
+
+      controls.append(duetBtn, addWordBtn, addBgBtn);
+    }
+
+    // Insert lyric line below
+    const insBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına Satır");
+    insBelowBtn.type = "button";
+    insBelowBtn.title = "Bu satırın hemen altına yeni söz satırı ekle";
+    insBelowBtn.addEventListener("click", () => {
+      this.draft.lines.splice(lineIdx + 1, 0, createLyricDraftLine("", false));
+      this.renderStepContent(this.bodyEl);
+    });
+
+    // Insert interlude below
+    const insIntBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına İnterlude");
+    insIntBelowBtn.type = "button";
+    insIntBelowBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    insIntBelowBtn.addEventListener("click", () => {
+      this.draft.lines.splice(lineIdx + 1, 0, createInterludeDraftLine());
+      this.renderStepContent(this.bodyEl);
+    });
+
+    // Move Up / Down
+    const upBtn = el("button", "fr-creator-mini-icon-btn");
+    upBtn.type = "button";
+    upBtn.innerHTML = Icons.up;
+    upBtn.disabled = lineIdx === 0;
+    upBtn.addEventListener("click", () => {
+      if (lineIdx <= 0) return;
+      const tmp = this.draft.lines[lineIdx - 1];
+      this.draft.lines[lineIdx - 1] = this.draft.lines[lineIdx];
+      this.draft.lines[lineIdx] = tmp;
+      this.renderStepContent(this.bodyEl);
+    });
+
+    const downBtn = el("button", "fr-creator-mini-icon-btn");
+    downBtn.type = "button";
+    downBtn.innerHTML = Icons.down;
+    downBtn.disabled = lineIdx >= this.draft.lines.length - 1;
+    downBtn.addEventListener("click", () => {
+      if (lineIdx >= this.draft.lines.length - 1) return;
+      const tmp = this.draft.lines[lineIdx + 1];
+      this.draft.lines[lineIdx + 1] = this.draft.lines[lineIdx];
+      this.draft.lines[lineIdx] = tmp;
+      this.renderStepContent(this.bodyEl);
+    });
+
+    // Delete line
+    const delBtn = el("button", "fr-creator-mini-icon-btn fr-danger");
+    delBtn.type = "button";
+    delBtn.innerHTML = Icons.trash;
+    delBtn.addEventListener("click", () => {
+      this.draft.lines.splice(lineIdx, 1);
+      this.renderStepContent(this.bodyEl);
+    });
+
+    controls.append(insBelowBtn, insIntBelowBtn, upBtn, downBtn, delBtn);
+    top.appendChild(controls);
+    card.appendChild(top);
+
+    // Individual Word Pills Editor (for Lyric lines)
+    if (line.kind === "lyric" && Array.isArray(line.tokens) && line.tokens.length > 0) {
+      const wordsWrap = el("div", "fr-creator-word-pills");
+      line.tokens.forEach((tok, tokIdx) => {
+        const pill = el("div", "fr-creator-word-pill");
+        const wInput = document.createElement("input");
+        wInput.type = "text";
+        wInput.className = "fr-creator-word-pill-input";
+        wInput.value = tok.text;
+        wInput.size = Math.max(2, tok.text.length);
+        wInput.addEventListener("change", () => {
+          const val = wInput.value.trim();
+          if (!val) {
+            line.tokens.splice(tokIdx, 1);
+          } else if (val.includes(" ")) {
+            // If user typed space inside a word pill, automatically split it into multiple words!
+            const subParts = val.split(/\s+/).filter(Boolean);
+            const newToks = subParts.map((sp, sIdx) => ({
+              text: sp,
+              start: sIdx === 0 ? tok.start : null,
+              end: sIdx === subParts.length - 1 ? tok.end : null,
+            }));
+            line.tokens.splice(tokIdx, 1, ...newToks);
+          } else {
+            tok.text = val;
+          }
+          line.text = line.tokens.map((t) => t.text).join(" ");
+          this.renderStepContent(this.bodyEl);
+        });
+
+        const delWordBtn = el("button", "fr-creator-word-pill-del", "×");
+        delWordBtn.type = "button";
+        delWordBtn.title = "Kelimeyi sil";
+        delWordBtn.addEventListener("click", () => {
+          line.tokens.splice(tokIdx, 1);
+          line.text = line.tokens.map((t) => t.text).join(" ");
+          this.renderStepContent(this.bodyEl);
+        });
+
+        pill.append(wInput, delWordBtn);
+        wordsWrap.appendChild(pill);
+      });
+      card.appendChild(wordsWrap);
+    }
+
+    // Background Vocals Editor inside the card
+    if (line.kind === "lyric" && Array.isArray(line.backgrounds) && line.backgrounds.length > 0) {
+      const bgContainer = el("div", "fr-creator-bg-list");
+      line.backgrounds.forEach((bg, bgIdx) => {
+        const bgRow = el("div", "fr-creator-bg-edit-row");
+        const bgTag = el("span", "fr-creator-bg-badge", "[Arka Vokal]");
+        const bgInput = document.createElement("input");
+        bgInput.type = "text";
+        bgInput.className = "fr-creator-bg-input";
+        bgInput.value = bg.text || "";
+        bgInput.placeholder = "Arka vokal sözleri...";
+        bgInput.addEventListener("change", () => {
+          const cleanBg = bgInput.value.trim();
+          if (!cleanBg) {
+            line.backgrounds.splice(bgIdx, 1);
+          } else {
+            bg.text = cleanBg;
+            bg.tokens = splitTextIntoTokens(cleanBg, bg.tokens || []);
+          }
+          this.renderStepContent(this.bodyEl);
+        });
+
+        const delBg = el("button", "fr-creator-mini-btn fr-danger", "×");
+        delBg.type = "button";
+        delBg.addEventListener("click", () => {
+          line.backgrounds.splice(bgIdx, 1);
+          this.renderStepContent(this.bodyEl);
+        });
+
+        bgRow.append(bgTag, bgInput, delBg);
+        bgContainer.appendChild(bgRow);
+      });
+      card.appendChild(bgContainer);
+    }
+
+    return card;
+  },
+};
+
+    },
+
+    "./components/creator/CreatorUtils.js": function(require, exports, module) {
+// --- ./components/creator/CreatorUtils.js ---
+/**
+ * Shared formatting and file helpers for FullLyrics Creator Studio.
+ */
+
+function formatCueTime(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "--:--.--";
+  const totalCs = Math.floor(ms / 10);
+  const cs = totalCs % 100;
+  const totalSec = Math.floor(totalCs / 100);
+  const sec = totalSec % 60;
+  const min = Math.floor(totalSec / 60);
+  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function formatTransportTime(ms) {
+  const safe = Math.max(0, Math.floor(Number(ms) || 0));
+  const min = Math.floor(safe / 60000);
+  const sec = Math.floor((safe % 60000) / 1000);
+  const tenth = Math.floor((safe % 1000) / 100);
+  return `${min}:${String(sec).padStart(2, "0")}.${tenth}`;
+}
+
+function downloadFile(filename, content, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function safeFileSlug(title, artist) {
+  const raw = [artist, title].filter(Boolean).join(" - ") || "lyrics";
+  return raw.replace(/[\\/:*?"<>|]+/g, "_").trim();
+}
+
+// Exported functions
+exports.formatCueTime = formatCueTime;
+exports.formatTransportTime = formatTransportTime;
+exports.downloadFile = downloadFile;
+exports.safeFileSlug = safeFileSlug;
+
+    },
+
+    "./components/CustomColorPicker.js": function(require, exports, module) {
+// --- ./components/CustomColorPicker.js ---
+/**
+ * Custom Liquid Glass Color Picker component.
+ * Replaces ugly native OS color popups with Apple TV / visionOS aesthetic presets,
+ * an interactive rainbow hue slider, hex input, and native color wheel trigger.
+ */
+const {  el  } = require("./utils/dom.js");
+
+// Vibrant & distinguishable presets + elegant atmospheric darks
+const VIBRANT_PRESETS = [
+  { name: "Spotify Green", hex: "#1ed760" },
+  { name: "Cyan Sky", hex: "#06b6d4" },
+  { name: "Electric Blue", hex: "#3b82f6" },
+  { name: "Royal Violet", hex: "#8b5cf6" },
+  { name: "Neon Fuchsia", hex: "#d946ef" },
+  { name: "Coral Red", hex: "#ef4444" },
+  { name: "Sunset Orange", hex: "#f97316" },
+  { name: "Warm Amber", hex: "#f59e0b" },
+];
+
+const DARK_PRESETS = [
+  { name: "OLED Siyah", hex: "#000000" },
+  { name: "Gece Mavisi", hex: "#0f172a" },
+  { name: "Derin İndigo", hex: "#1e1b4b" },
+  { name: "Koyu Mürdüm", hex: "#3b0764" },
+  { name: "Bordo Noir", hex: "#450a0a" },
+  { name: "Zümrüt Gece", hex: "#064e3b" },
+  { name: "Duman Grisi", hex: "#1e293b" },
+  { name: "Saf Beyaz", hex: "#ffffff" },
+];
+
+let initializedGlobalColorListener = false;
+let globalColorAbortController = null;
+const activeColorPickers = new Set();
+
+function initGlobalListener() {
+  if (initializedGlobalColorListener) return;
+  initializedGlobalColorListener = true;
+  globalColorAbortController = new AbortController();
+  const { signal } = globalColorAbortController;
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      for (const close of activeColorPickers) {
+        close(e);
+      }
+    },
+    { signal }
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") {
+        for (const close of activeColorPickers) {
+          close(null, true);
+        }
+      }
+    },
+    { signal }
+  );
+}
+
+function destroyCustomColorPickers() {
+  activeColorPickers.clear();
+  if (globalColorAbortController) {
+    globalColorAbortController.abort();
+    globalColorAbortController = null;
+  }
+  initializedGlobalColorListener = false;
+}
+
+function hslToHex(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function hexToHsl(hex) {
+  let c = (hex || "#101014").replace("#", "");
+  if (c.length === 3) c = c.split("").map((x) => x + x).join("");
+  if (c.length !== 6) return { h: 0, s: 70, l: 50 };
+
+  const r = parseInt(c.substring(0, 2), 16) / 255;
+  const g = parseInt(c.substring(2, 4), 16) / 255;
+  const b = parseInt(c.substring(4, 6), 16) / 255;
+
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h = Math.round(h * 60);
+  }
+  return { h, s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+/**
+ * Creates a custom Liquid Glass Color Picker element.
+ * @param {Object} config
+ * @param {string} config.value Initial hex color (e.g. "#1ed760")
+ * @param {(hex: string) => void} config.onChange Callback on color change
+ * @returns {HTMLElement}
+ */
+function createCustomColorPicker({ value = "#101014", onChange }) {
+  initGlobalListener();
+
+  const wrap = el("div", "fr-color-picker-wrap");
+  let currentColor = (value || "#101014").toLowerCase();
+  if (!currentColor.startsWith("#")) currentColor = "#" + currentColor;
+
+  // Swatch trigger button
+  const triggerBtn = document.createElement("button");
+  triggerBtn.setAttribute("type", "button");
+  triggerBtn.className = "fr-color-swatch-btn";
+
+  const swatchInner = el("span", "fr-color-swatch-inner");
+  swatchInner.style.backgroundColor = currentColor;
+
+  const hexLabel = el("span", "fr-color-hex-label", currentColor.toUpperCase());
+
+  triggerBtn.append(swatchInner, hexLabel);
+
+  // Popup dialog
+  const popup = el("div", "fr-color-popup");
+
+  const close = (e, force = false) => {
+    if (force || (e && !wrap.contains(e.target))) {
+      wrap.classList.remove("fr-open");
+    }
+  };
+  activeColorPickers.add(close);
+
+  // Preset container
+  const createPresetGroup = (titleText, presets) => {
+    const title = el("div", "fr-color-popup-title", titleText);
+    const grid = el("div", "fr-color-preset-grid");
+
+    presets.forEach((p) => {
+      const item = el("button", "fr-color-preset-item");
+      item.setAttribute("type", "button");
+      item.setAttribute("title", p.name);
+      item.setAttribute("data-hex", p.hex);
+      item.style.backgroundColor = p.hex;
+
+      // Checkmark icon
+      const checkSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      checkSvg.setAttribute("class", "fr-check-sm");
+      checkSvg.setAttribute("viewBox", "0 0 24 24");
+      const checkPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      checkPath.setAttribute("d", "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z");
+      checkSvg.appendChild(checkPath);
+      item.appendChild(checkSvg);
+
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setColor(p.hex);
+      });
+
+      grid.appendChild(item);
+    });
+
+    return [title, grid];
+  };
+
+  const [vibrantTitle, vibrantGrid] = createPresetGroup("Canlı Renkler", VIBRANT_PRESETS);
+  const [darkTitle, darkGrid] = createPresetGroup("Koyu & Zarif", DARK_PRESETS);
+
+  popup.append(vibrantTitle, vibrantGrid, darkTitle, darkGrid);
+
+  // Rainbow Hue Slider
+  const sliderWrap = el("div", "fr-hue-slider-wrap");
+  const sliderTitle = el("div", "fr-color-popup-title", "Renk Skalası");
+  const hueSlider = document.createElement("input");
+  hueSlider.type = "range";
+  hueSlider.min = "0";
+  hueSlider.max = "360";
+  hueSlider.value = String(hexToHsl(currentColor).h);
+  hueSlider.className = "fr-hue-slider";
+
+  hueSlider.addEventListener("input", (e) => {
+    const h = parseInt(e.target.value, 10);
+    const currentHsl = hexToHsl(currentColor);
+    const s = currentHsl.s < 20 ? 80 : currentHsl.s;
+    const l = currentHsl.l < 15 || currentHsl.l > 85 ? 50 : currentHsl.l;
+    setColor(hslToHex(h, s, l), false);
+  });
+
+  sliderWrap.append(sliderTitle, hueSlider);
+  popup.appendChild(sliderWrap);
+
+  // Custom Hex Input row with hidden native color picker trigger
+  const hexRow = el("div", "fr-color-custom-row");
+
+  const previewBtn = el("button", "fr-color-wheel-btn");
+  previewBtn.setAttribute("type", "button");
+  previewBtn.setAttribute("title", "Renk Çarkı / Damlalık Aç");
+
+  const preview = el("span", "fr-color-preview-circle");
+  preview.style.backgroundColor = currentColor;
+
+  const nativePicker = document.createElement("input");
+  nativePicker.type = "color";
+  nativePicker.className = "fr-hidden-native-picker";
+  nativePicker.value = currentColor;
+  nativePicker.style.display = "none";
+
+  previewBtn.appendChild(preview);
+
+  previewBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    nativePicker.click();
+  });
+
+  nativePicker.addEventListener("input", (e) => {
+    setColor(e.target.value);
+  });
+
+  const hexInput = document.createElement("input");
+  hexInput.type = "text";
+  hexInput.className = "fr-color-text-input";
+  hexInput.maxLength = 7;
+  hexInput.value = currentColor.toUpperCase();
+
+  hexInput.addEventListener("input", (e) => {
+    let val = e.target.value.trim();
+    if (!val.startsWith("#")) val = "#" + val;
+    if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+      setColor(val, false);
+    }
+  });
+
+  hexRow.append(previewBtn, nativePicker, hexInput);
+  popup.appendChild(hexRow);
+
+  const updateSwatches = () => {
+    swatchInner.style.backgroundColor = currentColor;
+    hexLabel.textContent = currentColor.toUpperCase();
+    preview.style.backgroundColor = currentColor;
+    nativePicker.value = currentColor;
+
+    if (document.activeElement !== hexInput) {
+      hexInput.value = currentColor.toUpperCase();
+    }
+    if (document.activeElement !== hueSlider) {
+      hueSlider.value = String(hexToHsl(currentColor).h);
+    }
+
+    popup.querySelectorAll(".fr-color-preset-item").forEach((item) => {
+      const itemHex = item.getAttribute("data-hex");
+      const isSelected = itemHex.toLowerCase() === currentColor.toLowerCase();
+      item.classList.toggle("fr-selected", isSelected);
+    });
+  };
+
+  const setColor = (hex, updateSlider = true) => {
+    currentColor = hex.toLowerCase();
+    updateSwatches();
+    if (onChange) onChange(currentColor);
+  };
+
+  // Toggle popup on click
+  triggerBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = !wrap.classList.contains("fr-open");
+    for (const other of activeColorPickers) {
+      other(null, true);
+    }
+    if (willOpen) {
+      wrap.classList.add("fr-open");
+      updateSwatches();
+    }
+  });
+
+  wrap.append(triggerBtn, popup);
+
+  return wrap;
+}
+
+const CustomColorPicker = exports.CustomColorPicker = {
+  create: createCustomColorPicker,
+  destroyAll: destroyCustomColorPickers,
+};
+
+// Exported functions
+exports.destroyCustomColorPickers = destroyCustomColorPickers;
+exports.createCustomColorPicker = createCustomColorPicker;
+
+    },
+
+    "./components/CustomSelect.js": function(require, exports, module) {
+// --- ./components/CustomSelect.js ---
+/**
+ * Custom Liquid Glass Select Dropdown component.
+ * Replaces ugly native HTML <select> popups with Apple TV / visionOS frosted glass styling.
+ */
+const {  el  } = require("./utils/dom.js");
+
+// Global document click listener to close all dropdowns when clicking outside
+let initializedGlobalListener = false;
+let globalSelectAbortController = null;
+const activeSelects = new Set();
+
+function initGlobalListener() {
+  if (initializedGlobalListener) return;
+  initializedGlobalListener = true;
+  globalSelectAbortController = new AbortController();
+  const { signal } = globalSelectAbortController;
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      for (const closeMenu of activeSelects) {
+        closeMenu(e);
+      }
+    },
+    { signal }
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") {
+        for (const closeMenu of activeSelects) {
+          closeMenu(null, true);
+        }
+      }
+    },
+    { signal }
+  );
+}
+
+function destroyCustomSelects() {
+  activeSelects.clear();
+  if (globalSelectAbortController) {
+    globalSelectAbortController.abort();
+    globalSelectAbortController = null;
+  }
+  initializedGlobalListener = false;
+}
+
+/**
+ * Creates a custom dropdown element.
+ * @param {Object} config
+ * @param {Array<{value: string, label: string}>} config.options
+ * @param {string} config.value
+ * @param {(val: string) => void} config.onChange
+ * @returns {HTMLElement}
+ */
+function createCustomSelect({ options, value, onChange }) {
+  initGlobalListener();
+
+  const wrap = el("div", "fr-select-wrap");
+  let currentValue = value;
+
+  // Selected label lookup (prefers shortLabel for the compact trigger button)
+  const getButtonLabel = (v) => {
+    const found = options.find((o) => o.value === v);
+    return found ? found.shortLabel || found.label : v;
+  };
+
+  // Button trigger
+  const btn = document.createElement("button");
+  btn.setAttribute("type", "button");
+  btn.className = "fr-select-btn";
+
+  const labelSpan = el("span", "fr-select-label", getButtonLabel(currentValue));
+  const arrowSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  arrowSvg.setAttribute("class", "fr-select-arrow");
+  arrowSvg.setAttribute("viewBox", "0 0 24 24");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z");
+  arrowSvg.appendChild(path);
+
+  btn.append(labelSpan, arrowSvg);
+
+  // Menu popup
+  const menu = el("div", "fr-select-menu");
+
+  const close = (e, force = false) => {
+    if (force || (e && !wrap.contains(e.target))) {
+      wrap.classList.remove("fr-open");
+    }
+  };
+  activeSelects.add(close);
+
+  // Render items
+  const renderItems = () => {
+    menu.innerHTML = "";
+    options.forEach((opt) => {
+      const isSelected = opt.value === currentValue;
+      const item = el("div", "fr-select-item" + (isSelected ? " fr-selected" : ""));
+
+      const leftCol = el("div", "fr-select-item-left");
+      const text = el("span", "fr-select-item-title", opt.label);
+      leftCol.appendChild(text);
+      if (opt.sublabel) {
+        leftCol.appendChild(el("span", "fr-select-item-sub", opt.sublabel));
+      }
+
+      const rightCol = el("div", "fr-select-item-right");
+      if (opt.badge) {
+        rightCol.appendChild(el("span", "fr-select-item-badge", opt.badge));
+      }
+
+      // Checkmark icon
+      const checkSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      checkSvg.setAttribute("class", "fr-check");
+      checkSvg.setAttribute("viewBox", "0 0 24 24");
+      const checkPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      checkPath.setAttribute("d", "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z");
+      checkSvg.appendChild(checkPath);
+      rightCol.appendChild(checkSvg);
+
+      item.append(leftCol, rightCol);
+
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        currentValue = opt.value;
+        labelSpan.textContent = getButtonLabel(opt.value);
+        wrap.classList.remove("fr-open");
+        renderItems();
+        if (onChange) onChange(opt.value);
+      });
+
+      menu.appendChild(item);
+    });
+  };
+
+  renderItems();
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = !wrap.classList.contains("fr-open");
+    // Close other open selects
+    for (const closeOther of activeSelects) {
+      closeOther(null, true);
+    }
+    if (willOpen) {
+      wrap.classList.add("fr-open");
+    }
+  });
+
+  wrap.append(btn, menu);
+
+  // Method to programmatically set value
+  wrap.setValue = (newVal) => {
+    currentValue = newVal;
+    labelSpan.textContent = getButtonLabel(newVal);
+    renderItems();
+  };
+
+  return wrap;
+}
+
+const CustomSelect = exports.CustomSelect = {
+  create: createCustomSelect,
+  destroyAll: destroyCustomSelects,
+};
+
+// Exported functions
+exports.destroyCustomSelects = destroyCustomSelects;
+exports.createCustomSelect = createCustomSelect;
+
+    },
+
+    "./components/FullLyricsCreator.js": function(require, exports, module) {
+// --- ./components/FullLyricsCreator.js ---
+/**
+ * FullLyricsCreator
+ * Modular studio lyrics editor & synchronizer coordinator for Fullscreen Reloaded.
+ * Delegates step rendering, cue stamping, chrome, and preview to `src/components/creator/`.
+ */
+const {  el  } = require("./utils/dom.js");
+const {  t  } = require("./utils/i18n.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
+const {  LyricsView  } = require("./components/LyricsView.js");
+const { 
+  getCustomSync,
+  extractTrackId,
+  normalizeTrackUri,
+  parsePlainTextToDraftLines,
+  serializeDraftLinesToText,
+  fullscreenLinesToDraft,
+  importFileToDraft,
+  CHANGE_EVENT,
+ } = require("./services/CustomSyncStorage.js");
+const {  CreatorSyncEngine  } = require("./components/creator/CreatorSyncEngine.js");
+const {  CreatorChrome  } = require("./components/creator/CreatorChrome.js");
+const {  CreatorTextStep  } = require("./components/creator/CreatorTextStep.js");
+const {  CreatorSyncStep  } = require("./components/creator/CreatorSyncStep.js");
+const {  CreatorPreviewStep  } = require("./components/creator/CreatorPreviewStep.js");
+
+const FullLyricsCreator = exports.FullLyricsCreator = {
+  root: null,
+  backdrop: null,
+  modal: null,
+  bodyEl: null,
+  fileInputEl: null,
+  toastEl: null,
+  _toastTimer: null,
+
+  isOpen: false,
+  app: null,
+  step: "text", // "text" | "sync" | "preview"
+  textSubMode: "visual", // "visual" | "raw"
+  libraryOpen: false,
+  moreMenuOpen: false,
+
+  draft: null,
+  rawTextCache: "",
+  activeTarget: {
+    type: "line", // "line" | "token" | "lineEnd" | "bgToken" | "bgEnd" | "end"
+    lineIdx: 0,
+    tokenIdx: 0,
+    bgIdx: 0,
   },
 
-  startTransportLoop() {
+  // Live preview & transport state
+  _rafId: null,
+  _previewLines: [],
+  _previewLineEls: [],
+  _previewType: "none",
+  _lastKnownProgress: 0,
+  _lastKnownTime: 0,
+  _lastKnownPlaying: false,
+  _scrubbing: false,
+  _abortController: null,
+  _dragAbortController: null,
+
+  build(app) {
+    this._abortController?.abort();
+    this._abortController = new AbortController();
+    const { signal } = this._abortController;
+
+    this.app = app;
+    const backdrop = el("div", "fr-creator-backdrop");
+    backdrop.addEventListener("mousedown", (e) => {
+      if (e.target === backdrop) this.close();
+    });
+
+    const modal = el("div", "fr-creator-modal");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-label", t("creatorTitle"));
+
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".json,.ttml,.xml,.lrc,.txt";
+    fileInput.hidden = true;
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files?.[0];
+      fileInput.value = "";
+      if (file) this.handleImportFile(file);
+    });
+
+    const toastEl = el("div", "fr-creator-toast");
+
+    modal.append(fileInput, toastEl);
+    backdrop.appendChild(modal);
+
+    this.root = backdrop;
+    this.backdrop = backdrop;
+    this.modal = modal;
+    this.fileInputEl = fileInput;
+    this.toastEl = toastEl;
+
+    // Listen to external or internal custom sync changes
+    window.addEventListener(
+      CHANGE_EVENT,
+      () => {
+        if (!this.root || !this.app?._mounted || SpotiKitBridge.isStopped()) return;
+        LyricsService.clearCache();
+        if (this.app?.currentTrack) {
+          LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
+        }
+      },
+      { signal }
+    );
+
+    return backdrop;
+  },
+
+  showToast(msg) {
+    if (!this.toastEl) return;
+    this.toastEl.textContent = msg;
+    this.toastEl.classList.add("fr-show");
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => {
+      this.toastEl?.classList.remove("fr-show");
+    }, 2600);
+  },
+
+  getCurrentTrackInfo() {
+    const track = this.app?.currentTrack || SpotiKitBridge.getCurrentTrack() || {};
+    const meta = track.metadata || {};
+    const trackUri = normalizeTrackUri(track.uri || "");
+    const trackId = extractTrackId(trackUri || track.id || "");
+    const title = meta.title || track.name || t("unknownTitle");
+    const artist =
+      track.artists && track.artists.length
+        ? track.artists.map((a) => a.name || a.displayName || "").filter(Boolean).join(", ")
+        : meta.artist_name || t("unknownArtist");
+    const durationMs = Number(meta.duration) || SpotiKitBridge.getDuration() || 180000;
+    return { track, trackUri, trackId, title, artist, durationMs };
+  },
+
+  async openForCurrentTrack() {
+    const info = this.getCurrentTrackInfo();
+    const saved = getCustomSync(info.trackUri || info.trackId);
+
+    if (saved && saved.draft) {
+      const d = saved.draft;
+      const inferredSyncMode =
+        d.syncMode ||
+        (saved.lyrics?.Type === "Static"
+          ? "static"
+          : saved.mode === "word" || saved.lyrics?.Type === "Syllable"
+          ? "word"
+          : "line");
+      this.draft = {
+        trackId: info.trackId || d.trackId,
+        trackUri: info.trackUri || d.trackUri,
+        title: info.title || d.title,
+        artist: info.artist || d.artist,
+        durationMs: info.durationMs || d.durationMs || 180000,
+        mode: inferredSyncMode === "word" ? "word" : "line",
+        syncMode: inferredSyncMode,
+        credit: d.credit ?? saved.credit ?? "",
+        lines: (d.lines || []).map((l) =>
+          l.kind === "interlude"
+            ? { kind: "interlude", start: l.start ?? null, end: l.end ?? null }
+            : {
+                kind: "lyric",
+                text: l.text || "",
+                isDuet: Boolean(l.isDuet),
+                tokens: (l.tokens || splitTextIntoTokens(l.text || "")).map((tok) => ({
+                  text: tok.text,
+                  start: tok.start ?? null,
+                  end: tok.end ?? null,
+                })),
+                backgrounds: (l.backgrounds || []).map((b) => ({
+                  text: b.text || "",
+                  tokens: (b.tokens || splitTextIntoTokens(b.text || "")).map((bt) => ({
+                    text: bt.text,
+                    start: bt.start ?? null,
+                    end: bt.end ?? null,
+                  })),
+                  start: b.start ?? null,
+                  end: b.end ?? null,
+                })),
+                start: l.start ?? null,
+                end: l.end ?? null,
+              }
+        ),
+        endMs: d.endMs ?? info.durationMs ?? null,
+        updatedAt: d.updatedAt || Date.now(),
+      };
+      this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
+      this.step = this.draft.lines.length > 0 ? "sync" : "text";
+    } else if (LyricsView.lines && LyricsView.lines.length > 0) {
+      // Pre-populate from currently displayed lyrics in LyricsView!
+      this.draft = fullscreenLinesToDraft(
+        {
+          type: LyricsView.syncType,
+          lines: LyricsView.lines,
+        },
+        info
+      );
+      this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
+      this.step = "text";
+    } else {
+      this.draft = {
+        trackId: info.trackId,
+        trackUri: info.trackUri,
+        title: info.title,
+        artist: info.artist,
+        durationMs: info.durationMs,
+        mode: "word",
+        syncMode: "word",
+        credit: "",
+        lines: [],
+        endMs: info.durationMs || null,
+        updatedAt: Date.now(),
+      };
+      this.rawTextCache = "";
+      this.step = "text";
+    }
+
+    this.libraryOpen = false;
+    this.moreMenuOpen = false;
+    this.activeTarget = this.findFirstIncompleteTarget();
+    this.isOpen = true;
+    this.root.classList.add("fr-show");
+    this.render();
+    this.startTransportLoop();
+    this.bindKeyHandler();
+  },
+
+  toggleOpen() {
+    if (this.isOpen) this.close();
+    else this.openForCurrentTrack();
+  },
+
+  close() {
+    if (!this.isOpen) return;
+    this.isOpen = false;
+    this.libraryOpen = false;
+    this.moreMenuOpen = false;
+    this.root?.classList.remove("fr-show");
     this.stopTransportLoop();
-    const tick = () => {
-      if (!this.isOpen) return;
-      const progress = this.getAccurateProgressMs();
-      const dur = SpotiKitBridge.getDuration() || this.draft?.durationMs || 1;
-      const playing = SpotiKitBridge.isPlaying();
-
-      if (this.transportPlayBtn && this._wasTransportPlaying !== playing) {
-        this._wasTransportPlaying = playing;
-        this.transportPlayBtn.innerHTML = playing ? Icons.pause : Icons.play;
-      }
-
-      if (this.transportCurEl) {
-        this.transportCurEl.textContent = formatTransportTime(progress);
-      }
-      if (this.transportDurEl) {
-        this.transportDurEl.textContent = formatTransportTime(dur);
-      }
-      if (this.transportFillEl) {
-        const pct = Math.max(0, Math.min(100, (progress / dur) * 100));
-        this.transportFillEl.style.width = `${pct.toFixed(2)}%`;
-      }
-
-      if (this.step === "preview") {
-        this.updateLivePreview(progress);
-      }
-
-      this._rafId = requestAnimationFrame(tick);
-    };
-    this._rafId = requestAnimationFrame(tick);
+    this.unbindKeyHandler();
   },
 
-  stopTransportLoop() {
-    if (this._rafId) {
-      cancelAnimationFrame(this._rafId);
-      this._rafId = null;
+  // ==========================================================================
+  // Mode & Step Transitions
+  // ==========================================================================
+
+  syncRawTextToDraft() {
+    if (this.step === "text" && this.textSubMode === "raw") {
+      this.draft.lines = parsePlainTextToDraftLines(this.rawTextCache, this.draft.lines);
     }
+  },
+
+  setSyncMode(newMode) {
+    if (!this.draft || this.draft.syncMode === newMode) return;
+    this.syncRawTextToDraft();
+
+    // Carry timestamps smoothly between line <-> word modes
+    for (const line of this.draft.lines) {
+      if (!line || line.kind !== "lyric") continue;
+      if (newMode === "line" && line.start == null && line.tokens?.[0]?.start != null) {
+        line.start = line.tokens[0].start;
+      } else if (newMode === "word" && line.start != null && line.tokens?.length) {
+        if (line.tokens[0].start == null) {
+          line.tokens[0].start = line.start;
+        }
+      }
+    }
+
+    this.draft.syncMode = newMode;
+    this.draft.mode = newMode === "word" ? "word" : "line";
+    this.activeTarget = this.findFirstIncompleteTarget();
+    this.render();
+  },
+
+  setStep(nextStep) {
+    if (nextStep === this.step) return;
+    this.syncRawTextToDraft();
+    this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
+    this.step = nextStep;
+    if (nextStep === "sync") {
+      this.activeTarget = this.findFirstIncompleteTarget();
+    }
+    this.render();
+  },
+
+  // ==========================================================================
+  // Keyboard Shortcuts in Studio
+  // ==========================================================================
+
+  bindKeyHandler() {
+    if (this._keyHandler) return;
+    this._keyHandler = (e) => {
+      if (!this.isOpen) return;
+      const target = e.target;
+      const isElement =
+        typeof HTMLElement !== "undefined"
+          ? target instanceof HTMLElement
+          : target && typeof target.tagName === "string";
+      const isInput =
+        isElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.libraryOpen || this.moreMenuOpen) {
+          this.libraryOpen = false;
+          this.moreMenuOpen = false;
+          this.render();
+          return;
+        }
+        this.close();
+        return;
+      }
+
+      if (isInput || this.step !== "sync") return;
+
+      // Space or Right Alt -> Stamp Cue
+      if (e.code === "Space" || e.code === "AltRight") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.stampCurrentCue();
+        return;
+      }
+
+      // P or K -> Toggle Play/Pause without stamping
+      if (e.key === "p" || e.key === "P" || e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        e.stopPropagation();
+        SpotiKitBridge.togglePlay();
+        return;
+      }
+
+      // Backspace -> Undo last cue
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.undoLastCue();
+        return;
+      }
+
+      // Delete -> Clear active cue
+      if (e.key === "Delete") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.setTargetTime(this.activeTarget, null);
+        this.renderSyncListOnly();
+        return;
+      }
+
+      // Arrow Up / Down -> Move between targets
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.moveActiveTarget(-1, false);
+        this.renderSyncListOnly();
+        this.scrollActiveTargetIntoView();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.moveActiveTarget(1, false);
+        this.renderSyncListOnly();
+        this.scrollActiveTargetIntoView();
+        return;
+      }
+
+      // Arrow Left / Right -> Nudge active target time (±100ms, or ±300ms with Shift)
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        e.stopPropagation();
+        const cur = this.getTargetTime(this.activeTarget);
+        if (cur != null) {
+          const delta = (e.shiftKey ? 300 : 100) * (e.key === "ArrowLeft" ? -1 : 1);
+          this.setTargetTime(this.activeTarget, Math.max(0, cur + delta));
+          this.renderSyncListOnly();
+        }
+      }
+    };
+    window.addEventListener("keydown", this._keyHandler, true);
+  },
+
+  unbindKeyHandler() {
+    if (!this._keyHandler) return;
+    window.removeEventListener("keydown", this._keyHandler, true);
+    this._keyHandler = null;
   },
 
   destroy() {
@@ -4184,6 +4543,15 @@ const FullLyricsCreator = exports.FullLyricsCreator = {
   },
 };
 
+Object.assign(
+  FullLyricsCreator,
+  CreatorSyncEngine,
+  CreatorChrome,
+  CreatorTextStep,
+  CreatorSyncStep,
+  CreatorPreviewStep
+);
+
     },
 
     "./components/LyricsView.js": function(require, exports, module) {
@@ -4207,6 +4575,8 @@ const {
   canAnimateLetters,
   clamp01,
   computeWordWaveParams,
+  computeWrappedRowRatios,
+  normalizeWordTimings,
  } = require("./utils/letterTiming.js");
 
 const LyricsView = exports.LyricsView = {
@@ -4225,6 +4595,7 @@ const LyricsView = exports.LyricsView = {
   syncType: "none",
   providerSource: "",
   hasLyrics: true,
+  _isLoading: false,
 
   userScrolling: false,
   userScrollTimer: null,
@@ -4293,6 +4664,9 @@ const LyricsView = exports.LyricsView = {
 
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObserver = new ResizeObserver(() => {
+        if (this.syncType === "synced" && this.lines.length) {
+          this._measureSyncedRows();
+        }
         if (!this.userScrolling && (this.syncType === "synced" || this.syncType === "word-synced")) {
           this.applyCascadePosition(true);
         }
@@ -4314,7 +4688,7 @@ const LyricsView = exports.LyricsView = {
   },
 
   showProviderBadge(durationMs = 3000) {
-    if (!this.providerBadge || !this.providerSource || !this.hasLyrics) return;
+    if (this._isLoading || !this.providerBadge || !this.providerSource || !this.hasLyrics) return;
     if (this.providerPrefixEl) {
       this.providerPrefixEl.textContent = `${t("providedBy")}:`;
     }
@@ -4391,12 +4765,20 @@ const LyricsView = exports.LyricsView = {
     this._shownStartBadgeForUri = null;
     const myRequest = ++this.requestId;
 
+    // Immediately clear stale previous-track provider/sync state before awaiting resolve
+    this._isLoading = true;
+    this.providerSource = "";
+    this.syncType = "none";
+    this.lines = [];
+    this.lineEls = [];
+    this.activeIndex = -1;
     this.hasLyrics = true;
     if (this.providerBadge) this.providerBadge.classList.remove("fr-show");
     if (this.instrPanel) this.instrPanel.classList.remove("fr-show");
     if (app?.applyLayoutSettings) app.applyLayoutSettings();
 
-    this.scrollEl.classList.remove("fr-ready", "fr-user-scrolling");
+    this.scrollEl.innerHTML = "";
+    this.scrollEl.classList.remove("fr-ready", "fr-user-scrolling", "fr-unsynced", "fr-mode-word", "fr-mode-line", "fr-letter-mode");
     this.scrollEl.scrollTop = 0;
     this._cascadeY = 0;
     this._manualOffsetY = 0;
@@ -4406,13 +4788,7 @@ const LyricsView = exports.LyricsView = {
 
     const data = await LyricsService.resolve(track);
     if (myRequest !== this.requestId || !this.scrollEl || SpotiKitBridge.isStopped()) return;
-
-    this.scrollEl.innerHTML = "";
-    this.scrollEl.classList.remove("fr-unsynced", "fr-mode-word", "fr-mode-line");
-    this.lines = [];
-    this.lineEls = [];
-    this.activeIndex = -1;
-    this.providerSource = "";
+    this._isLoading = false;
 
     if (!data || !data.lines || !data.lines.length) {
       this.hasLyrics = false;
@@ -4579,10 +4955,13 @@ const LyricsView = exports.LyricsView = {
           isInline: true,
         };
       } else if (this.syncType === "synced") {
-        // Line-synced mode (NOT word-by-word): render the entire sentence as ONE unified element
-        const sentenceEl = el("span", "fr-lyric-sentence", fullText.trim());
+        // Line-synced mode: store clean raw text so _measureSyncedRows() can split wrapped visual lines
+        const cleanSentence = fullText.trim();
+        const sentenceEl = el("span", "fr-lyric-sentence", cleanSentence);
         lineEl.appendChild(sentenceEl);
         line._sentenceEl = sentenceEl;
+        line._sentenceText = cleanSentence;
+        line._sentenceRows = null;
 
         if (enableBgDuet && line.bgVocal?.text) {
           const bgWrap = el("div", "fr-bg-vocal-sub");
@@ -4594,36 +4973,10 @@ const LyricsView = exports.LyricsView = {
       } else {
         // Word-synced or unsynced mode: render individual word spans
         const buildWordSpans = (wordsArr, containerEl, startBaseMs, spanDurMs, isBg = false) => {
-          const weights = wordsArr.map((w) => {
-            const clean = (typeof w === "string" ? w : w.text || "").trim();
-            return Math.pow(Math.max(1.8, clean.length), 0.78);
-          });
-          const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
-          let cursorMs = 0;
+          const normalizedWords = normalizeWordTimings(wordsArr, startBaseMs, spanDurMs);
 
-          return wordsArr.map((rawW, wIdx) => {
-            const wObj =
-              rawW && typeof rawW === "object"
-                ? rawW
-                : { text: rawW != null ? String(rawW) : "" };
+          return normalizedWords.map((wObj, wIdx) => {
             const wordText = wObj.text != null ? String(wObj.text) : "";
-
-            const sliceMs = (weights[wIdx] / totalWeight) * spanDurMs;
-            const synthStart = startBaseMs + cursorMs;
-            const synthEnd = startBaseMs + cursorMs + sliceMs;
-            cursorMs += sliceMs;
-
-            if (wObj.startMs == null) {
-              wObj.startMs = synthStart;
-              wObj.endMs = Math.max(synthStart + 80, synthEnd);
-            } else if (wObj.endMs == null || wObj.endMs <= wObj.startMs) {
-              const nextW = wordsArr[wIdx + 1];
-              const fallbackEnd =
-                nextW && typeof nextW === "object" && nextW.startMs > wObj.startMs
-                  ? nextW.startMs
-                  : wObj.startMs + Math.max(180, sliceMs);
-              wObj.endMs = fallbackEnd;
-            }
 
             let wordEl;
             wObj.chars = null;
@@ -4706,8 +5059,116 @@ const LyricsView = exports.LyricsView = {
     }
     this._revealRafId = requestAnimationFrame(() => {
       this._revealRafId = null;
+      if (this.syncType === "synced" && this.lines.length) {
+        this._measureSyncedRows();
+      }
       if (this.scrollEl) this.scrollEl.classList.add("fr-ready");
     });
+  },
+
+  /**
+   * Splits wrapped line-synced sentences into per-visual-row `.fr-s-row` spans
+   * so Row 1 fills left-to-right completely before wrapped Row 2 begins.
+   */
+  _measureSyncedRows() {
+    if (this.syncType !== "synced" || !this.lines.length) return;
+    for (let i = 0; i < this.lines.length; i++) {
+      const line = this.lines[i];
+      const sentenceEl = line?._sentenceEl;
+      const rawText = line?._sentenceText;
+      if (!sentenceEl || !rawText) continue;
+
+      const words = rawText.split(/\s+/).filter(Boolean);
+      if (words.length < 2) {
+        line._sentenceRows = null;
+        continue;
+      }
+
+      // Temporarily render inline word probes to detect exact visual line wraps
+      sentenceEl.classList.remove("fr-sentence-multirow");
+      sentenceEl.innerHTML = "";
+      const probeFrag = document.createDocumentFragment();
+      const probes = [];
+      for (let w = 0; w < words.length; w++) {
+        const span = document.createElement("span");
+        span.textContent = w < words.length - 1 ? words[w] + " " : words[w];
+        probeFrag.appendChild(span);
+        probes.push(span);
+      }
+      sentenceEl.appendChild(probeFrag);
+
+      const rowsText = [];
+      let currentTop = null;
+      let currentRowWords = [];
+      let hasLayoutMetrics = false;
+
+      for (let w = 0; w < probes.length; w++) {
+        const rect = typeof probes[w].getBoundingClientRect === "function"
+          ? probes[w].getBoundingClientRect()
+          : null;
+        const top = rect && rect.height > 0 ? rect.top : probes[w].offsetTop;
+        if ((rect && rect.height > 0) || probes[w].offsetHeight > 0) {
+          hasLayoutMetrics = true;
+        }
+        if (currentTop === null) {
+          currentTop = top;
+          currentRowWords.push(words[w]);
+        } else if (Math.abs(top - currentTop) > 4) {
+          rowsText.push(currentRowWords.join(" "));
+          currentRowWords = [words[w]];
+          currentTop = top;
+        } else {
+          currentRowWords.push(words[w]);
+        }
+      }
+      if (currentRowWords.length) {
+        rowsText.push(currentRowWords.join(" "));
+      }
+
+      if (!hasLayoutMetrics || rowsText.length <= 1) {
+        sentenceEl.textContent = rawText;
+        line._sentenceRows = null;
+        continue;
+      }
+
+      const ratios = computeWrappedRowRatios(rowsText);
+      sentenceEl.innerHTML = "";
+      sentenceEl.classList.add("fr-sentence-multirow");
+      const rowFrag = document.createDocumentFragment();
+      const rowEntries = ratios.map((r) => {
+        const rowEl = el("span", "fr-s-row", r.text);
+        rowFrag.appendChild(rowEl);
+        return {
+          el: rowEl,
+          startRatio: r.startRatio,
+          endRatio: r.endRatio,
+        };
+      });
+      sentenceEl.appendChild(rowFrag);
+      line._sentenceRows = rowEntries;
+    }
+  },
+
+  getActiveLineSnapshot() {
+    if (!this.hasLyrics || !this.lines.length) return null;
+    const idx = this.activeIndex;
+    const getLineText = (line) => {
+      if (!line) return "";
+      if (line._sentenceText) return line._sentenceText;
+      if (Array.isArray(line.words) && line.words.length) {
+        return line.words.map((w) => (typeof w === "string" ? w : w?.text || "")).join("").trim();
+      }
+      return String(line.text || "").trim();
+    };
+    const activeLine = idx >= 0 ? this.lines[idx] : null;
+    const nextLine = this.lines[idx + 1] || null;
+    return {
+      syncType: this.syncType,
+      activeIndex: idx,
+      activeText: getLineText(activeLine),
+      nextText: getLineText(nextLine),
+      isMusic: Boolean(activeLine?._isMusic),
+    };
   },
 
   _clearLineWordState(lineIdx, asPast = false) {
@@ -4717,6 +5178,11 @@ const LyricsView = exports.LyricsView = {
     if (line._sentenceEl) {
       line._sentenceEl.style.removeProperty("--bar-pct");
       line._sentenceEl.style.removeProperty("--bar-flow-y");
+    }
+    if (Array.isArray(line._sentenceRows)) {
+      for (let r = 0; r < line._sentenceRows.length; r++) {
+        line._sentenceRows[r].el?.style.removeProperty("--row-pct");
+      }
     }
     if (line._bgSentenceEl) {
       line._bgSentenceEl.style.removeProperty("--bar-pct");
@@ -4897,11 +5363,30 @@ const LyricsView = exports.LyricsView = {
         const lineStart = Number(activeLine.startMs) || 0;
         const barSpan = Math.max(600, Number(activeLine._barSpanMs) || 2500);
         const rawProgress = Math.max(0, Math.min(1, (progressMs - lineStart) / barSpan));
-        const sweptPct = wfMode === "off" ? 118 : rawProgress * 118;
         const flowY = dropPx * (1 - rawProgress);
 
-        sentenceEl.style.setProperty("--bar-pct", `${sweptPct.toFixed(1)}%`);
         sentenceEl.style.setProperty("--bar-flow-y", `${flowY.toFixed(2)}px`);
+
+        if (Array.isArray(activeLine._sentenceRows) && activeLine._sentenceRows.length > 1) {
+          for (let r = 0; r < activeLine._sentenceRows.length; r++) {
+            const row = activeLine._sentenceRows[r];
+            let rowPct;
+            if (wfMode === "off") {
+              rowPct = 118;
+            } else if (rawProgress <= row.startRatio) {
+              rowPct = 0;
+            } else if (rawProgress >= row.endRatio) {
+              rowPct = 118;
+            } else {
+              const span = Math.max(0.001, row.endRatio - row.startRatio);
+              rowPct = ((rawProgress - row.startRatio) / span) * 118;
+            }
+            row.el.style.setProperty("--row-pct", `${rowPct.toFixed(1)}%`);
+          }
+        } else {
+          const sweptPct = wfMode === "off" ? 118 : rawProgress * 118;
+          sentenceEl.style.setProperty("--bar-pct", `${sweptPct.toFixed(1)}%`);
+        }
       }
 
       const bgSentenceEl = activeLine?._bgSentenceEl;
@@ -5160,6 +5645,7 @@ const LyricsView = exports.LyricsView = {
     this.syncType = "none";
     this.providerSource = "";
     this.hasLyrics = true;
+    this._isLoading = false;
     this.userScrolling = false;
     this._currentTrackUri = null;
     this._lastUnsyncedTime = null;
@@ -5182,312 +5668,450 @@ const LyricsView = exports.LyricsView = {
 
     },
 
-    "./components/SettingsModal.js": function(require, exports, module) {
-// --- ./components/SettingsModal.js ---
+    "./components/settings/BackgroundSection.js": function(require, exports, module) {
+// --- ./components/settings/BackgroundSection.js ---
 /**
- * Settings Panel Modal component with Custom Liquid Glass Dropdowns.
+ * Settings Tab: Background, Custom Color, Mood Atmosphere, and Beat Pulse.
  */
-const {  el, toggle  } = require("./utils/dom.js");
 const {  t  } = require("./utils/i18n.js");
 const {  Settings  } = require("./utils/settings.js");
 const {  createCustomSelect  } = require("./components/CustomSelect.js");
 const {  createCustomColorPicker  } = require("./components/CustomColorPicker.js");
+const {  createSettingCard, createSettingRow  } = require("./components/settings/helpers.js");
+
+function buildBackgroundSection() {
+  const bgSelect = createCustomSelect({
+    options: [
+      { value: "solid", label: t("solidColor") },
+      { value: "gradient", label: t("gradient") },
+      { value: "dynamic-gradient", label: t("dynamicGradient") },
+      { value: "blurred-artwork", label: t("blurredArtwork") },
+      { value: "artwork", label: t("artwork") },
+      { value: "darkened-artwork", label: t("darkenedArtwork") },
+      { value: "custom-color", label: t("customColor") },
+    ],
+    value: Settings.get("backgroundMode"),
+    onChange: (val) => Settings.set("backgroundMode", val),
+  });
+  const bgRow = createSettingRow(t("mode"), bgSelect);
+
+  const colorPicker = createCustomColorPicker({
+    value: Settings.get("customColor") || "#101014",
+    onChange: (hex) => Settings.set("customColor", hex),
+  });
+  const colorRow = createSettingRow(t("customColor"), colorPicker);
+
+  const moodSelect = createCustomSelect({
+    options: [
+      {
+        value: "auto",
+        label: t("moodAuto"),
+        shortLabel: t("providerAutoShort"),
+        sublabel: t("moodAutoSub"),
+        badge: t("badgeSmart"),
+      },
+      { value: "energetic", label: t("moodEnergetic"), shortLabel: t("moodEnergetic") },
+      { value: "melancholic", label: t("moodMelancholic"), shortLabel: t("moodMelancholic") },
+      { value: "latenight", label: t("moodLateNight"), shortLabel: t("moodLateNight") },
+      { value: "dreamy", label: t("moodDreamy"), shortLabel: t("moodDreamy") },
+      { value: "off", label: t("moodOff"), shortLabel: t("moodOff") },
+    ],
+    value: Settings.get("moodMode") || "auto",
+    onChange: (val) => Settings.set("moodMode", val),
+  });
+  const moodRow = createSettingRow(t("moodAtmosphere"), moodSelect);
+
+  const beatSelect = createCustomSelect({
+    options: [
+      { value: "normal", label: t("beatNormal"), shortLabel: t("beatNormal") },
+      { value: "intense", label: t("beatIntense"), shortLabel: t("beatIntense") },
+      { value: "off", label: t("beatOff"), shortLabel: t("beatOff") },
+    ],
+    value: Settings.get("beatReactive") || "normal",
+    onChange: (val) => Settings.set("beatReactive", val),
+  });
+  const beatRow = createSettingRow(t("beatReactive"), beatSelect);
+
+  return [
+    createSettingCard(t("background"), [bgRow, colorRow]),
+    createSettingCard(t("moodAtmosphere"), [moodRow, beatRow]),
+  ];
+}
+
+// Exported functions
+exports.buildBackgroundSection = buildBackgroundSection;
+
+    },
+
+    "./components/settings/helpers.js": function(require, exports, module) {
+// --- ./components/settings/helpers.js ---
+/**
+ * Shared builders for Apple Music Liquid categorized Settings Panel rows and cards.
+ */
+const {  el  } = require("./utils/dom.js");
+
+function createSettingRow(labelText, controlEl, descText = "", extraClass = "") {
+  const row = el("div", extraClass ? `fr-settings-row ${extraClass}` : "fr-settings-row");
+  if (descText) {
+    const labelGroup = el("div", "fr-settings-label-group");
+    labelGroup.append(el("label", null, labelText), el("span", "fr-settings-desc", descText));
+    row.append(labelGroup, controlEl);
+  } else {
+    row.append(el("label", null, labelText), controlEl);
+  }
+  return row;
+}
+
+function createSettingCard(titleText, rows = []) {
+  const card = el("div", "fr-settings-card");
+  if (titleText) {
+    card.appendChild(el("div", "fr-settings-title", titleText));
+  }
+  const body = el("div", "fr-settings-card-body");
+  for (const row of rows) {
+    if (row) body.appendChild(row);
+  }
+  card.appendChild(body);
+  return card;
+}
+
+// Exported functions
+exports.createSettingRow = createSettingRow;
+exports.createSettingCard = createSettingCard;
+
+    },
+
+    "./components/settings/LyricsSection.js": function(require, exports, module) {
+// --- ./components/settings/LyricsSection.js ---
+/**
+ * Settings Tab: Lyrics & Karaoke options.
+ */
+const {  toggle  } = require("./utils/dom.js");
+const {  t  } = require("./utils/i18n.js");
+const {  Settings  } = require("./utils/settings.js");
+const {  createCustomSelect  } = require("./components/CustomSelect.js");
+const {  createSettingCard, createSettingRow  } = require("./components/settings/helpers.js");
+
+function buildLyricsSection() {
+  const showLyricsRow = createSettingRow(
+    t("showLyrics"),
+    toggle(Settings.get("showLyrics"), (v) => Settings.set("showLyrics", v))
+  );
+
+  const idleLyricsRow = createSettingRow(
+    t("idleLyrics"),
+    toggle(Settings.get("idleLyrics"), (v) => Settings.set("idleLyrics", v))
+  );
+
+  const waterfallSelect = createCustomSelect({
+    options: [
+      { value: "normal", label: t("waterfallNormal"), shortLabel: t("waterfallNormal") },
+      { value: "intense", label: t("waterfallIntense"), shortLabel: t("waterfallIntense") },
+      { value: "off", label: t("waterfallOff"), shortLabel: t("waterfallOff") },
+    ],
+    value: Settings.get("waterfallMode") || "normal",
+    onChange: (val) => Settings.set("waterfallMode", val),
+  });
+  const waterfallRow = createSettingRow(t("waterfallFlow"), waterfallSelect);
+
+  const letterByLetterRow = createSettingRow(
+    t("letterByLetter"),
+    toggle(Settings.get("letterByLetter") !== false, (v) => Settings.set("letterByLetter", v))
+  );
+
+  const interludeRow = createSettingRow(
+    t("interludeDots"),
+    toggle(Settings.get("interludeDots") !== false, (v) => Settings.set("interludeDots", v))
+  );
+
+  const bgDuetRow = createSettingRow(
+    t("bgVocalsDuet"),
+    toggle(Settings.get("bgVocalsDuet") !== false, (v) => Settings.set("bgVocalsDuet", v))
+  );
+
+  const providerSelect = createCustomSelect({
+    options: [
+      {
+        value: "auto",
+        label: t("providerAuto"),
+        shortLabel: t("providerAutoShort"),
+        sublabel: t("providerAutoSub"),
+        badge: t("badgeSmart"),
+      },
+      { value: "applemusic", label: t("providerApple"), shortLabel: "Apple Music", badge: t("badgeWordSync") },
+      { value: "spicy", label: t("providerSpicy"), shortLabel: "Spicy Lyrics", badge: t("badgeWordSync") },
+      { value: "lrclib", label: t("providerLrclib"), shortLabel: "LRCLIB", badge: t("badgeSynced") },
+      { value: "genius", label: t("providerGenius"), shortLabel: "Genius", badge: t("badgeUnsynced") },
+      { value: "spotify", label: t("providerSpotify"), shortLabel: "Spotify", badge: t("badgeOfficial") },
+    ],
+    value: Settings.get("lyricsProvider") || "auto",
+    onChange: (val) => Settings.set("lyricsProvider", val),
+  });
+  const providerRow = createSettingRow(t("lyricsProvider"), providerSelect);
+
+  const scrollSelect = createCustomSelect({
+    options: [
+      { value: "track", label: t("trackProgress") },
+      { value: "slow", label: t("slow") },
+      { value: "normal", label: t("normal") },
+      { value: "fast", label: t("fast") },
+      { value: "off", label: t("off") },
+    ],
+    value: Settings.get("unsyncedScrollMode") || "track",
+    onChange: (val) => Settings.set("unsyncedScrollMode", val),
+  });
+  const scrollRow = createSettingRow(t("unsyncedScroll"), scrollSelect);
+
+  return [
+    createSettingCard(t("tabLyrics"), [
+      showLyricsRow,
+      idleLyricsRow,
+      letterByLetterRow,
+      waterfallRow,
+      interludeRow,
+      bgDuetRow,
+    ]),
+    createSettingCard(t("lyricsProvider"), [providerRow, scrollRow]),
+  ];
+}
+
+// Exported functions
+exports.buildLyricsSection = buildLyricsSection;
+
+    },
+
+    "./components/settings/PlayerSection.js": function(require, exports, module) {
+// --- ./components/settings/PlayerSection.js ---
+/**
+ * Settings Tab: Player (Switch to New Player + conditional Show Old Player),
+ * Artwork presentation, and Track Info visibility.
+ */
+const {  toggle  } = require("./utils/dom.js");
+const {  t  } = require("./utils/i18n.js");
+const {  Settings  } = require("./utils/settings.js");
+const {  createCustomSelect  } = require("./components/CustomSelect.js");
+const {  createSettingCard, createSettingRow  } = require("./components/settings/helpers.js");
+
+function buildPlayerSection() {
+  const isNewPlayerOn = Boolean(Settings.get("newPlayerMode"));
+
+  // Conditional sub-row: Show Old Player (only visible when Switch to New Player is ON)
+  const legacyPlayerRow = createSettingRow(
+    t("showLegacyPlayer"),
+    toggle(Boolean(Settings.get("showLegacyPlayer")), (v) => Settings.set("showLegacyPlayer", v)),
+    t("showLegacyPlayerDesc"),
+    isNewPlayerOn ? "fr-settings-subrow" : "fr-settings-subrow fr-hidden"
+  );
+
+  const newPlayerRow = createSettingRow(
+    t("switchToNewPlayer"),
+    toggle(isNewPlayerOn, (v) => {
+      Settings.set("newPlayerMode", v);
+      legacyPlayerRow.classList.toggle("fr-hidden", !v);
+    }),
+    t("switchToNewPlayerDesc")
+  );
+
+  // Artwork appearance
+  const glowRow = createSettingRow(
+    t("ambientGlow"),
+    toggle(Settings.get("albumArtGlow"), (v) => Settings.set("albumArtGlow", v))
+  );
+  const shadowRow = createSettingRow(
+    t("glowShadow"),
+    toggle(Settings.get("albumArtShadow"), (v) => Settings.set("albumArtShadow", v))
+  );
+  const sizeSelect = createCustomSelect({
+    options: [
+      { value: "small", label: t("small") },
+      { value: "medium", label: t("medium") },
+      { value: "large", label: t("large") },
+    ],
+    value: Settings.get("albumArtSize") || "large",
+    onChange: (val) => Settings.set("albumArtSize", val),
+  });
+  const sizeRow = createSettingRow(t("artworkSize"), sizeSelect);
+
+  const clockSelect = createCustomSelect({
+    options: [
+      { value: "top", label: t("top") },
+      { value: "bottom", label: t("bottom") },
+      { value: "none", label: t("none") },
+    ],
+    value: Settings.get("clockPosition") || "top",
+    onChange: (val) => Settings.set("clockPosition", val),
+  });
+  const clockRow = createSettingRow(t("idleClockPos"), clockSelect);
+
+  // Track Info
+  const metaPosSelect = createCustomSelect({
+    options: [
+      { value: "left", label: t("left") },
+      { value: "center", label: t("center") },
+      { value: "right", label: t("right") },
+    ],
+    value: Settings.get("metaPosition") || "left",
+    onChange: (val) => Settings.set("metaPosition", val),
+  });
+  const metaPosRow = createSettingRow(t("position"), metaPosSelect);
+
+  const showArtRow = createSettingRow(
+    t("albumArt"),
+    toggle(Settings.get("showAlbumArt") !== false, (v) => Settings.set("showAlbumArt", v))
+  );
+  const showTitleRow = createSettingRow(
+    t("trackTitle"),
+    toggle(Settings.get("showTitle") !== false, (v) => Settings.set("showTitle", v))
+  );
+  const showArtistRow = createSettingRow(
+    t("artists"),
+    toggle(Settings.get("showArtist") !== false, (v) => Settings.set("showArtist", v))
+  );
+  const showAlbumRow = createSettingRow(
+    t("albumName"),
+    toggle(Settings.get("showAlbum") !== false, (v) => Settings.set("showAlbum", v))
+  );
+
+  return [
+    createSettingCard(t("tabPlayer"), [newPlayerRow, legacyPlayerRow]),
+    createSettingCard(t("appearance"), [sizeRow, glowRow, shadowRow, clockRow]),
+    createSettingCard(t("trackInfo"), [metaPosRow, showArtRow, showTitleRow, showArtistRow, showAlbumRow]),
+  ];
+}
+
+// Exported functions
+exports.buildPlayerSection = buildPlayerSection;
+
+    },
+
+    "./components/settings/SidebarPipSection.js": function(require, exports, module) {
+// --- ./components/settings/SidebarPipSection.js ---
+/**
+ * Settings Tab: Spotify Right Sidebar Lyrics, PiP Live Lyrics, and Language.
+ */
+const {  toggle  } = require("./utils/dom.js");
+const {  t  } = require("./utils/i18n.js");
+const {  Settings  } = require("./utils/settings.js");
+const {  createCustomSelect  } = require("./components/CustomSelect.js");
+const {  createSettingCard, createSettingRow  } = require("./components/settings/helpers.js");
+
+function buildSidebarPipSection() {
+  const sidebarEnabled = Settings.get("sidebarLyrics") !== false;
+
+  const sidebarBgRow = createSettingRow(
+    t("sidebarLyricsBg"),
+    toggle(Settings.get("sidebarLyricsBg") !== false, (v) => Settings.set("sidebarLyricsBg", v)),
+    t("sidebarLyricsBgDesc"),
+    sidebarEnabled ? "fr-settings-subrow" : "fr-settings-subrow fr-hidden"
+  );
+
+  const sidebarLyricsRow = createSettingRow(
+    t("sidebarLyrics"),
+    toggle(sidebarEnabled, (v) => {
+      Settings.set("sidebarLyrics", v);
+      sidebarBgRow.classList.toggle("fr-hidden", !v);
+    }),
+    t("sidebarLyricsDesc")
+  );
+
+  const pipLyricsRow = createSettingRow(
+    t("pipLyrics"),
+    toggle(Settings.get("pipLyrics") !== false, (v) => Settings.set("pipLyrics", v)),
+    t("pipLyricsDesc")
+  );
+
+  const langSelect = createCustomSelect({
+    options: [
+      { value: "auto", label: t("auto") },
+      { value: "en", label: "English" },
+      { value: "tr", label: "Türkçe" },
+    ],
+    value: Settings.get("language") || "auto",
+    onChange: (val) => Settings.set("language", val),
+  });
+  const langRow = createSettingRow(t("language"), langSelect);
+
+  return [
+    createSettingCard(t("tabSidebarPip"), [sidebarLyricsRow, sidebarBgRow, pipLyricsRow]),
+    createSettingCard(t("language"), [langRow]),
+  ];
+}
+
+// Exported functions
+exports.buildSidebarPipSection = buildSidebarPipSection;
+
+    },
+
+    "./components/SettingsModal.js": function(require, exports, module) {
+// --- ./components/SettingsModal.js ---
+/**
+ * Categorized Apple Music Liquid Settings Panel coordinator.
+ * Delegates section construction to modular files under `src/components/settings/`.
+ */
+const {  el, iconBtn  } = require("./utils/dom.js");
+const {  Icons  } = require("./utils/icons.js");
+const {  t  } = require("./utils/i18n.js");
+const {  buildLyricsSection  } = require("./components/settings/LyricsSection.js");
+const {  buildPlayerSection  } = require("./components/settings/PlayerSection.js");
+const {  buildSidebarPipSection  } = require("./components/settings/SidebarPipSection.js");
+const {  buildBackgroundSection  } = require("./components/settings/BackgroundSection.js");
 
 const SettingsModal = exports.SettingsModal = {
   root: null,
+  _activeTab: "lyrics",
 
   build() {
     const panel = el("div", "fr-settings-panel");
 
-    // ================= Section 1: Background =================
-    const sec1 = el("div", "fr-settings-section");
-    sec1.appendChild(el("div", "fr-settings-title", t("background")));
+    // Header bar
+    const header = el("div", "fr-settings-header");
+    const heading = el("div", "fr-settings-heading", t("settingsTitle"));
+    const closeBtn = iconBtn(Icons.close, () => this.close(), "fr-settings-close");
+    header.append(heading, closeBtn);
+    panel.appendChild(header);
 
-    // Background mode dropdown
-    const bgRow = el("div", "fr-settings-row");
-    const bgSelect = createCustomSelect({
-      options: [
-        { value: "solid", label: t("solidColor") },
-        { value: "gradient", label: t("gradient") },
-        { value: "dynamic-gradient", label: t("dynamicGradient") },
-        { value: "blurred-artwork", label: t("blurredArtwork") },
-        { value: "artwork", label: t("artwork") },
-        { value: "darkened-artwork", label: t("darkenedArtwork") },
-        { value: "custom-color", label: t("customColor") },
-      ],
-      value: Settings.get("backgroundMode"),
-      onChange: (val) => Settings.set("backgroundMode", val),
-    });
-    bgRow.append(el("label", null, t("mode")), bgSelect);
-    sec1.appendChild(bgRow);
+    // Category tabs
+    const tabs = [
+      { id: "lyrics", label: t("tabLyrics"), build: buildLyricsSection },
+      { id: "player", label: t("tabPlayer"), build: buildPlayerSection },
+      { id: "sidebar", label: t("tabSidebarPip"), build: buildSidebarPipSection },
+      { id: "atmosphere", label: t("tabBackground"), build: buildBackgroundSection },
+    ];
 
-    // Custom color picker (Liquid Glass)
-    const colorRow = el("div", "fr-settings-row");
-    const colorPicker = createCustomColorPicker({
-      value: Settings.get("customColor") || "#101014",
-      onChange: (hex) => Settings.set("customColor", hex),
-    });
-    colorRow.append(el("label", null, t("customColor")), colorPicker);
-    sec1.appendChild(colorRow);
+    const nav = el("div", "fr-settings-tabs");
+    const body = el("div", "fr-settings-body");
+    const tabBtns = new Map();
+    const panes = new Map();
 
-    // Mood Atmosphere Dropdown (Auto / Energetic / Melancholic / Late Night / Dreamy / Off)
-    const moodRow = el("div", "fr-settings-row");
-    const moodSelect = createCustomSelect({
-      options: [
-        {
-          value: "auto",
-          label: t("moodAuto"),
-          shortLabel: t("providerAutoShort"),
-          sublabel: t("moodAutoSub"),
-          badge: t("badgeSmart"),
-        },
-        { value: "energetic", label: t("moodEnergetic"), shortLabel: t("moodEnergetic") },
-        { value: "melancholic", label: t("moodMelancholic"), shortLabel: t("moodMelancholic") },
-        { value: "latenight", label: t("moodLateNight"), shortLabel: t("moodLateNight") },
-        { value: "dreamy", label: t("moodDreamy"), shortLabel: t("moodDreamy") },
-        { value: "off", label: t("moodOff"), shortLabel: t("moodOff") },
-      ],
-      value: Settings.get("moodMode") || "auto",
-      onChange: (val) => Settings.set("moodMode", val),
-    });
-    moodRow.append(el("label", null, t("moodAtmosphere")), moodSelect);
-    sec1.appendChild(moodRow);
+    const setActiveTab = (tabId) => {
+      this._activeTab = tabId;
+      for (const [id, btn] of tabBtns) {
+        btn.classList.toggle("fr-tab-active", id === tabId);
+      }
+      for (const [id, pane] of panes) {
+        pane.classList.toggle("fr-pane-active", id === tabId);
+      }
+    };
 
-    // Beat & Bass Pulse Dropdown (Normal / Intense / Off)
-    const beatRow = el("div", "fr-settings-row");
-    const beatSelect = createCustomSelect({
-      options: [
-        { value: "normal", label: t("beatNormal"), shortLabel: t("beatNormal") },
-        { value: "intense", label: t("beatIntense"), shortLabel: t("beatIntense") },
-        { value: "off", label: t("beatOff"), shortLabel: t("beatOff") },
-      ],
-      value: Settings.get("beatReactive") || "normal",
-      onChange: (val) => Settings.set("beatReactive", val),
-    });
-    beatRow.append(el("label", null, t("beatReactive")), beatSelect);
-    sec1.appendChild(beatRow);
+    for (const tab of tabs) {
+      const btn = el("button", "fr-settings-tab", tab.label);
+      btn.setAttribute("type", "button");
+      btn.addEventListener("click", () => setActiveTab(tab.id));
+      nav.appendChild(btn);
+      tabBtns.set(tab.id, btn);
 
-    panel.appendChild(sec1);
-    panel.appendChild(el("div", "fr-settings-divider"));
+      const pane = el("div", "fr-settings-pane");
+      const cards = tab.build();
+      for (const card of cards) {
+        pane.appendChild(card);
+      }
+      body.appendChild(pane);
+      panes.set(tab.id, pane);
+    }
 
-    // ================= Section 2: Appearance =================
-    const sec2 = el("div", "fr-settings-section");
-    sec2.appendChild(el("div", "fr-settings-title", t("appearance")));
+    setActiveTab(panes.has(this._activeTab) ? this._activeTab : "lyrics");
 
-    // Show Lyrics Toggle
-    const lyricsRow = el("div", "fr-settings-row");
-    const lyricsToggle = toggle(Settings.get("showLyrics"), (v) => Settings.set("showLyrics", v));
-    lyricsRow.append(el("label", null, t("showLyrics")), lyricsToggle);
-    sec2.appendChild(lyricsRow);
-
-    // Idle Mode Lyrics Toggle
-    const idleLyricsRow = el("div", "fr-settings-row");
-    const idleLyricsToggle = toggle(Settings.get("idleLyrics"), (v) => Settings.set("idleLyrics", v));
-    idleLyricsRow.append(el("label", null, t("idleLyrics")), idleLyricsToggle);
-    sec2.appendChild(idleLyricsRow);
-
-    // Waterfall Flow Mode Dropdown (Şelale Akışı)
-    const waterfallRow = el("div", "fr-settings-row");
-    const waterfallSelect = createCustomSelect({
-      options: [
-        { value: "normal", label: t("waterfallNormal"), shortLabel: t("waterfallNormal") },
-        { value: "intense", label: t("waterfallIntense"), shortLabel: t("waterfallIntense") },
-        { value: "off", label: t("waterfallOff"), shortLabel: t("waterfallOff") },
-      ],
-      value: Settings.get("waterfallMode") || "normal",
-      onChange: (val) => Settings.set("waterfallMode", val),
-    });
-    waterfallRow.append(el("label", null, t("waterfallFlow")), waterfallSelect);
-    sec2.appendChild(waterfallRow);
-
-    // Letter-by-Letter Flow Toggle (Word-synced Karaoke)
-    const letterByLetterRow = el("div", "fr-settings-row");
-    const letterByLetterToggle = toggle(
-      Settings.get("letterByLetter") !== false,
-      (v) => Settings.set("letterByLetter", v)
-    );
-    letterByLetterRow.append(el("label", null, t("letterByLetter")), letterByLetterToggle);
-    sec2.appendChild(letterByLetterRow);
-
-    // Interlude Dots Toggle (Apple Music • • •)
-    const interludeRow = el("div", "fr-settings-row");
-    const interludeToggle = toggle(Settings.get("interludeDots") !== false, (v) => Settings.set("interludeDots", v));
-    interludeRow.append(el("label", null, t("interludeDots")), interludeToggle);
-    sec2.appendChild(interludeRow);
-
-    // Background Vocals & Duet View Toggle (Apple Music Sing / Duet)
-    const bgDuetRow = el("div", "fr-settings-row");
-    const bgDuetToggle = toggle(Settings.get("bgVocalsDuet") !== false, (v) => Settings.set("bgVocalsDuet", v));
-    bgDuetRow.append(el("label", null, t("bgVocalsDuet")), bgDuetToggle);
-    sec2.appendChild(bgDuetRow);
-
-    // Lyrics Provider Dropdown (Apple Music / LRCLIB / Genius / Spotify)
-    const providerRow = el("div", "fr-settings-row");
-    const providerSelect = createCustomSelect({
-      options: [
-        {
-          value: "auto",
-          label: t("providerAuto"),
-          shortLabel: t("providerAutoShort"),
-          sublabel: t("providerAutoSub"),
-          badge: t("badgeSmart"),
-        },
-        {
-          value: "applemusic",
-          label: t("providerApple"),
-          shortLabel: "Apple Music",
-          badge: t("badgeWordSync"),
-        },
-        {
-          value: "spicy",
-          label: t("providerSpicy"),
-          shortLabel: "Spicy Lyrics",
-          badge: t("badgeWordSync"),
-        },
-        {
-          value: "lrclib",
-          label: t("providerLrclib"),
-          shortLabel: "LRCLIB",
-          badge: t("badgeSynced"),
-        },
-        {
-          value: "genius",
-          label: t("providerGenius"),
-          shortLabel: "Genius",
-          badge: t("badgeUnsynced"),
-        },
-        {
-          value: "spotify",
-          label: t("providerSpotify"),
-          shortLabel: "Spotify",
-          badge: t("badgeOfficial"),
-        },
-      ],
-      value: Settings.get("lyricsProvider") || "auto",
-      onChange: (val) => Settings.set("lyricsProvider", val),
-    });
-    providerRow.append(el("label", null, t("lyricsProvider")), providerSelect);
-    sec2.appendChild(providerRow);
-
-    // Ambient Glow Toggle
-    const glowRow = el("div", "fr-settings-row");
-    const glowToggle = toggle(Settings.get("albumArtGlow"), (v) => Settings.set("albumArtGlow", v));
-    glowRow.append(el("label", null, t("ambientGlow")), glowToggle);
-    sec2.appendChild(glowRow);
-
-    // Shadow Toggle
-    const shadowRow = el("div", "fr-settings-row");
-    const shadowToggle = toggle(Settings.get("albumArtShadow"), (v) => Settings.set("albumArtShadow", v));
-    shadowRow.append(el("label", null, t("glowShadow")), shadowToggle);
-    sec2.appendChild(shadowRow);
-
-    // Artwork Size Dropdown
-    const sizeRow = el("div", "fr-settings-row");
-    const sizeSelect = createCustomSelect({
-      options: [
-        { value: "small", label: t("small") },
-        { value: "medium", label: t("medium") },
-        { value: "large", label: t("large") },
-      ],
-      value: Settings.get("albumArtSize") || "large",
-      onChange: (val) => Settings.set("albumArtSize", val),
-    });
-    sizeRow.append(el("label", null, t("artworkSize")), sizeSelect);
-    sec2.appendChild(sizeRow);
-
-    // Idle Clock Position Dropdown
-    const clockRow = el("div", "fr-settings-row");
-    const clockSelect = createCustomSelect({
-      options: [
-        { value: "top", label: t("top") },
-        { value: "bottom", label: t("bottom") },
-        { value: "none", label: t("none") },
-      ],
-      value: Settings.get("clockPosition") || "top",
-      onChange: (val) => Settings.set("clockPosition", val),
-    });
-    clockRow.append(el("label", null, t("idleClockPos")), clockSelect);
-    sec2.appendChild(clockRow);
-
-    // Unsynced Lyrics Auto-Scroll Speed Dropdown (NEW!)
-    const scrollRow = el("div", "fr-settings-row");
-    const scrollSelect = createCustomSelect({
-      options: [
-        { value: "track", label: t("trackProgress") },
-        { value: "slow", label: t("slow") },
-        { value: "normal", label: t("normal") },
-        { value: "fast", label: t("fast") },
-        { value: "off", label: t("off") },
-      ],
-      value: Settings.get("unsyncedScrollMode") || "track",
-      onChange: (val) => Settings.set("unsyncedScrollMode", val),
-    });
-    scrollRow.append(el("label", null, t("unsyncedScroll")), scrollSelect);
-    sec2.appendChild(scrollRow);
-
-    // Language Dropdown
-    const langRow = el("div", "fr-settings-row");
-    const langSelect = createCustomSelect({
-      options: [
-        { value: "auto", label: t("auto") },
-        { value: "en", label: "English" },
-        { value: "tr", label: "Türkçe" },
-      ],
-      value: Settings.get("language") || "auto",
-      onChange: (val) => {
-        Settings.set("language", val);
-      },
-    });
-    langRow.append(el("label", null, t("language")), langSelect);
-    sec2.appendChild(langRow);
-
-    panel.appendChild(sec2);
-    panel.appendChild(el("div", "fr-settings-divider"));
-
-    // ================= Section 3: Track Info =================
-    const sec3 = el("div", "fr-settings-section");
-    sec3.appendChild(el("div", "fr-settings-title", t("trackInfo")));
-
-    // Metadata Position Dropdown
-    const metaPosRow = el("div", "fr-settings-row");
-    const metaPosSelect = createCustomSelect({
-      options: [
-        { value: "left", label: t("left") },
-        { value: "center", label: t("center") },
-        { value: "right", label: t("right") },
-      ],
-      value: Settings.get("metaPosition") || "left",
-      onChange: (val) => Settings.set("metaPosition", val),
-    });
-    metaPosRow.append(el("label", null, t("position")), metaPosSelect);
-    sec3.appendChild(metaPosRow);
-
-    // Toggle: Show Album Art
-    const showArtRow = el("div", "fr-settings-row");
-    const showArtToggle = toggle(Settings.get("showAlbumArt") !== false, (v) => Settings.set("showAlbumArt", v));
-    showArtRow.append(el("label", null, t("albumArt")), showArtToggle);
-    sec3.appendChild(showArtRow);
-
-    // Toggle: Show Track Title
-    const showTitleRow = el("div", "fr-settings-row");
-    const showTitleToggle = toggle(Settings.get("showTitle") !== false, (v) => Settings.set("showTitle", v));
-    showTitleRow.append(el("label", null, t("trackTitle")), showTitleToggle);
-    sec3.appendChild(showTitleRow);
-
-    // Toggle: Show Artists
-    const showArtistRow = el("div", "fr-settings-row");
-    const showArtistToggle = toggle(Settings.get("showArtist") !== false, (v) => Settings.set("showArtist", v));
-    showArtistRow.append(el("label", null, t("artists")), showArtistToggle);
-    sec3.appendChild(showArtistRow);
-
-    // Toggle: Show Album Name
-    const showAlbumRow = el("div", "fr-settings-row");
-    const showAlbumToggle = toggle(Settings.get("showAlbum") !== false, (v) => Settings.set("showAlbum", v));
-    showAlbumRow.append(el("label", null, t("albumName")), showAlbumToggle);
-    sec3.appendChild(showAlbumRow);
-
-    panel.appendChild(sec3);
-
+    panel.append(nav, body);
     this.root = panel;
     return panel;
   },
@@ -5512,16 +6136,484 @@ const SettingsModal = exports.SettingsModal = {
 
     },
 
+    "./components/SidebarLyrics.js": function(require, exports, module) {
+// --- ./components/SidebarLyrics.js ---
+/**
+ * Spotify Right Sidebar (Now Playing View) Live Lyrics Card.
+ * - Mounts cleanly into Spotify's right sidebar (`.right-sidebar` / `.npv-sections`).
+ * - Features Apple Music Liquid header, expand/collapse height, fullscreen launch shortcut,
+ *   click-to-seek, always-smooth bar transitions, and optional blurred album art backdrop.
+ * - Controlled live by Settings: `sidebarLyrics` and `sidebarLyricsBg`.
+ */
+const {  el  } = require("./utils/dom.js");
+const {  Icons  } = require("./utils/icons.js");
+const {  t  } = require("./utils/i18n.js");
+const {  Settings  } = require("./utils/settings.js");
+const {  resolveImageUrl  } = require("./utils/formatters.js");
+const {  LyricsService  } = require("./services/LyricsService.js");
+const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
+
+const CARD_ID = "fr-sidebar-lyrics-card";
+const RIGHT_SIDEBAR_SEL = ".right-sidebar";
+const NPV_PANEL_SEL = ".npv-sections";
+const NPV_LYRICS_SEL = '[data-testid="lyrics-npv-section"]';
+const NPV_COVER_SEL = ".npv-cover-art-section";
+
+const SIDEBAR_ICONS = {
+  expand:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="m8.4 6.4 3.6-3.4 3.6 3.4"/><path d="m8.4 17.6 3.6 3.4 3.6-3.4"/></svg>',
+  chevron:
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+};
+
+const SidebarLyrics = exports.SidebarLyrics = {
+  _app: null,
+  cardEl: null,
+  bgEl: null,
+  bodyEl: null,
+  scrollEl: null,
+  statusEl: null,
+  _observer: null,
+  _attachTimer: null,
+  _retryInterval: null,
+  _rafId: null,
+  _mounted: false,
+  _expanded: false,
+  _collapsed: false,
+  _requestId: 0,
+  _currentUri: null,
+  _loading: false,
+  _lines: [],
+  _lineEls: [],
+  _syncType: "none",
+  _activeIndex: -1,
+
+  init(app) {
+    this._app = app || null;
+    this.syncEnabled();
+  },
+
+  syncEnabled() {
+    const enabled = Settings.get("sidebarLyrics") !== false;
+    if (!enabled) {
+      this._unmountCard();
+      return;
+    }
+    this._mountCard();
+    this.syncBackground();
+  },
+
+  syncBackground() {
+    if (!this.cardEl) return;
+    const showBg = Settings.get("sidebarLyricsBg") !== false;
+    this.cardEl.classList.toggle("fr-sb-has-bg", showBg);
+  },
+
+  _mountCard() {
+    if (this._mounted && this.cardEl) {
+      this._ensureAttached();
+      return;
+    }
+    this._mounted = true;
+
+    document.getElementById(CARD_ID)?.remove();
+
+    const card = el("section", "fr-sidebar-card");
+    card.id = CARD_ID;
+    if (Settings.get("sidebarLyricsBg") !== false) {
+      card.classList.add("fr-sb-has-bg");
+    }
+
+    const bg = el("div", "fr-sb-bg");
+    const scrim = el("div", "fr-sb-scrim");
+
+    // Header
+    const header = el("div", "fr-sb-header");
+    const titleBtn = el("button", "fr-sb-title-btn");
+    titleBtn.setAttribute("type", "button");
+    const iconSpan = el("span", "fr-sb-icon");
+    iconSpan.innerHTML = Icons.lyrics;
+    const titleSpan = el("span", "fr-sb-title", "Fullscreen Reloaded");
+    titleBtn.append(iconSpan, titleSpan);
+    titleBtn.addEventListener("click", () => this._toggleCollapsed());
+
+    const controls = el("div", "fr-sb-controls");
+
+    const expandBtn = el("button", "fr-sb-btn");
+    expandBtn.setAttribute("type", "button");
+    expandBtn.title = t("sidebarExpand");
+    expandBtn.innerHTML = SIDEBAR_ICONS.expand;
+    expandBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._expanded = !this._expanded;
+      card.classList.toggle("fr-sb-expanded", this._expanded);
+      expandBtn.classList.toggle("fr-active", this._expanded);
+      if (this._activeIndex >= 0) this._scrollToActive(true);
+    });
+
+    const fsBtn = el("button", "fr-sb-btn");
+    fsBtn.setAttribute("type", "button");
+    fsBtn.title = t("sidebarOpenFullscreen");
+    fsBtn.innerHTML = Icons.fullscreen;
+    fsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._app?.launch?.();
+    });
+
+    const collapseBtn = el("button", "fr-sb-btn fr-sb-chevron-btn");
+    collapseBtn.setAttribute("type", "button");
+    collapseBtn.title = t("sidebarCollapse");
+    collapseBtn.innerHTML = SIDEBAR_ICONS.chevron;
+    collapseBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._toggleCollapsed();
+    });
+
+    controls.append(expandBtn, fsBtn, collapseBtn);
+    header.append(titleBtn, controls);
+
+    // Body
+    const body = el("div", "fr-sb-body");
+    const scrollEl = el("div", "fr-sb-scroll");
+    const statusEl = el("div", "fr-sb-status", t("sidebarLoading"));
+    body.append(scrollEl, statusEl);
+
+    card.append(bg, scrim, header, body);
+
+    this.cardEl = card;
+    this.bgEl = bg;
+    this.bodyEl = body;
+    this.scrollEl = scrollEl;
+    this.statusEl = statusEl;
+
+    this._ensureAttached();
+    this._startObserving();
+    this._startLoop();
+
+    const currentTrack = SpotiKitBridge.getCurrentTrack();
+    if (currentTrack) {
+      this.onTrackChange(currentTrack);
+    }
+  },
+
+  _toggleCollapsed() {
+    if (!this.cardEl) return;
+    this._collapsed = !this._collapsed;
+    this.cardEl.classList.toggle("fr-sb-collapsed", this._collapsed);
+  },
+
+  _findSlot() {
+    if (typeof document === "undefined") return null;
+    const panel =
+      document.querySelector(`${RIGHT_SIDEBAR_SEL} ${NPV_PANEL_SEL}`) ||
+      document.querySelector(NPV_PANEL_SEL);
+    if (!panel) return null;
+
+    const findTopRow = (node) => {
+      let cur = node;
+      while (cur && cur.parentElement && cur.parentElement !== panel) {
+        cur = cur.parentElement;
+      }
+      return cur && cur.parentElement === panel ? cur : null;
+    };
+
+    const nativeLyrics = panel.querySelector(NPV_LYRICS_SEL);
+    const lyricsRow = nativeLyrics ? findTopRow(nativeLyrics) : null;
+    if (lyricsRow) return { parent: panel, before: lyricsRow };
+
+    const coverSection = panel.querySelector(NPV_COVER_SEL);
+    const coverRow = coverSection ? findTopRow(coverSection) : null;
+    if (coverRow) {
+      const next = coverRow.nextElementSibling;
+      return { parent: panel, before: next === this.cardEl ? this.cardEl.nextElementSibling : next };
+    }
+
+    return { parent: panel, before: panel.firstElementChild === this.cardEl ? this.cardEl : panel.firstElementChild };
+  },
+
+  _ensureAttached() {
+    if (!this.cardEl || !this._mounted) return false;
+    const slot = this._findSlot();
+    if (!slot) return false;
+    if (this.cardEl.parentElement === slot.parent) return true;
+    try {
+      slot.parent.insertBefore(this.cardEl, slot.before || null);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+
+  _startObserving() {
+    if (typeof MutationObserver !== "undefined" && !this._observer && document.body) {
+      this._observer = new MutationObserver(() => {
+        if (this._attachTimer) return;
+        this._attachTimer = setTimeout(() => {
+          this._attachTimer = null;
+          this._ensureAttached();
+        }, 300);
+      });
+      this._observer.observe(document.body, { childList: true, subtree: true });
+    }
+    if (!this._retryInterval) {
+      this._retryInterval = setInterval(() => {
+        if (!this._mounted || SpotiKitBridge.isStopped()) return;
+        this._ensureAttached();
+      }, 1500);
+    }
+  },
+
+  async onTrackChange(track) {
+    if (!this._mounted || !this.cardEl || !track) return;
+    const meta = track.metadata || {};
+    const imgUrl = resolveImageUrl(
+      meta.image_xlarge_url ||
+        meta.image_large_url ||
+        meta.image_url ||
+        track.album?.images?.[0]?.url ||
+        track.images?.[0]?.url
+    );
+    if (this.bgEl && imgUrl) {
+      this.bgEl.style.backgroundImage = `url("${imgUrl}")`;
+    }
+
+    if (this._currentUri === track.uri && (this._lines.length > 0 || this._loading)) return;
+    this._currentUri = track.uri;
+    this._loading = true;
+    const req = ++this._requestId;
+
+    this._lines = [];
+    this._lineEls = [];
+    this._activeIndex = -1;
+    this._syncType = "none";
+    if (this.scrollEl) this.scrollEl.innerHTML = "";
+    if (this.statusEl) {
+      this.statusEl.textContent = t("sidebarLoading");
+      this.statusEl.classList.add("fr-show");
+    }
+
+    const data = await LyricsService.resolve(track);
+    if (req !== this._requestId || !this._mounted || !this.scrollEl || SpotiKitBridge.isStopped()) return;
+    this._loading = false;
+
+    if (!data || !Array.isArray(data.lines) || !data.lines.length) {
+      if (this.statusEl) {
+        this.statusEl.textContent = t("sidebarNoLyrics");
+        this.statusEl.classList.add("fr-show");
+      }
+      return;
+    }
+
+    if (this.statusEl) this.statusEl.classList.remove("fr-show");
+    this._syncType = data.type || "synced";
+    this._lines = [...data.lines];
+    if (this._syncType === "synced" || this._syncType === "word-synced") {
+      this._lines.sort((a, b) => (Number(a.startMs) || 0) - (Number(b.startMs) || 0));
+    }
+
+    const frag = document.createDocumentFragment();
+    const isSynced = this._syncType === "synced" || this._syncType === "word-synced";
+
+    for (let i = 0; i < this._lines.length; i++) {
+      const line = this._lines[i];
+      const text =
+        line.text ||
+        (Array.isArray(line.words) ? line.words.map((w) => (typeof w === "string" ? w : w?.text || "")).join("").trim() : "");
+      const lineEl = el("div", "fr-sb-line fr-sb-future", text || "♪");
+      if (isSynced) {
+        lineEl.classList.add("fr-sb-clickable");
+        lineEl.addEventListener("click", () => {
+          SpotiKitBridge.seek(Number(line.startMs) || 0);
+        });
+      }
+      frag.appendChild(lineEl);
+      this._lineEls.push(lineEl);
+    }
+
+    this.scrollEl.appendChild(frag);
+    this._tick(true);
+  },
+
+  _scrollToActive(instant = false) {
+    if (!this.scrollEl || this._activeIndex < 0) return;
+    const activeEl = this._lineEls[this._activeIndex];
+    if (!activeEl) return;
+    const containerH = this.scrollEl.clientHeight || 280;
+    const targetTop = Math.max(0, activeEl.offsetTop - containerH * 0.36 + (activeEl.offsetHeight || 28) / 2);
+    if (typeof this.scrollEl.scrollTo === "function") {
+      this.scrollEl.scrollTo({
+        top: targetTop,
+        behavior: instant ? "auto" : "smooth",
+      });
+    } else {
+      this.scrollEl.scrollTop = targetTop;
+    }
+  },
+
+  _tick(instant = false) {
+    if (!this._mounted || this._collapsed || !this._lines.length) return;
+    if (this._syncType !== "synced" && this._syncType !== "word-synced") return;
+
+    const progressMs = SpotiKitBridge.getProgress();
+    let idx = -1;
+    if (this._lines[0] && progressMs >= (Number(this._lines[0].startMs) || 0)) {
+      idx = this._activeIndex < 0 ? 0 : this._activeIndex;
+      while (idx + 1 < this._lines.length && (Number(this._lines[idx + 1].startMs) || 0) <= progressMs) idx++;
+      while (idx > 0 && (Number(this._lines[idx].startMs) || 0) > progressMs) idx--;
+    }
+
+    if (idx !== this._activeIndex || instant) {
+      this._activeIndex = idx;
+      for (let i = 0; i < this._lineEls.length; i++) {
+        const node = this._lineEls[i];
+        node.classList.toggle("fr-sb-active", i === idx);
+        node.classList.toggle("fr-sb-past", idx >= 0 && i < idx);
+        node.classList.toggle("fr-sb-future", idx < 0 || i > idx);
+      }
+      this._scrollToActive(instant);
+    }
+  },
+
+  _startLoop() {
+    if (this._rafId) return;
+    const step = () => {
+      if (!this._mounted || SpotiKitBridge.isStopped()) {
+        this._rafId = null;
+        return;
+      }
+      if (!this._app?.open && !this._collapsed) {
+        this._tick(false);
+      }
+      this._rafId = requestAnimationFrame(step);
+    };
+    this._rafId = requestAnimationFrame(step);
+  },
+
+  _unmountCard() {
+    this._mounted = false;
+    this._requestId++;
+    if (this._rafId) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+    if (this._attachTimer) {
+      clearTimeout(this._attachTimer);
+      this._attachTimer = null;
+    }
+    if (this._retryInterval) {
+      clearInterval(this._retryInterval);
+      this._retryInterval = null;
+    }
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
+    this.cardEl?.remove();
+    this.cardEl = null;
+    this.bgEl = null;
+    this.bodyEl = null;
+    this.scrollEl = null;
+    this.statusEl = null;
+    this._lines = [];
+    this._lineEls = [];
+    this._activeIndex = -1;
+    this._currentUri = null;
+    this._loading = false;
+    this._syncType = "none";
+  },
+
+  destroy() {
+    this._unmountCard();
+    this._app = null;
+  },
+};
+
+    },
+
     "./components/TopBar.js": function(require, exports, module) {
 // --- ./components/TopBar.js ---
 /**
- * Liquid Glass Top Bar component (Lyrics, Picture-in-Picture, Settings, Close).
+ * Apple Music Liquid Top Bar component (Lyrics, Creator, Picture-in-Picture with Live Lyrics, Settings, Close).
  */
 const {  el, iconBtn  } = require("./utils/dom.js");
 const {  Icons  } = require("./utils/icons.js");
+const {  t  } = require("./utils/i18n.js");
+const {  Settings  } = require("./utils/settings.js");
 const {  SettingsModal  } = require("./components/SettingsModal.js");
 const {  FullLyricsCreator  } = require("./components/FullLyricsCreator.js");
 const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
+
+const PIP_STYLES = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #0b0b0f; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif;
+    user-select: none;
+  }
+  .fr-pip-shell {
+    position: relative; width: 100%; height: 100%;
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 18px; overflow: hidden;
+  }
+  .fr-pip-bg {
+    position: absolute; inset: -18%; background-size: cover; background-position: center;
+    filter: blur(42px) saturate(1.7) brightness(0.55);
+    transform: scale(1.1); transition: background-image 600ms ease; z-index: 0;
+  }
+  .fr-pip-scrim {
+    position: absolute; inset: 0; z-index: 1;
+    background: linear-gradient(180deg, rgba(10,10,16,0.28) 0%, rgba(10,10,16,0.52) 55%, rgba(8,8,14,0.82) 100%);
+  }
+  .fr-pip-header {
+    position: relative; z-index: 2; display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px; border-radius: 18px;
+    background: rgba(255,255,255,0.1);
+    backdrop-filter: blur(28px) saturate(1.8);
+    border: 1px solid rgba(255,255,255,0.2);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.26);
+  }
+  .fr-pip-art {
+    width: 50px; height: 50px; border-radius: 12px; object-fit: cover; flex-shrink: 0;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    -webkit-user-drag: none; pointer-events: none;
+  }
+  .fr-pip-meta { min-width: 0; flex: 1; }
+  .fr-pip-title {
+    font-size: 14px; font-weight: 700; color: #fff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .fr-pip-artist {
+    font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.72); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .fr-pip-lyrics {
+    position: relative; z-index: 2; flex: 1;
+    display: flex; flex-direction: column; justify-content: center; gap: 12px;
+    padding: 14px 6px 6px;
+  }
+  .fr-pip-lyric-active {
+    font-size: clamp(19px, 5.4vw, 26px); font-weight: 800; line-height: 1.24;
+    letter-spacing: -0.02em; color: #ffffff;
+    text-shadow: 0 2px 18px rgba(255,255,255,0.34);
+    transition: opacity 280ms cubic-bezier(0.32, 0.72, 0, 1), transform 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .fr-pip-lyric-next {
+    font-size: clamp(14px, 3.8vw, 17px); font-weight: 600; line-height: 1.3;
+    color: rgba(255,255,255,0.46);
+    transition: opacity 280ms ease;
+  }
+  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-lyrics { display: none; }
+  .fr-pip-shell.fr-pip-no-lyrics { padding: 0; }
+  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-header {
+    position: absolute; inset: 0; padding: 0; border: none; border-radius: 0; background: none;
+    box-shadow: none;
+  }
+  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-art {
+    width: 100%; height: 100%; border-radius: 0;
+  }
+  .fr-pip-shell.fr-pip-no-lyrics .fr-pip-meta { display: none; }
+`;
 
 const TopBar = exports.TopBar = {
   root: null,
@@ -5529,6 +6621,14 @@ const TopBar = exports.TopBar = {
   creatorBtn: null,
   pipBtn: null,
   pipImg: null,
+  _pipShell: null,
+  _pipBg: null,
+  _pipTitle: null,
+  _pipArtist: null,
+  _pipActiveLine: null,
+  _pipNextLine: null,
+  _lastPipActiveText: "",
+  _lastPipNextText: "",
 
   build(app) {
     const topbar = el("div", "fr-topbar");
@@ -5558,10 +6658,60 @@ const TopBar = exports.TopBar = {
     return topbar;
   },
 
+  _clearPiPRefs() {
+    this.pipImg = null;
+    this._pipShell = null;
+    this._pipBg = null;
+    this._pipTitle = null;
+    this._pipArtist = null;
+    this._pipActiveLine = null;
+    this._pipNextLine = null;
+    this._lastPipActiveText = "";
+    this._lastPipNextText = "";
+  },
+
   updatePiPImage(imageUrl) {
     if (this.pipImg && imageUrl) {
       this.pipImg.src = imageUrl;
     }
+    if (this._pipBg && imageUrl) {
+      this._pipBg.style.backgroundImage = `url("${imageUrl}")`;
+    }
+  },
+
+  updatePiPTrack(track, imageUrl) {
+    this.updatePiPImage(imageUrl);
+    if (!track) return;
+    const meta = track.metadata || {};
+    const title = meta.title || track.name || t("unknownTitle");
+    const artists = SpotiKitBridge.getTrackArtists(track)
+      .map((a) => a.name)
+      .join(", ") || meta.artist_name || t("unknownArtist");
+    if (this._pipTitle) this._pipTitle.textContent = title;
+    if (this._pipArtist) this._pipArtist.textContent = artists;
+  },
+
+  updatePiPLyrics(snapshot) {
+    if (!this._pipActiveLine || !this._pipNextLine) return;
+    const activeText = snapshot?.isMusic
+      ? "♪  •  •  •"
+      : snapshot?.activeText || (snapshot ? "" : t("sidebarNoLyrics"));
+    const nextText = snapshot?.nextText || "";
+
+    if (activeText !== this._lastPipActiveText) {
+      this._lastPipActiveText = activeText;
+      this._pipActiveLine.textContent = activeText;
+    }
+    if (nextText !== this._lastPipNextText) {
+      this._lastPipNextText = nextText;
+      this._pipNextLine.textContent = nextText;
+    }
+  },
+
+  applyPiPLyricsVisibility() {
+    if (!this._pipShell) return;
+    const enabled = Settings.get("pipLyrics") !== false;
+    this._pipShell.classList.toggle("fr-pip-no-lyrics", !enabled);
   },
 
   async togglePiP(app) {
@@ -5569,8 +6719,8 @@ const TopBar = exports.TopBar = {
       // If Document PiP is open, close it
       if (window.documentPictureInPicture && window.documentPictureInPicture.window) {
         window.documentPictureInPicture.window.close();
-        this.pipBtn.classList.remove("fr-active");
-        this.pipImg = null;
+        this.pipBtn?.classList.remove("fr-active");
+        this._clearPiPRefs();
         return;
       }
 
@@ -5584,8 +6734,8 @@ const TopBar = exports.TopBar = {
       // Modern Document PiP API (Available in Chromium-based Spotify Desktop)
       if (window.documentPictureInPicture) {
         const pipWindow = await window.documentPictureInPicture.requestWindow({
-          width: 400,
-          height: 400,
+          width: 420,
+          height: 460,
         });
         if (!this.root || SpotiKitBridge.isStopped()) {
           try {
@@ -5593,22 +6743,70 @@ const TopBar = exports.TopBar = {
           } catch (_) {}
           return;
         }
-        pipWindow.document.body.style.margin = "0";
-        pipWindow.document.body.style.backgroundColor = "#121212";
-        pipWindow.document.body.style.overflow = "hidden";
 
-        const img = document.createElement("img");
-        img.src = app.currentImage || "";
-        img.style.width = "100%";
-        img.style.height = "100%";
-        img.style.objectFit = "cover";
+        const pipDoc = pipWindow.document;
+        if (pipDoc.head && typeof pipDoc.createElement === "function") {
+          const styleEl = pipDoc.createElement("style");
+          styleEl.textContent = PIP_STYLES;
+          pipDoc.head.appendChild(styleEl);
+        }
+        pipDoc.body.style.margin = "0";
+        pipDoc.body.style.backgroundColor = "#0b0b0f";
+        pipDoc.body.style.overflow = "hidden";
+
+        const createEl = (tag, cls, text) => {
+          const node =
+            typeof pipDoc.createElement === "function"
+              ? pipDoc.createElement(tag)
+              : document.createElement(tag);
+          if (cls) node.className = cls;
+          if (text !== undefined) node.textContent = text;
+          return node;
+        };
+
+        const shell = createEl("div", "fr-pip-shell");
+        if (Settings.get("pipLyrics") === false) {
+          shell.classList.add("fr-pip-no-lyrics");
+        }
+
+        const bg = createEl("div", "fr-pip-bg");
+        if (app?.currentImage) bg.style.backgroundImage = `url("${app.currentImage}")`;
+        const scrim = createEl("div", "fr-pip-scrim");
+
+        const header = createEl("div", "fr-pip-header");
+        const img = createEl("img", "fr-pip-art");
+        img.src = app?.currentImage || "";
+        img.draggable = false;
+
+        const metaBox = createEl("div", "fr-pip-meta");
+        const titleEl = createEl("div", "fr-pip-title", "");
+        const artistEl = createEl("div", "fr-pip-artist", "");
+        metaBox.append(titleEl, artistEl);
+        header.append(img, metaBox);
+
+        const lyricsBox = createEl("div", "fr-pip-lyrics");
+        const activeLineEl = createEl("div", "fr-pip-lyric-active", "");
+        const nextLineEl = createEl("div", "fr-pip-lyric-next", "");
+        lyricsBox.append(activeLineEl, nextLineEl);
+
+        shell.append(bg, scrim, header, lyricsBox);
+        pipDoc.body.appendChild(shell);
 
         this.pipImg = img;
-        pipWindow.document.body.appendChild(img);
+        this._pipShell = shell;
+        this._pipBg = bg;
+        this._pipTitle = titleEl;
+        this._pipArtist = artistEl;
+        this._pipActiveLine = activeLineEl;
+        this._pipNextLine = nextLineEl;
+        this._lastPipActiveText = "";
+        this._lastPipNextText = "";
+
+        this.updatePiPTrack(app?.currentTrack, app?.currentImage);
 
         pipWindow.addEventListener("pagehide", () => {
           this.pipBtn?.classList.remove("fr-active");
-          this.pipImg = null;
+          this._clearPiPRefs();
         });
         this.pipBtn?.classList.add("fr-active");
       }
@@ -5620,7 +6818,7 @@ const TopBar = exports.TopBar = {
         const ctx = canvas.getContext("2d");
         const img = new Image();
         img.crossOrigin = "anonymous";
-        img.src = app.currentImage || "";
+        img.src = app?.currentImage || "";
         img.onload = async () => {
           if (!this.root || SpotiKitBridge.isStopped()) return;
           ctx.fillStyle = "#121212";
@@ -5665,7 +6863,7 @@ const TopBar = exports.TopBar = {
       }
     } catch (_) {}
 
-    this.pipImg = null;
+    this._clearPiPRefs();
     this.root?.remove();
     this.root = null;
     this.lyricsBtn = null;
@@ -5700,6 +6898,7 @@ const UpNextCard = exports.UpNextCard = {
     this.root = el("div", "fr-up-next");
     this.img = document.createElement("img");
     this.img.className = "fr-up-next-img";
+    this.img.draggable = false;
 
     const info = el("div", "fr-up-next-info");
     info.appendChild(el("div", "fr-up-next-label", t("upNext")));
@@ -5774,7 +6973,7 @@ const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const {  App  } = require("./App.js");
 
 // CSS placeholder replaced at build time with bundled styles from src/styles/*.css
-const STYLES = "\n/* --- variables.css --- */\n:root {\n  --fr-bg: #060607;\n  --fr-fg: #ffffff;\n  --fr-fg-dim: rgba(255, 255, 255, 0.78);\n  --fr-fg-faint: rgba(255, 255, 255, 0.52);\n  --fr-accent: #ffffff;\n  --fr-accent-2: #101014;\n  --fr-radius: 18px;\n  --fr-font: \"Spotify Circular\", \"Circular Std\", -apple-system, \"Segoe UI\", Helvetica, Arial, sans-serif;\n  --fr-transition: 900ms;\n}\n\n#fullscreen-reloaded-root {\n  position: fixed;\n  inset: 0;\n  z-index: 999999;\n  font-family: var(--fr-font);\n  color: var(--fr-fg);\n  visibility: hidden;\n  opacity: 0;\n  transition: opacity 600ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 600ms;\n  overflow: hidden;\n  user-select: none;\n}\n\n#fullscreen-reloaded-root.fr-open {\n  visibility: visible;\n  opacity: 1;\n}\n\n#fullscreen-reloaded-root * {\n  box-sizing: border-box;\n}\n\n/* --- background.css --- */\n/* ---------------- Background ---------------- */\n.fr-bg-root {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  z-index: 0;\n}\n\n.fr-bg-layer {\n  position: absolute;\n  inset: -5%;\n  width: 110%;\n  height: 110%;\n  background-position: center;\n  background-size: cover;\n  opacity: 0;\n  transition: opacity var(--fr-transition) ease;\n  will-change: opacity;\n}\n\n.fr-bg-layer.fr-bg-active {\n  opacity: 1;\n}\n\n.fr-bg-tint {\n  position: absolute;\n  inset: 0;\n  background: radial-gradient(ellipse at 30% 20%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 75%);\n  pointer-events: none;\n}\n\n.fr-bg-scrim {\n  position: absolute;\n  inset: 0;\n  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.05) 30%, rgba(0, 0, 0, 0.55) 100%);\n  pointer-events: none;\n}\n\n/* --- stage.css --- */\n/* ---------------- Layout & Album Art ---------------- */\n.fr-stage {\n  position: relative;\n  z-index: 2;\n  height: 100%;\n  display: grid;\n  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);\n  grid-template-rows: 1fr;\n  grid-template-areas: \"art lyrics\";\n  padding: clamp(24px, 3.2vw, 64px);\n  padding-bottom: clamp(100px, 14vh, 160px);\n  gap: clamp(16px, 2vw, 40px);\n  opacity: 0;\n  transform: translateY(24px) scale(0.98);\n  transition: grid-template-columns 0.8s cubic-bezier(0.2, 0.8, 0.2, 1), gap 0.8s, opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms, transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-stage {\n  opacity: 1;\n  transform: translateY(0) scale(1);\n}\n\n.fr-stage.fr-centered {\n  grid-template-columns: 1fr;\n  grid-template-areas: \"art\";\n}\n\n.fr-stage.fr-centered .fr-lyrics-panel {\n  display: none;\n}\n\n/* ---------------- Album art ---------------- */\n.fr-art-panel {\n  grid-area: art;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 0;\n  min-width: 0;\n}\n\n.fr-art-wrap {\n  --fr-art-beat: 0;\n  --fr-glow-beat: 0.55;\n  --fr-glow-spread: 0%;\n  position: relative;\n  width: min(58vh, 44vw, 640px);\n  aspect-ratio: 1 / 1;\n  transform: scale(calc(1 + var(--fr-art-beat, 0)));\n  transition: width 300ms ease, transform 75ms linear;\n  will-change: transform;\n}\n\n.fr-stage.fr-size-medium .fr-art-wrap { width: min(48vh, 35vw, 520px); }\n.fr-stage.fr-size-small .fr-art-wrap { width: min(38vh, 28vw, 420px); }\n.fr-stage.fr-centered .fr-art-wrap { width: min(62vh, 40vw, 720px); }\n\n.fr-art-img {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n  border-radius: var(--fr-radius);\n  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.65);\n  opacity: 0;\n  transform: scale(0.985);\n  transition: opacity 520ms ease, transform 520ms cubic-bezier(.2, .8, .2, 1), box-shadow 300ms ease;\n}\n\n.fr-art-img.fr-art-active {\n  opacity: 1;\n  transform: scale(1);\n}\n\n.fr-art-wrap.fr-no-shadow .fr-art-img {\n  box-shadow: none;\n}\n\n.fr-art-wrap.fr-glow::after {\n  content: \"\";\n  position: absolute;\n  inset: calc(-6% - var(--fr-glow-spread, 0%));\n  border-radius: calc(var(--fr-radius) + 14px);\n  background: var(--fr-art-glow, transparent);\n  filter: blur(50px);\n  opacity: var(--fr-glow-beat, 0.55);\n  z-index: -1;\n  transition: background 700ms ease, opacity 85ms linear, inset 85ms linear;\n  will-change: opacity, inset;\n}\n\n.fr-art-wrap:hover .fr-art-img {\n  transform: scale(1.012);\n}\n\n.fr-meta {\n  margin-top: clamp(18px, 2vw, 32px);\n  text-align: left;\n  max-width: min(58vh, 44vw, 640px);\n  transition: opacity 300ms ease, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-meta.fr-meta-animating {\n  opacity: 0;\n  transform: translateY(8px);\n}\n\n.fr-stage.fr-centered .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n}\n\n.fr-title {\n  font-size: clamp(22px, 2.4vw, 38px);\n  font-weight: 700;\n  letter-spacing: -0.01em;\n  line-height: 1.15;\n  margin: 0 0 6px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-artist {\n  font-size: clamp(14px, 1.2vw, 18px);\n  color: var(--fr-fg-dim);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-album {\n  font-size: clamp(12px, 1vw, 15px);\n  color: var(--fr-fg-faint);\n  margin: 0;\n}\n\n/* ---------------- Progress Ring ---------------- */\n.fr-progress-ring {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  overflow: visible;\n  pointer-events: none;\n  z-index: 3;\n  transform: rotate(-90deg);\n  transform-origin: center;\n  opacity: 0;\n  transition: opacity 400ms ease;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-progress-ring {\n  opacity: 0.75;\n}\n\n.fr-progress-ring-rect {\n  fill: transparent;\n  stroke: var(--fr-word-accent, #fff);\n  stroke-width: 4;\n  stroke-linecap: round;\n  stroke-dasharray: 100;\n  stroke-dashoffset: 100;\n  transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;\n}\n\n/* --- lyrics.css --- */\n/* ---------------- Lyrics Panel (True Per-Line & Per-Word Waterfall Engine) ---------------- */\n.fr-lyrics-panel {\n  grid-area: lyrics;\n  position: relative;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n}\n\n/* ---------------- \"Provided by\" 3-Second Startup Badge ---------------- */\n.fr-provider-badge {\n  position: absolute;\n  top: 10px;\n  left: 14px;\n  z-index: 8;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 14px;\n  border-radius: 999px;\n  background: rgba(18, 18, 24, 0.74);\n  backdrop-filter: blur(28px) saturate(1.8);\n  -webkit-backdrop-filter: blur(28px) saturate(1.8);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.16);\n  pointer-events: none;\n  opacity: 0;\n  transform: translate3d(0, -10px, 0) scale(0.96);\n  transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),\n              transform 400ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-provider-badge.fr-show {\n  opacity: 1;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-provider-dot {\n  width: 6px;\n  height: 6px;\n  border-radius: 50%;\n  background: #30d158;\n  box-shadow: 0 0 8px rgba(48, 209, 88, 0.85);\n  flex-shrink: 0;\n}\n\n.fr-provider-prefix {\n  font-size: 11.5px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-provider-name {\n  font-size: 12px;\n  font-weight: 700;\n  color: #ffffff;\n}\n\n.fr-provider-tag {\n  font-size: 9.5px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.13);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n/* ---------------- Scroll & Waterfall Viewport ---------------- */\n.fr-lyrics-scroll {\n  --fr-word-step: 120ms;\n  --fr-word-dur: 900ms;\n  --fr-line-dur: 820ms;\n  --fr-word-drop-future: -9px;\n  --fr-word-drop-past: 7px;\n  flex: 1;\n  overflow: hidden;\n  position: relative;\n  mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  -webkit-mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  padding: 6vh 14px 40vh 14px;\n  scrollbar-width: none;\n  opacity: 0;\n  transition: opacity 420ms ease;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"intense\"] {\n  --fr-word-step: 165ms;\n  --fr-word-dur: 1150ms;\n  --fr-line-dur: 980ms;\n  --fr-word-drop-future: -13px;\n  --fr-word-drop-past: 10px;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] {\n  --fr-word-step: 0ms;\n  --fr-word-dur: 450ms;\n  --fr-line-dur: 500ms;\n  --fr-word-drop-future: 0px;\n  --fr-word-drop-past: 0px;\n}\n\n.fr-lyrics-scroll.fr-unsynced {\n  overflow-y: auto;\n  padding: 14vh 14px 28vh 14px;\n}\n\n.fr-lyrics-scroll.fr-ready {\n  opacity: 1;\n}\n\n.fr-lyrics-scroll::-webkit-scrollbar {\n  display: none;\n}\n\n/* ---------------- Per-Line Staggered Spring Waterfall Positioning ---------------- */\n.fr-lyric-line {\n  --fr-scale: 0.935;\n  font-size: clamp(20px, 2.35vw, 31px);\n  font-weight: 600;\n  letter-spacing: -0.01em;\n  line-height: 1.48;\n  color: rgba(255, 255, 255, 0.32);\n  margin: 6px 0;\n  padding: 10px 14px;\n  border-radius: 16px;\n  transform-origin: left center;\n  transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));\n  filter: blur(0px);\n  transition:\n    transform var(--fr-line-dur, 820ms) cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    color 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    opacity 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    filter 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    background-color 250ms ease;\n  cursor: default;\n  -webkit-font-smoothing: antialiased;\n  -moz-osx-font-smoothing: grayscale;\n  will-change: transform, filter, opacity;\n}\n\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-line,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word .fr-char,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-sentence {\n  transition: none !important;\n}\n\n.fr-lyrics-scroll.fr-user-scrolling .fr-lyric-line {\n  transition:\n    transform 90ms linear 0ms,\n    color 300ms ease 0ms,\n    filter 300ms ease 0ms !important;\n}\n\n/* Depth-of-field distance classes */\n.fr-lyric-line.fr-near-1 {\n  --fr-scale: 0.965;\n  color: rgba(255, 255, 255, 0.44);\n  filter: blur(0.6px);\n}\n\n.fr-lyric-line.fr-near-2 {\n  --fr-scale: 0.935;\n  color: rgba(255, 255, 255, 0.28);\n  filter: blur(1.5px);\n}\n\n.fr-lyric-line.fr-far {\n  --fr-scale: 0.905;\n  color: rgba(255, 255, 255, 0.17);\n  filter: blur(2.4px);\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] .fr-lyric-line {\n  filter: none !important;\n}\n\n.fr-lyric-line.fr-active {\n  --fr-scale: 1.035;\n  color: #ffffff;\n  filter: blur(0px);\n}\n\n/* ---------------- Full-Sentence Sweep & Waterfall Flow (Line-Synced 'synced' Mode — NOT Word-by-Word) ---------------- */\n.fr-lyric-sentence {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.78;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 680ms ease;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {\n  color: transparent;\n  background-image: linear-gradient(\n    100deg,\n    #ffffff 0%,\n    #ffffff calc(var(--bar-pct, 0%) - 18%),\n    rgba(255, 255, 255, 0.64) calc(var(--bar-pct, 0%) - 9%),\n    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, 0%)),\n    rgba(255, 255, 255, 0.32) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.32));\n  transition:\n    transform 80ms linear,\n    filter 280ms ease;\n  will-change: transform, background-image;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.72;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 720ms ease,\n    filter 450ms ease;\n}\n\n/* ---------------- Per-Word Waterfall & Karaoke Sweep (ONLY on Word-Synced 'word-by-word' Mode) ---------------- */\n.fr-lyric-word {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.74;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 680ms ease;\n}\n\n/* Unsung word inside active line: poised above (-8px) in soft muted white, waiting for its timestamp */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);\n  background-image: none;\n  opacity: 1;\n  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0) scale(var(--w-scale, 0.985));\n  transform-origin: center baseline;\n  filter: none;\n  transition:\n    transform 75ms linear,\n    filter 180ms ease,\n    color 180ms ease;\n  will-change: transform, background-image, filter;\n}\n\n/* Word currently being sung: glides smoothly from top to 0px while sweeping white light left-to-right */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {\n  color: transparent;\n  background-image: linear-gradient(\n    105deg,\n    #ffffff 0%,\n    #ffffff calc(var(--w-pct, -18%) - 14%),\n    rgba(255, 255, 255, 0.9) calc(var(--w-pct, -18%)),\n    rgba(255, 255, 255, 0.34) calc(var(--w-pct, -18%) + 14%),\n    rgba(255, 255, 255, 0.34) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.38));\n}\n\n/* Word finished being sung: rests cleanly at 0px in full bright white */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  transform: translate3d(0, 0px, 0) scale(1);\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.28));\n}\n\n/* Past line: words cascade gently downward (+7px) with a left-to-right stagger */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.72;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1) calc(var(--w-idx, 0) * 55ms),\n    opacity 720ms ease calc(var(--w-idx, 0) * 55ms),\n    filter 450ms ease;\n}\n\n/* ---------------- Letter-by-Letter Liquid Prism Wave (Word-Synced Karaoke Enhancement) ---------------- */\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-word.fr-word-letters {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  -webkit-background-clip: border-box;\n  background-clip: border-box;\n  filter: none;\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters,\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters.fr-w-active,\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters.fr-w-done {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  -webkit-background-clip: border-box;\n  background-clip: border-box;\n  filter: none;\n  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0);\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters.fr-w-done {\n  transform: translate3d(0, 0px, 0);\n}\n\n.fr-word-letters .fr-char {\n  display: inline-block;\n  padding: 0 0.04em;\n  margin: 0 -0.04em;\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform-origin: center 75%;\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);\n  background-image: none;\n  transform: translate3d(0, var(--c-lift, 0px), 0) scale(var(--c-scale, 1));\n  filter: none;\n  transition:\n    transform 65ms linear,\n    filter 140ms ease;\n  will-change: transform, background-image, filter;\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char.fr-c-active {\n  color: transparent;\n  background-image: linear-gradient(\n    108deg,\n    #ffffff 0%,\n    #ffffff calc(var(--c-pct, -18%) - 18%),\n    color-mix(in srgb, #ffffff 68%, var(--fr-word-accent, #ffffff)) calc(var(--c-pct, -18%)),\n    rgba(255, 255, 255, 0.34) calc(var(--c-pct, -18%) + 18%),\n    rgba(255, 255, 255, 0.34) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  filter:\n    drop-shadow(0 0 calc(11px * var(--c-glow, 0)) color-mix(in srgb, #ffffff 55%, var(--fr-word-accent, #ffffff)))\n    drop-shadow(0 2px calc(18px * var(--c-glow, 0)) rgba(255, 255, 255, 0.52));\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char.fr-c-done {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  filter:\n    drop-shadow(0 0 calc(9px * var(--c-glow, 0)) color-mix(in srgb, #ffffff 62%, var(--fr-word-accent, #ffffff)))\n    drop-shadow(0 2px 14px rgba(255, 255, 255, 0.28));\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters.fr-w-done .fr-char {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  transform: translate3d(0, 0px, 0) scale(1);\n  filter: drop-shadow(0 2px 15px rgba(255, 255, 255, 0.26));\n}\n\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-word-letters .fr-char,\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-word-letters .fr-char,\n.fr-lyrics-scroll.fr-unsynced .fr-word-letters .fr-char {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: none;\n  filter: none;\n  transition: none;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char {\n    transform: none !important;\n  }\n}\n\n/* Interactive hover for synced lines */\n.fr-lyric-line.fr-synced {\n  cursor: pointer;\n}\n\n.fr-lyric-line.fr-synced:hover {\n  background-color: rgba(255, 255, 255, 0.05);\n  color: rgba(255, 255, 255, 0.85);\n  filter: blur(0px);\n}\n\n/* ---------------- Apple Music Duet (Right-Aligned Singer v2) & Background Vocals ---------------- */\n.fr-lyric-line.fr-duet-right {\n  text-align: right;\n  transform-origin: right center;\n}\n\n.fr-lyric-line.fr-duet-right .fr-interlude-dots {\n  justify-content: flex-end;\n  transform-origin: right center;\n}\n\n/* Standalone background vocal line (e.g. \"(Yeah, ooh)\" or full x-bg paragraph) */\n.fr-lyric-line.fr-bg-only-line {\n  font-size: clamp(16px, 1.85vw, 24px);\n  font-weight: 500;\n  font-style: italic;\n  letter-spacing: 0;\n  padding-top: 5px;\n  padding-bottom: 5px;\n}\n\n.fr-lyric-line.fr-bg-only-line.fr-active {\n  --fr-scale: 1.0;\n  opacity: 0.88;\n}\n\n/* Sub-line background vocal attached right below a main vocal line */\n.fr-bg-vocal-sub {\n  display: block;\n  margin-top: 3px;\n  font-size: 0.72em;\n  font-weight: 500;\n  font-style: italic;\n  line-height: 1.35;\n  letter-spacing: 0;\n  opacity: 0.82;\n}\n\n.fr-lyric-line.fr-future .fr-bg-vocal-sub {\n  opacity: 0.65;\n}\n\n.fr-lyric-line.fr-past .fr-bg-vocal-sub {\n  opacity: 0.58;\n}\n\n/* ---------------- Unsynced Teleprompter Mode ---------------- */\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-line {\n  font-size: clamp(19px, 2.2vw, 28px);\n  font-weight: 500;\n  line-height: 1.6;\n  color: rgba(255, 255, 255, 0.84);\n  transform: none !important;\n  filter: none !important;\n  padding: 8px 14px;\n}\n\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-word {\n  transform: none !important;\n  opacity: 1 !important;\n}\n\n/* ---------------- Instrumental Symbol & Apple Music Interlude Dots (• • •) ---------------- */\n.fr-lyric-line.fr-is-music {\n  padding: 16px 14px;\n}\n\n.fr-interlude-dots {\n  display: flex;\n  width: 100%;\n  align-items: center;\n  gap: 10px;\n  height: 0;\n  opacity: 0;\n  overflow: hidden;\n  margin-bottom: 0;\n  transform: translate3d(0, -6px, 0) scale(0.75);\n  transform-origin: left center;\n  pointer-events: none;\n  transition:\n    height 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    margin-bottom 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 380ms ease,\n    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-interlude-dots.fr-inline-music-dots {\n  height: 28px;\n  opacity: 0.45;\n  overflow: visible;\n  transform: scale(0.9);\n}\n\n.fr-interlude-dots.fr-interlude-active {\n  height: 28px;\n  margin-bottom: 10px;\n  opacity: 1;\n  overflow: visible;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-interlude-dot {\n  width: 11px;\n  height: 11px;\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0.25;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.55);\n  transition: opacity 150ms linear;\n  will-change: transform, opacity;\n}\n\n/* ---------------- Resume Sync Pill ---------------- */\n.fr-resume-sync {\n  position: absolute;\n  bottom: 12px;\n  left: 50%;\n  transform: translateX(-50%);\n  background: rgba(24, 24, 30, 0.78);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  padding: 8px 18px;\n  border-radius: 999px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 220ms ease, transform 220ms ease;\n  z-index: 9;\n}\n\n.fr-resume-sync.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateX(-50%) translateY(-4px);\n}\n\n.fr-resume-sync:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n/* ---------------- Instrumental / No-Lyrics Panel ---------------- */\n.fr-instrumental {\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  transform: translate(-50%, -50%) scale(0.85);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 20px;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);\n  z-index: 3;\n}\n\n.fr-instrumental.fr-show {\n  opacity: 1;\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-instrumental-bars {\n  display: flex;\n  align-items: flex-end;\n  gap: 5px;\n  height: 44px;\n}\n\n.fr-instrumental-bar {\n  width: 5px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.75);\n  animation: instrBar 1.2s ease-in-out infinite alternate;\n}\n\n.fr-instrumental-bar:nth-child(1) { animation-delay: 0s;    animation-duration: 0.9s; }\n.fr-instrumental-bar:nth-child(2) { animation-delay: 0.15s; animation-duration: 1.1s; }\n.fr-instrumental-bar:nth-child(3) { animation-delay: 0.3s;  animation-duration: 0.8s; }\n.fr-instrumental-bar:nth-child(4) { animation-delay: 0.1s;  animation-duration: 1.3s; }\n.fr-instrumental-bar:nth-child(5) { animation-delay: 0.25s; animation-duration: 1.0s; }\n.fr-instrumental-bar:nth-child(6) { animation-delay: 0.4s;  animation-duration: 0.85s; }\n.fr-instrumental-bar:nth-child(7) { animation-delay: 0.05s; animation-duration: 1.2s; }\n\n@keyframes instrBar {\n  0%   { height: 6px; opacity: 0.35; }\n  100% { height: 40px; opacity: 0.95; }\n}\n\n.fr-instrumental-label {\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.48);\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n\n/* --- controls.css --- */\n/* ---------------- Bottom Dock (Controls + Volume + Queue) ---------------- */\n.fr-bottom-bar {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 40px);\n  left: 50%;\n  transform: translateX(-50%);\n  width: min(92vw, 1000px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 28px;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 32px;\n  z-index: 5;\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-bottom-bar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translate(-50%, 40px) scale(0.95);\n}\n\n.fr-controls-left,\n.fr-controls-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-controls-center {\n  flex: 1;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  font-size: 12px;\n  color: var(--fr-fg-dim);\n  font-variant-numeric: tabular-nums;\n}\n\n.fr-progress-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-progress-bar:hover {\n  overflow: visible;\n}\n\n.fr-progress-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 0%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n}\n\n.fr-progress-bar:hover .fr-progress-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-progress-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 0%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 120ms ease;\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-progress-bar:hover .fr-progress-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-btn {\n  background: transparent;\n  border: none;\n  color: var(--fr-fg-dim);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 10px;\n  border-radius: 50%;\n  transition: color 150ms ease, transform 100ms ease, background 150ms ease;\n}\n\n.fr-btn:hover {\n  color: var(--fr-fg);\n  background: rgba(255, 255, 255, 0.08);\n}\n\n.fr-btn:active {\n  transform: scale(0.92);\n}\n\n.fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-btn-play {\n  width: 48px;\n  height: 48px;\n  background: var(--fr-fg);\n  color: #000;\n}\n\n.fr-btn-play:hover {\n  background: var(--fr-fg);\n  transform: scale(1.04);\n  color: #000;\n}\n\n.fr-btn svg {\n  width: 22px;\n  height: 22px;\n}\n\n.fr-btn-play svg {\n  width: 24px;\n  height: 24px;\n}\n\n.fr-volume-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  width: 140px;\n}\n\n.fr-volume-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-volume-bar:hover {\n  overflow: visible;\n}\n\n.fr-volume-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 100%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n  transition: width 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-volume-bar:hover .fr-volume-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-volume-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 100%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 150ms ease, left 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-volume-bar:hover .fr-volume-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n/* --- topbar.css --- */\n/* ---------------- Top bar ---------------- */\n.fr-topbar {\n  position: absolute;\n  top: clamp(18px, 2.4vw, 36px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 14;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border-radius: 999px;\n  padding: 6px 8px;\n  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-topbar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-20px) scale(0.95);\n}\n\n.fr-topbar .fr-btn {\n  padding: 8px;\n  border-radius: 50%;\n  width: 36px;\n  height: 36px;\n}\n\n.fr-topbar .fr-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n.fr-topbar-sep {\n  width: 1px;\n  height: 20px;\n  background: rgba(255, 255, 255, 0.12);\n  margin: 0 2px;\n}\n\n.fr-topbar .fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-topbar .fr-btn.fr-heart-active {\n  color: #ff4d6a;\n}\n\n/* --- settings.css --- */\n/* ---------------- Settings panel (Liquid Glass) ---------------- */\n.fr-settings-panel {\n  position: absolute;\n  top: clamp(60px, 6vw, 84px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 25;\n  width: min(360px, 92vw);\n  max-height: min(84vh, 700px);\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(24, 24, 30, 0.85);\n  backdrop-filter: blur(50px) saturate(2);\n  -webkit-backdrop-filter: blur(50px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 28px;\n  padding: 22px 24px;\n  display: flex;\n  flex-direction: column;\n  gap: 16px;\n  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-10px) scale(0.96);\n  transform-origin: top right;\n  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-settings-panel::-webkit-scrollbar {\n  width: 5px;\n}\n.fr-settings-panel::-webkit-scrollbar-track {\n  background: transparent;\n}\n.fr-settings-panel::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.2);\n  border-radius: 999px;\n}\n.fr-settings-panel::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n\n.fr-settings-panel.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-settings-section {\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-settings-divider {\n  height: 1px;\n  background: rgba(255, 255, 255, 0.08);\n  margin: 2px 0;\n}\n\n.fr-settings-title {\n  font-size: 11px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin: 0 0 2px 0;\n}\n\n.fr-settings-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  min-height: 32px;\n}\n\n.fr-settings-row label {\n  font-size: 14px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.9);\n  user-select: none;\n}\n\n/* ---------------- Custom Liquid Glass Dropdown ---------------- */\n.fr-select-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-select-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg);\n  border-radius: 999px;\n  padding: 6px 14px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n  max-width: 170px;\n}\n\n.fr-select-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.02);\n}\n\n.fr-select-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-select-wrap.fr-open .fr-select-btn {\n  background: rgba(255, 255, 255, 0.18);\n  border-color: rgba(255, 255, 255, 0.38);\n  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);\n}\n\n.fr-select-label {\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.fr-select-arrow {\n  width: 16px;\n  height: 16px;\n  fill: currentColor;\n  flex-shrink: 0;\n  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-wrap.fr-open .fr-select-arrow {\n  transform: rotate(180deg);\n}\n\n.fr-select-menu {\n  position: absolute;\n  top: calc(100% + 6px);\n  right: 0;\n  width: max-content;\n  min-width: 190px;\n  max-width: 285px;\n  max-height: 260px;\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(20, 20, 26, 0.96);\n  backdrop-filter: blur(44px) saturate(2);\n  -webkit-backdrop-filter: blur(44px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 18px;\n  padding: 6px;\n  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.18);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-menu::-webkit-scrollbar {\n  width: 4px;\n}\n.fr-select-menu::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.25);\n  border-radius: 999px;\n}\n\n.fr-select-wrap.fr-open .fr-select-menu {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-select-item {\n  padding: 8px 12px;\n  border-radius: 12px;\n  font-size: 13px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.86);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  transition: all 0.15s ease;\n  user-select: none;\n}\n\n.fr-select-item-left {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n}\n\n.fr-select-item-title {\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-select-item-sub {\n  font-size: 10px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.45);\n  letter-spacing: 0.01em;\n  white-space: nowrap;\n}\n\n.fr-select-item-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-shrink: 0;\n}\n\n.fr-select-item-badge {\n  font-size: 10px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.09);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: rgba(255, 255, 255, 0.72);\n}\n\n.fr-select-item:hover {\n  background: rgba(255, 255, 255, 0.11);\n  color: #ffffff;\n}\n\n.fr-select-item.fr-selected {\n  background: rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  font-weight: 600;\n}\n\n.fr-select-item.fr-selected .fr-select-item-badge {\n  background: rgba(255, 255, 255, 0.2);\n  border-color: rgba(255, 255, 255, 0.32);\n  color: #ffffff;\n}\n\n.fr-select-item .fr-check {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  flex-shrink: 0;\n  opacity: 0;\n}\n\n.fr-select-item.fr-selected .fr-check {\n  opacity: 1;\n}\n\n/* ---------------- Custom Liquid Glass Color Picker ---------------- */\n.fr-color-picker-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg, #ffffff);\n  border-radius: 999px;\n  padding: 5px 12px 5px 6px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n}\n\n.fr-color-swatch-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.03);\n}\n\n.fr-color-swatch-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.22);\n  border-color: var(--fr-word-accent, #1ed760);\n  box-shadow: 0 0 16px rgba(30, 215, 96, 0.25);\n}\n\n.fr-color-swatch-inner {\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.35);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n  flex-shrink: 0;\n  transition: background-color 0.2s ease;\n}\n\n.fr-color-hex-label {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 12px;\n  letter-spacing: 0.04em;\n  color: rgba(255, 255, 255, 0.9);\n}\n\n.fr-color-popup {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  width: 240px;\n  max-height: 480px;\n  overflow-y: auto;\n  scrollbar-width: none;\n  background: rgba(22, 22, 28, 0.96);\n  backdrop-filter: blur(40px) saturate(2);\n  -webkit-backdrop-filter: blur(40px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 22px;\n  padding: 16px;\n  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.2);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-color-popup::-webkit-scrollbar {\n  display: none;\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-popup {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-color-popup-title {\n  font-size: 10px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin-top: 2px;\n}\n\n.fr-color-preset-grid {\n  display: grid;\n  grid-template-columns: repeat(4, 1fr);\n  gap: 10px;\n  justify-items: center;\n}\n\n.fr-color-preset-item {\n  width: 34px;\n  height: 34px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.2);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);\n  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.15s ease, box-shadow 0.15s ease;\n  outline: none;\n}\n\n.fr-color-preset-item:hover {\n  transform: scale(1.18);\n  border-color: rgba(255, 255, 255, 0.7);\n  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);\n}\n\n.fr-color-preset-item.fr-selected {\n  border-color: #ffffff;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.6);\n  transform: scale(1.12);\n}\n\n.fr-check-sm {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));\n  opacity: 0;\n  transition: opacity 0.15s ease;\n}\n\n.fr-color-preset-item.fr-selected .fr-check-sm {\n  opacity: 1;\n}\n\n/* ---------------- Rainbow Hue Slider ---------------- */\n.fr-hue-slider-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding: 4px 0 2px 0;\n}\n\n.fr-hue-slider {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 100%;\n  height: 12px;\n  border-radius: 999px;\n  background: linear-gradient(\n    to right,\n    #ff0000 0%,\n    #ffff00 17%,\n    #00ff00 33%,\n    #00ffff 50%,\n    #0000ff 67%,\n    #ff00ff 83%,\n    #ff0000 100%\n  );\n  outline: none;\n  cursor: pointer;\n  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n}\n\n.fr-hue-slider::-webkit-slider-thumb {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #ffffff;\n  border: 2px solid rgba(0, 0, 0, 0.4);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.fr-hue-slider::-webkit-slider-thumb:hover {\n  transform: scale(1.2);\n}\n\n.fr-color-custom-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding-top: 8px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-color-wheel-btn {\n  background: transparent;\n  border: none;\n  padding: 0;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  outline: none;\n  border-radius: 50%;\n  transition: transform 0.2s ease;\n}\n\n.fr-color-wheel-btn:hover {\n  transform: scale(1.15);\n}\n\n.fr-color-wheel-btn:active {\n  transform: scale(0.95);\n}\n\n.fr-color-preview-circle {\n  width: 28px;\n  height: 28px;\n  border-radius: 50%;\n  border: 2px solid rgba(255, 255, 255, 0.4);\n  flex-shrink: 0;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);\n}\n\n.fr-color-text-input {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  border-radius: 10px;\n  padding: 6px 12px;\n  color: #ffffff;\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 13px;\n  font-weight: 600;\n  letter-spacing: 0.05em;\n  outline: none;\n  transition: border-color 0.2s ease, background 0.2s ease;\n}\n\n.fr-color-text-input:focus {\n  border-color: var(--fr-word-accent, #1ed760);\n  background: rgba(255, 255, 255, 0.14);\n}\n\n.fr-color-input {\n  -webkit-appearance: none;\n  appearance: none;\n  border: 2px solid rgba(255, 255, 255, 0.22);\n  width: 32px;\n  height: 32px;\n  border-radius: 50%;\n  cursor: pointer;\n  background: transparent;\n  padding: 0;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);\n  transition: transform 0.2s ease, border-color 0.2s ease;\n  outline: none;\n}\n\n.fr-color-input:hover {\n  transform: scale(1.12);\n  border-color: rgba(255, 255, 255, 0.6);\n}\n\n.fr-color-input::-webkit-color-swatch-wrapper {\n  padding: 0;\n}\n\n.fr-color-input::-webkit-color-swatch {\n  border: none;\n  border-radius: 50%;\n}\n\n/* ---------------- Toggles ---------------- */\n.fr-toggle {\n  width: 48px;\n  height: 26px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.3);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(255, 255, 255, 0.05);\n  position: relative;\n  cursor: pointer;\n  border: none;\n  outline: none;\n  transition: background 0.3s ease;\n  flex-shrink: 0;\n}\n\n.fr-toggle::after {\n  content: \"\";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  background: #ffffff;\n  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);\n  transition: left 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-toggle.fr-on {\n  background: var(--fr-word-accent, #1ed760);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(255, 255, 255, 0.05);\n}\n\n.fr-toggle.fr-on::after {\n  left: 25px;\n}\n\n/* --- ambient.css --- */\n/* ---------------- Mood-Adaptive & Beat-Reactive Atmosphere ---------------- */\n.fr-ambient {\n  --fr-beat: 0;\n  --fr-bar: 0;\n  --fr-energy: 0.5;\n  --fr-amb-dominant: #4a3f78;\n  --fr-amb-accent: #7b52ab;\n  --fr-amb-dark: #14121d;\n  --fr-amb-accent-soft: rgba(123, 82, 171, 0.55);\n  --fr-amb-dominant-soft: rgba(74, 63, 120, 0.5);\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 1;\n  overflow: hidden;\n  opacity: 0;\n  transition: opacity 1.2s ease;\n}\n\n.fr-ambient.fr-show {\n  opacity: 1;\n}\n\n.fr-ambient[data-mood=\"off\"] {\n  opacity: 0 !important;\n}\n\n/* ---------------- 1. Aurora Ribbons (Energetic & Dreamy) ---------------- */\n.fr-mood-aurora {\n  position: absolute;\n  inset: -15%;\n  pointer-events: none;\n  mix-blend-mode: screen;\n  opacity: calc(0.28 + var(--fr-energy, 0.5) * 0.35 + var(--fr-beat, 0) * 0.25);\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.045));\n  transition: opacity 450ms ease;\n  will-change: transform, opacity;\n}\n\n.fr-aurora-wave {\n  position: absolute;\n  inset: 0;\n  border-radius: 50%;\n  filter: blur(85px);\n}\n\n.fr-aurora-1 {\n  background: radial-gradient(\n    ellipse 68% 34% at 32% 28%,\n    var(--fr-amb-accent-soft) 0%,\n    transparent 72%\n  );\n  animation: auroraDrift1 16s ease-in-out infinite alternate;\n}\n\n.fr-aurora-2 {\n  background: radial-gradient(\n    ellipse 64% 38% at 68% 66%,\n    var(--fr-amb-dominant-soft) 0%,\n    transparent 74%\n  );\n  animation: auroraDrift2 21s ease-in-out infinite alternate;\n}\n\n@keyframes auroraDrift1 {\n  0%   { transform: translate3d(-6%, -4%, 0) rotate(-6deg) scale(1); }\n  100% { transform: translate3d(8%, 6%, 0) rotate(8deg) scale(1.14); }\n}\n\n@keyframes auroraDrift2 {\n  0%   { transform: translate3d(6%, 5%, 0) rotate(5deg) scale(1.08); }\n  100% { transform: translate3d(-8%, -6%, 0) rotate(-9deg) scale(0.96); }\n}\n\n.fr-ambient[data-mood=\"energetic\"] .fr-mood-aurora {\n  opacity: calc(0.42 + var(--fr-energy, 0.5) * 0.38 + var(--fr-beat, 0) * 0.35);\n}\n\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-aurora {\n  opacity: calc(0.14 + var(--fr-energy, 0.4) * 0.18);\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-aurora {\n  opacity: calc(0.2 + var(--fr-energy, 0.4) * 0.22);\n}\n\n/* ---------------- 2. Beat-Reactive Light Orbs ---------------- */\n.fr-orbs-wrap {\n  position: absolute;\n  inset: 0;\n  mix-blend-mode: screen;\n  opacity: calc(0.38 + var(--fr-energy, 0.5) * 0.28 + var(--fr-beat, 0) * 0.22);\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.035 + var(--fr-bar, 0) * 0.02));\n  transform-origin: center center;\n  will-change: transform, opacity;\n}\n\n.fr-orb {\n  position: absolute;\n  border-radius: 50%;\n  filter: blur(88px);\n  opacity: 0.62;\n  animation: floatOrb 20s infinite alternate ease-in-out;\n  transition: background-color 900ms ease;\n}\n\n@keyframes floatOrb {\n  0%   { transform: translate3d(0, 0, 0) scale(1); }\n  100% { transform: translate3d(85px, -75px, 0) scale(1.18); }\n}\n\n/* ---------------- 3. Mood-Morphing Particle System ---------------- */\n.fr-particles-wrap {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.fr-particle {\n  position: absolute;\n  left: var(--p-x, 50%);\n  top: var(--p-y, 50%);\n  width: var(--p-size, 4px);\n  height: var(--p-size, 4px);\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0;\n  will-change: transform, opacity;\n}\n\n/* --- Mood A: ENERGETIC ⚡ (Fast Rising Neon Sparks pulsing with the Beat) --- */\n.fr-ambient[data-mood=\"energetic\"] .fr-particle {\n  top: auto;\n  bottom: -5vh;\n  width: var(--p-size, 4px);\n  height: var(--p-size, 4px);\n  background: #ffffff;\n  box-shadow: 0 0 calc(8px + var(--fr-beat, 0) * 14px) var(--fr-amb-accent),\n              0 0 4px #ffffff;\n  animation: frSparkRise calc(var(--p-dur, 10s) * 0.58) linear infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frSparkRise {\n  0% {\n    transform: translate3d(0, 5vh, 0) scale(0.5);\n    opacity: 0;\n  }\n  20% {\n    opacity: calc(0.38 + var(--fr-beat, 0) * 0.45);\n  }\n  80% {\n    opacity: calc(0.32 + var(--fr-beat, 0) * 0.45);\n  }\n  100% {\n    transform: translate3d(var(--p-drift, 20px), -110vh, 0) scale(1.35);\n    opacity: 0;\n  }\n}\n\n/* --- Mood B: MELANCHOLIC 🌧️ (Soft Falling Rain / Dew Streaks & Mist) --- */\n.fr-ambient[data-mood=\"melancholic\"] .fr-particle {\n  top: -8vh;\n  width: 1.5px;\n  height: calc(var(--p-size, 4px) * 5.2);\n  border-radius: 999px;\n  background: linear-gradient(\n    180deg,\n    rgba(255, 255, 255, 0) 0%,\n    rgba(255, 255, 255, 0.42) 70%,\n    rgba(255, 255, 255, 0.72) 100%\n  );\n  box-shadow: none;\n  animation: frRainFall calc(var(--p-dur, 10s) * 0.48) linear infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frRainFall {\n  0% {\n    transform: translate3d(0, -10vh, 0) rotate(8deg);\n    opacity: 0;\n  }\n  15% {\n    opacity: 0.34;\n  }\n  85% {\n    opacity: 0.28;\n  }\n  100% {\n    transform: translate3d(-24px, 112vh, 0) rotate(8deg);\n    opacity: 0;\n  }\n}\n\n/* --- Mood C: LATE NIGHT 🌙 (Warm Hovering Fireflies & Analog Vibe) --- */\n.fr-ambient[data-mood=\"latenight\"] .fr-particle {\n  width: calc(var(--p-size, 4px) * 1.15);\n  height: calc(var(--p-size, 4px) * 1.15);\n  background: rgba(255, 232, 185, 0.92);\n  box-shadow: 0 0 12px rgba(255, 200, 120, 0.75), 0 0 22px var(--fr-amb-accent);\n  animation: frFireflyDrift calc(var(--p-dur, 12s) * 1.1) ease-in-out infinite alternate;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frFireflyDrift {\n  0% {\n    transform: translate3d(0, 0, 0) scale(0.65);\n    opacity: 0.08;\n  }\n  50% {\n    transform: translate3d(var(--p-drift, 18px), -26px, 0) scale(calc(1.1 + var(--fr-beat, 0) * 0.35));\n    opacity: calc(0.45 + var(--fr-beat, 0) * 0.35);\n  }\n  100% {\n    transform: translate3d(calc(var(--p-drift, 18px) * -0.7), 18px, 0) scale(0.8);\n    opacity: 0.12;\n  }\n}\n\n/* --- Mood D: DREAMY ✨ (Soft Out-of-Focus Bokeh Light Circles) --- */\n.fr-ambient[data-mood=\"dreamy\"] .fr-particle {\n  top: auto;\n  bottom: -10vh;\n  width: calc(var(--p-size, 4px) * 3.8);\n  height: calc(var(--p-size, 4px) * 3.8);\n  background: radial-gradient(\n    circle,\n    rgba(255, 255, 255, 0.45) 0%,\n    var(--fr-amb-accent-soft) 55%,\n    transparent 100%\n  );\n  filter: blur(2.5px);\n  animation: frBokehFloat calc(var(--p-dur, 12s) * 1.15) ease-in-out infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frBokehFloat {\n  0% {\n    transform: translate3d(0, 8vh, 0) scale(0.7);\n    opacity: 0;\n  }\n  25% {\n    opacity: calc(0.24 + var(--fr-beat, 0) * 0.22);\n  }\n  75% {\n    opacity: calc(0.22 + var(--fr-beat, 0) * 0.22);\n  }\n  100% {\n    transform: translate3d(var(--p-drift, 24px), -108vh, 0) scale(1.25);\n    opacity: 0;\n  }\n}\n\n/* ---------------- 4. Atmospheric Mist & Cinematic Vignette ---------------- */\n.fr-mood-mist {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  opacity: 0;\n  background:\n    radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.52) 100%),\n    linear-gradient(180deg, transparent 55%, rgba(12, 14, 22, 0.48) 100%);\n  transition: opacity 900ms ease;\n}\n\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-mist {\n  opacity: 0.88;\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-mist {\n  opacity: 0.72;\n}\n\n/* ---------------- 5. Late-Night Analog Film Grain ---------------- */\n.fr-mood-grain {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  opacity: 0;\n  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 0);\n  background-size: 3px 3px;\n  mix-blend-mode: overlay;\n  transition: opacity 900ms ease;\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-grain {\n  opacity: 0.45;\n}\n\n/* --- upnext.css --- */\n/* ---------------- Up Next Card ---------------- */\n.fr-up-next {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 64px);\n  right: clamp(24px, 3.2vw, 64px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 24px 12px 12px;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  z-index: 10;\n  transform: translateX(120%);\n  opacity: 0;\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.6s ease;\n  pointer-events: auto;\n  cursor: pointer;\n}\n\n.fr-up-next.fr-show {\n  transform: translateX(0);\n  opacity: 1;\n}\n\n.fr-up-next-img {\n  width: 48px;\n  height: 48px;\n  border-radius: 50%;\n  object-fit: cover;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n}\n\n.fr-up-next-info {\n  display: flex;\n  flex-direction: column;\n  max-width: 200px;\n}\n\n.fr-up-next-label {\n  font-size: 10px;\n  font-weight: 700;\n  color: var(--fr-fg-dim);\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  margin-bottom: 2px;\n}\n\n.fr-up-next-title {\n  font-size: 14px;\n  font-weight: 700;\n  color: var(--fr-fg);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-up-next-artist {\n  font-size: 12px;\n  color: var(--fr-fg-faint);\n  margin: 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-up-next {\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* --- idle.css --- */\n/* ---------------- Idle Mode & Clock ---------------- */\n#fullscreen-reloaded-root.fr-idle,\n#fullscreen-reloaded-root.fr-idle * {\n  cursor: none !important;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-controls,\n#fullscreen-reloaded-root.fr-idle .fr-topbar,\n#fullscreen-reloaded-root.fr-idle .fr-side-controls,\n#fullscreen-reloaded-root.fr-idle .fr-settings-panel,\n#fullscreen-reloaded-root.fr-idle .fr-resume-sync {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(12px);\n}\n\n.fr-controls,\n.fr-topbar,\n.fr-side-controls,\n.fr-settings-panel,\n.fr-resume-sync {\n  transition: opacity 400ms ease, transform 400ms ease;\n}\n\n/* ---------------- Clock & Idle Cinema Mode ---------------- */\n.fr-clock {\n  position: absolute;\n  left: 50%;\n  font-size: clamp(50px, 6vw, 80px);\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.9);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 10;\n  letter-spacing: 0.02em;\n  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.7);\n  font-variant-numeric: tabular-nums;\n  line-height: 1;\n}\n\n.fr-clock.fr-pos-top {\n  top: clamp(24px, 4.5vh, 48px);\n  bottom: auto;\n  transform: translateX(-50%) translateY(-20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, top 0.4s;\n}\n\n.fr-clock.fr-pos-bottom {\n  bottom: clamp(28px, 5vh, 56px);\n  top: auto;\n  transform: translateX(-50%) translateY(20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, bottom 0.4s;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-top,\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-bottom {\n  opacity: 1;\n  transform: translateX(-50%) translateY(0);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n  grid-template-columns: 1fr 0px;\n  gap: 0;\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-lyrics-panel {\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.8s ease;\n}\n\n/* Gracefully scale artwork in idle mode to prevent clock collision */\n#fullscreen-reloaded-root.fr-idle .fr-art-wrap {\n  width: min(48vh, 38vw, 520px);\n  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n/* Shift artwork cleanly away from clock */\n#fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\n  transform: translateY(clamp(45px, 7vh, 80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n  transform: translateY(clamp(-45px, -7vh, -80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n  margin-top: clamp(20px, 2.8vh, 36px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-title {\n  font-size: clamp(28px, 3.2vw, 44px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-artist {\n  font-size: clamp(16px, 1.6vw, 22px);\n}\n\n/* ---------------- Responsive Styles ---------------- */\n@media (max-aspect-ratio: 5/4), (max-width: 900px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: auto 1fr;\n    grid-template-areas: \"art\" \"lyrics\";\n    gap: clamp(10px, 1.5vh, 20px);\n    padding-top: clamp(88px, 9.5vh, 145px);\n    padding-bottom: clamp(84px, 10vh, 125px);\n    transition: padding-top 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n      padding-bottom 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n      opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms,\n      transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\n  }\n\n  .fr-stage.fr-centered {\n    grid-template-rows: 1fr;\n    padding-top: clamp(40px, 5vh, 80px);\n  }\n\n  .fr-clock.fr-pos-top {\n    top: clamp(22px, 2.8vh, 42px);\n    font-size: clamp(38px, 6.2vw, 58px);\n  }\n\n  .fr-clock.fr-pos-bottom {\n    bottom: clamp(22px, 3vh, 42px);\n    font-size: clamp(38px, 6.2vw, 58px);\n  }\n\n  .fr-lyrics-panel {\n    display: flex;\n    min-height: 0;\n  }\n\n  .fr-lyrics-scroll {\n    padding: 1vh 8px 18vh 8px;\n    mask-image: linear-gradient(\n      180deg,\n      transparent 0%,\n      rgba(0, 0, 0, 0.65) 4%,\n      #000 10%,\n      #000 82%,\n      rgba(0, 0, 0, 0.45) 93%,\n      transparent 100%\n    );\n    -webkit-mask-image: linear-gradient(\n      180deg,\n      transparent 0%,\n      rgba(0, 0, 0, 0.65) 4%,\n      #000 10%,\n      #000 82%,\n      rgba(0, 0, 0, 0.45) 93%,\n      transparent 100%\n    );\n  }\n\n  /* Balanced artwork in portrait mode when lyrics are visible */\n  .fr-stage .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle .fr-stage .fr-art-wrap {\n    width: min(26vh, 54vw, 340px);\n    margin: 0 auto;\n  }\n\n  .fr-stage.fr-size-medium .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle .fr-stage.fr-size-medium .fr-art-wrap {\n    width: min(22vh, 46vw, 290px);\n  }\n\n  .fr-stage.fr-size-small .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle .fr-stage.fr-size-small .fr-art-wrap {\n    width: min(18vh, 38vw, 240px);\n  }\n\n  /* Larger artwork when lyrics are hidden in portrait mode */\n  .fr-stage.fr-centered .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage .fr-art-wrap {\n    width: min(38vh, 68vw, 420px);\n  }\n\n  .fr-meta {\n    text-align: center;\n    margin-top: clamp(12px, 1.5vh, 20px);\n    margin-left: auto;\n    margin-right: auto;\n    max-width: 86vw;\n  }\n\n  .fr-title {\n    font-size: clamp(20px, 4.2vw, 28px);\n    margin-bottom: 3px;\n  }\n\n  .fr-artist {\n    font-size: clamp(13px, 2.8vw, 16px);\n  }\n\n  .fr-album {\n    font-size: clamp(11px, 2.2vw, 13px);\n  }\n\n  /* Make bottom dock more compact */\n  .fr-bottom-bar {\n    gap: 12px;\n    padding: 12px 16px;\n    width: 94vw;\n  }\n\n  .fr-volume-row {\n    width: 90px;\n  }\n\n  /* Override idle grid & clock clearance for portrait without overlapping lyrics */\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel,\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n    transform: none;\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-stage {\n    padding-top: clamp(110px, 11.5vh, 175px);\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-stage {\n    padding-bottom: clamp(96px, 11.5vh, 145px);\n  }\n}\n\n@media (max-width: 600px) {\n  .fr-controls-center {\n    display: none; /* Hide progress bar on small screens */\n  }\n}\n\n@media (max-height: 500px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n    grid-template-areas: \"art\";\n  }\n\n  .fr-lyrics-panel {\n    display: none !important;\n  }\n\n  .fr-art-wrap {\n    width: min(46vh, 60vw, 420px);\n  }\n}\n\n/* --- creator.css --- */\n/* ==========================================================================\n   FullLyrics Creator Studio (Liquid Glass Modal & Word/Line Synchronizer)\n   ========================================================================== */\n\n.fr-creator-backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 10020;\n  background: rgba(6, 8, 14, 0.72);\n  backdrop-filter: blur(22px) saturate(150%);\n  -webkit-backdrop-filter: blur(22px) saturate(150%);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: clamp(12px, 2.5vw, 32px);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.25s cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-creator-backdrop.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n}\n\n.fr-creator-modal {\n  position: relative;\n  width: min(1140px, 96vw);\n  height: min(840px, 90vh);\n  background: linear-gradient(\n    155deg,\n    rgba(28, 32, 44, 0.92) 0%,\n    rgba(16, 18, 26, 0.95) 100%\n  );\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 24px;\n  box-shadow:\n    0 32px 80px rgba(0, 0, 0, 0.65),\n    inset 0 1px 0 rgba(255, 255, 255, 0.18);\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n  color: #f5f7fa;\n  font-family: inherit;\n}\n\n/* Toast Notification */\n.fr-creator-toast {\n  position: absolute;\n  bottom: 74px;\n  left: 50%;\n  transform: translate(-50%, 14px);\n  background: rgba(20, 24, 34, 0.95);\n  border: 1px solid rgba(255, 255, 255, 0.22);\n  color: #fff;\n  padding: 9px 18px;\n  border-radius: 999px;\n  font-size: 13px;\n  font-weight: 600;\n  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 50;\n  transition: all 0.22s ease;\n}\n\n.fr-creator-toast.fr-show {\n  opacity: 1;\n  transform: translate(-50%, 0);\n}\n\n/* Header */\n.fr-creator-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  padding: 16px 22px;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(255, 255, 255, 0.02);\n  flex-wrap: wrap;\n}\n\n.fr-creator-title-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 3px;\n  min-width: 180px;\n}\n\n.fr-creator-title-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.fr-creator-title {\n  margin: 0;\n  font-size: 18px;\n  font-weight: 700;\n  letter-spacing: -0.02em;\n  color: #fff;\n}\n\n.fr-creator-saved-pill {\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 9px;\n  border-radius: 999px;\n  background: rgba(52, 211, 153, 0.18);\n  border: 1px solid rgba(52, 211, 153, 0.45);\n  color: #6ee7b7;\n}\n\n.fr-creator-sub {\n  font-size: 12.5px;\n  color: rgba(255, 255, 255, 0.62);\n  max-width: 340px;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* Mode Switcher */\n.fr-creator-mode-switch {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.35);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 12px;\n  padding: 3px;\n  gap: 3px;\n}\n\n.fr-creator-mode-btn {\n  background: transparent;\n  border: none;\n  color: rgba(255, 255, 255, 0.68);\n  font-size: 12.5px;\n  font-weight: 600;\n  padding: 6px 13px;\n  border-radius: 9px;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-mode-btn:hover {\n  color: #fff;\n}\n\n.fr-creator-mode-btn.fr-active {\n  background: rgba(255, 255, 255, 0.16);\n  color: #fff;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);\n}\n\n/* Header Actions */\n.fr-creator-header-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-creator-btn {\n  display: inline-flex;\n  align-items: center;\n  gap: 7px;\n  height: 36px;\n  padding: 0 14px;\n  border-radius: 10px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  transition: all 0.18s ease;\n}\n\n.fr-creator-btn svg {\n  width: 15px;\n  height: 15px;\n}\n\n.fr-creator-btn-ghost {\n  background: rgba(255, 255, 255, 0.06);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n.fr-creator-btn-ghost:hover,\n.fr-creator-btn-ghost.fr-active {\n  background: rgba(255, 255, 255, 0.14);\n  color: #fff;\n}\n\n.fr-creator-btn-primary {\n  background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);\n  border-color: rgba(255, 255, 255, 0.25);\n  color: #fff;\n  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);\n}\n\n.fr-creator-btn-primary:hover {\n  filter: brightness(1.1);\n  transform: translateY(-1px);\n}\n\n.fr-creator-icon-btn {\n  width: 36px;\n  height: 36px;\n  border-radius: 10px;\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  background: rgba(255, 255, 255, 0.06);\n  color: rgba(255, 255, 255, 0.85);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-icon-btn svg {\n  width: 17px;\n  height: 17px;\n}\n\n.fr-creator-icon-btn:hover,\n.fr-creator-icon-btn.fr-active {\n  background: rgba(255, 255, 255, 0.16);\n  color: #fff;\n}\n\n/* More Dropdown */\n.fr-creator-more-wrap {\n  position: relative;\n}\n\n.fr-creator-dropdown {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  min-width: 255px;\n  background: rgba(20, 23, 33, 0.98);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 14px;\n  padding: 6px;\n  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.6);\n  z-index: 40;\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n}\n\n.fr-creator-dropdown-item {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  width: 100%;\n  padding: 9px 12px;\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.88);\n  font-size: 12.5px;\n  font-weight: 500;\n  border-radius: 9px;\n  cursor: pointer;\n  text-align: left;\n}\n\n.fr-creator-dropdown-item svg {\n  width: 15px;\n  height: 15px;\n  opacity: 0.85;\n}\n\n.fr-creator-dropdown-item:hover {\n  background: rgba(255, 255, 255, 0.1);\n  color: #fff;\n}\n\n.fr-creator-dropdown-item.fr-danger {\n  color: #f87171;\n}\n\n.fr-creator-dropdown-item.fr-danger:hover {\n  background: rgba(248, 113, 113, 0.14);\n}\n\n/* Step Tabs */\n.fr-creator-steps {\n  display: flex;\n  gap: 8px;\n  padding: 10px 22px;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.08);\n  background: rgba(0, 0, 0, 0.2);\n}\n\n.fr-creator-step-btn {\n  background: transparent;\n  border: 1px solid transparent;\n  color: rgba(255, 255, 255, 0.6);\n  padding: 7px 16px;\n  border-radius: 10px;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-step-btn:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.05);\n}\n\n.fr-creator-step-btn.fr-active {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n  border-color: rgba(255, 255, 255, 0.16);\n}\n\n/* Local DB Library Drawer */\n.fr-creator-library {\n  padding: 12px 22px;\n  background: rgba(10, 12, 18, 0.72);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.1);\n  max-height: 210px;\n  overflow-y: auto;\n}\n\n.fr-creator-library-head {\n  margin-bottom: 8px;\n}\n\n.fr-creator-library-title {\n  font-size: 12px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  color: rgba(255, 255, 255, 0.55);\n}\n\n.fr-creator-library-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n}\n\n.fr-creator-library-item {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  padding: 8px 12px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.08);\n  border-radius: 10px;\n}\n\n.fr-creator-library-song {\n  font-size: 13px;\n  font-weight: 600;\n  color: #fff;\n}\n\n.fr-creator-library-artist {\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-creator-library-actions {\n  display: flex;\n  gap: 6px;\n}\n\n/* Body Container */\n.fr-creator-body {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}\n\n/* ==========================================================================\n   STEP 1: Text & Visual Builder\n   ========================================================================== */\n\n.fr-creator-text-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 14px 22px;\n  gap: 12px;\n}\n\n.fr-creator-subtoolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-subswitch {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 10px;\n  padding: 3px;\n  gap: 3px;\n}\n\n.fr-creator-subbtn {\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.65);\n  font-size: 12px;\n  font-weight: 600;\n  padding: 5px 12px;\n  border-radius: 7px;\n  cursor: pointer;\n}\n\n.fr-creator-subbtn.fr-active {\n  background: rgba(255, 255, 255, 0.15);\n  color: #fff;\n}\n\n.fr-creator-quick-actions {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-chip-btn {\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: #fff;\n  font-size: 12px;\n  font-weight: 600;\n  padding: 6px 12px;\n  border-radius: 999px;\n  cursor: pointer;\n  transition: all 0.16s ease;\n}\n\n.fr-creator-chip-btn:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n.fr-creator-textarea {\n  flex: 1;\n  min-height: 0;\n  width: 100%;\n  resize: none;\n  background: rgba(0, 0, 0, 0.28);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 14px;\n  padding: 14px 16px;\n  color: #fff;\n  font-size: 14px;\n  line-height: 1.65;\n  font-family: inherit;\n  outline: none;\n}\n\n.fr-creator-textarea:focus {\n  border-color: rgba(99, 102, 241, 0.65);\n}\n\n/* Visual Builder Cards */\n.fr-creator-builder-list {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  padding-right: 4px;\n}\n\n.fr-creator-line-card {\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 14px;\n  padding: 10px 14px;\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n\n.fr-creator-line-card.fr-is-duet {\n  border-color: rgba(168, 85, 247, 0.45);\n  background: rgba(168, 85, 247, 0.06);\n}\n\n.fr-creator-line-card.fr-is-interlude {\n  border-style: dashed;\n  border-color: rgba(255, 255, 255, 0.22);\n  background: rgba(255, 255, 255, 0.02);\n}\n\n.fr-creator-line-card-top {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-line-num {\n  font-size: 11.5px;\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.48);\n  min-width: 28px;\n}\n\n.fr-creator-interlude-title {\n  flex: 1;\n  font-size: 13px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.75);\n}\n\n.fr-creator-line-input {\n  flex: 1;\n  min-width: 200px;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 9px;\n  padding: 7px 11px;\n  color: #fff;\n  font-size: 13.5px;\n  font-weight: 500;\n  outline: none;\n}\n\n.fr-creator-line-input:focus {\n  border-color: rgba(99, 102, 241, 0.65);\n}\n\n.fr-creator-line-card-controls {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  flex-wrap: wrap;\n}\n\n/* Word Pills inside Visual Builder */\n.fr-creator-word-pills {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  padding-left: 36px;\n}\n\n.fr-creator-word-pill {\n  display: inline-flex;\n  align-items: center;\n  background: rgba(255, 255, 255, 0.07);\n  border: 1px solid rgba(255, 255, 255, 0.13);\n  border-radius: 8px;\n  padding: 2px 6px;\n  gap: 4px;\n}\n\n.fr-creator-word-pill-input {\n  background: transparent;\n  border: none;\n  color: #fff;\n  font-size: 12.5px;\n  font-weight: 500;\n  outline: none;\n  min-width: 22px;\n}\n\n.fr-creator-word-pill-del {\n  background: transparent;\n  border: none;\n  color: rgba(255, 255, 255, 0.45);\n  cursor: pointer;\n  font-size: 13px;\n  padding: 0 2px;\n}\n\n.fr-creator-word-pill-del:hover {\n  color: #f87171;\n}\n\n/* Background Vocal Row inside Visual Builder */\n.fr-creator-bg-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  padding-left: 36px;\n}\n\n.fr-creator-bg-edit-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-creator-bg-badge {\n  font-size: 11px;\n  font-weight: 600;\n  color: #93c5fd;\n  background: rgba(59, 130, 246, 0.16);\n  padding: 3px 8px;\n  border-radius: 6px;\n}\n\n.fr-creator-bg-input {\n  flex: 1;\n  background: rgba(0, 0, 0, 0.28);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 8px;\n  padding: 5px 10px;\n  color: rgba(255, 255, 255, 0.9);\n  font-size: 12.5px;\n  outline: none;\n}\n\n.fr-creator-credit-row {\n  display: flex;\n}\n\n.fr-creator-credit-input {\n  width: 100%;\n  background: rgba(0, 0, 0, 0.25);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 10px;\n  padding: 8px 12px;\n  color: #fff;\n  font-size: 12.5px;\n  outline: none;\n}\n\n/* ==========================================================================\n   STEP 2: Sync Studio\n   ========================================================================== */\n\n.fr-creator-sync-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 12px 22px;\n  gap: 10px;\n}\n\n.fr-creator-sync-toolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-cue-btn {\n  background: linear-gradient(135deg, #10b981 0%, #059669 100%);\n  border: 1px solid rgba(255, 255, 255, 0.28);\n  color: #fff;\n  font-size: 13px;\n  font-weight: 700;\n  padding: 9px 18px;\n  border-radius: 11px;\n  cursor: pointer;\n  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35);\n  transition: all 0.15s ease;\n}\n\n.fr-creator-cue-btn:hover {\n  filter: brightness(1.08);\n}\n\n.fr-creator-cue-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-creator-shift-group {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.08);\n  padding: 4px 8px;\n  border-radius: 10px;\n}\n\n.fr-creator-shift-label {\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.6);\n  margin-right: 4px;\n}\n\n.fr-creator-sync-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-sync-progress {\n  font-size: 12px;\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.78);\n  background: rgba(255, 255, 255, 0.08);\n  padding: 5px 11px;\n  border-radius: 999px;\n}\n\n.fr-creator-shortcuts-bar {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  flex-wrap: wrap;\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.56);\n  padding: 4px 2px;\n}\n\n.fr-creator-shortcuts-bar kbd {\n  background: rgba(255, 255, 255, 0.12);\n  border: 1px solid rgba(255, 255, 255, 0.2);\n  border-radius: 5px;\n  padding: 1px 6px;\n  font-size: 11px;\n  color: #fff;\n  font-family: inherit;\n}\n\n.fr-creator-sync-list {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding-right: 4px;\n}\n\n.fr-creator-sync-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 14px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.09);\n  border-radius: 13px;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.fr-creator-sync-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.fr-creator-sync-row.fr-done {\n  border-color: rgba(52, 211, 153, 0.28);\n}\n\n.fr-creator-sync-row.fr-active {\n  background: rgba(59, 130, 246, 0.13);\n  border-color: rgba(96, 165, 250, 0.75);\n  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35);\n}\n\n.fr-creator-sync-row.fr-is-duet {\n  border-left: 3px solid #c084fc;\n}\n\n.fr-creator-word-row {\n  flex-direction: column;\n  align-items: stretch;\n  cursor: default;\n}\n\n.fr-creator-word-row-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-word-row-meta {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: pointer;\n  border-radius: 8px;\n  padding: 2px 4px;\n  transition: opacity 0.15s ease;\n}\n\n.fr-creator-word-row-meta:hover .fr-creator-time-pill {\n  border-color: rgba(96, 165, 250, 0.6);\n  background: rgba(59, 130, 246, 0.18);\n  color: #fff;\n}\n\n.fr-creator-time-pill {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 12px;\n  font-weight: 600;\n  color: #93c5fd;\n  background: rgba(0, 0, 0, 0.35);\n  padding: 3px 9px;\n  border-radius: 7px;\n  border: 1px solid rgba(255, 255, 255, 0.09);\n}\n\n.fr-creator-row-text {\n  flex: 1;\n  font-size: 14px;\n  font-weight: 600;\n  color: #fff;\n}\n\n.fr-creator-row-bgsub {\n  font-size: 12px;\n  color: rgba(255, 255, 255, 0.58);\n  margin-top: 2px;\n}\n\n.fr-creator-row-actions {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-mini-btn {\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: rgba(255, 255, 255, 0.88);\n  font-size: 11.5px;\n  font-weight: 600;\n  padding: 4px 9px;\n  border-radius: 7px;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.fr-creator-mini-btn:hover:not(:disabled) {\n  background: rgba(255, 255, 255, 0.18);\n  color: #fff;\n}\n\n.fr-creator-mini-btn:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n.fr-creator-mini-btn.fr-active-duet {\n  background: rgba(168, 85, 247, 0.28);\n  border-color: rgba(192, 132, 252, 0.65);\n  color: #e9d5ff;\n}\n\n.fr-creator-mini-btn.fr-danger,\n.fr-creator-mini-icon-btn.fr-danger {\n  color: #fca5a5;\n}\n\n.fr-creator-mini-icon-btn {\n  width: 26px;\n  height: 26px;\n  border-radius: 7px;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: rgba(255, 255, 255, 0.88);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n}\n\n.fr-creator-mini-icon-btn svg {\n  width: 13px;\n  height: 13px;\n}\n\n.fr-creator-mini-icon-btn:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n/* Word Token Chips */\n.fr-creator-tokens-wrap {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 7px;\n  padding-top: 4px;\n}\n\n.fr-creator-bg-tokens {\n  margin-top: 4px;\n  padding-top: 8px;\n  border-top: 1px dashed rgba(255, 255, 255, 0.1);\n  align-items: center;\n}\n\n.fr-creator-bg-tag {\n  font-size: 11px;\n  font-weight: 700;\n  color: #93c5fd;\n  background: rgba(59, 130, 246, 0.15);\n  padding: 3px 8px;\n  border-radius: 6px;\n}\n\n.fr-creator-token {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  padding: 6px 11px;\n  border-radius: 10px;\n  background: rgba(0, 0, 0, 0.34);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: #fff;\n  cursor: pointer;\n  transition: all 0.14s ease;\n}\n\n.fr-creator-token:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.fr-creator-token.fr-done {\n  border-color: rgba(52, 211, 153, 0.45);\n  background: rgba(16, 185, 129, 0.12);\n}\n\n.fr-creator-token.fr-active {\n  border-color: #60a5fa;\n  background: rgba(59, 130, 246, 0.28);\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.4);\n  transform: translateY(-1px);\n}\n\n.fr-creator-token-word {\n  font-size: 13.5px;\n  font-weight: 700;\n  color: #fff;\n}\n\n.fr-creator-token-time {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 10.5px;\n  color: rgba(255, 255, 255, 0.62);\n}\n\n.fr-creator-token-end {\n  flex-direction: row;\n  align-items: center;\n  gap: 5px;\n  padding: 6px 10px;\n  opacity: 0.85;\n}\n\n.fr-creator-token-flag svg {\n  width: 12px;\n  height: 12px;\n}\n\n/* Quick Add Bar at Bottom of Sync Step */\n.fr-creator-sync-quickadd {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding-top: 6px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-creator-sync-quickinput {\n  flex: 1;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 9px;\n  padding: 7px 12px;\n  color: #fff;\n  font-size: 12.5px;\n  outline: none;\n}\n\n/* ==========================================================================\n   STEP 3: Live Preview\n   ========================================================================== */\n\n.fr-creator-preview-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 18px 28px;\n}\n\n.fr-creator-preview-scroll {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 18px;\n  padding: 40px 16px;\n}\n\n.fr-creator-preview-line {\n  font-size: 24px;\n  font-weight: 700;\n  line-height: 1.35;\n  color: rgba(255, 255, 255, 0.32);\n  cursor: pointer;\n  transition: all 0.25s ease;\n}\n\n.fr-creator-preview-line.fr-duet-right {\n  text-align: right;\n}\n\n.fr-creator-preview-line.fr-past {\n  color: rgba(255, 255, 255, 0.45);\n}\n\n.fr-creator-preview-line.fr-active {\n  color: rgba(255, 255, 255, 0.65);\n  transform: scale(1.02);\n  transform-origin: left center;\n}\n\n.fr-creator-preview-line.fr-duet-right.fr-active {\n  transform-origin: right center;\n}\n\n.fr-creator-preview-word {\n  transition: color 0.12s ease, text-shadow 0.12s ease;\n}\n\n.fr-creator-preview-word.fr-w-done,\n.fr-creator-preview-word.fr-w-active {\n  color: #fff;\n  text-shadow: 0 0 18px rgba(255, 255, 255, 0.45);\n}\n\n.fr-creator-preview-bg {\n  font-size: 16px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.5);\n  margin-top: 4px;\n}\n\n.fr-creator-empty-box {\n  padding: 36px 24px;\n  text-align: center;\n  color: rgba(255, 255, 255, 0.58);\n  font-size: 13.5px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px dashed rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  margin: auto 0;\n}\n\n/* ==========================================================================\n   Bottom Transport Bar\n   ========================================================================== */\n\n.fr-creator-transport {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 12px 22px;\n  background: rgba(0, 0, 0, 0.38);\n  border-top: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.fr-creator-play-btn {\n  width: 36px;\n  height: 36px;\n  border-radius: 50%;\n  background: #fff;\n  color: #090b10;\n  border: none;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n}\n\n.fr-creator-play-btn svg {\n  width: 17px;\n  height: 17px;\n}\n\n.fr-creator-transport-time {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.78);\n  min-width: 48px;\n}\n\n.fr-creator-seek-bar {\n  flex: 1;\n  height: 7px;\n  background: rgba(255, 255, 255, 0.14);\n  border-radius: 999px;\n  cursor: pointer;\n  overflow: hidden;\n  position: relative;\n}\n\n.fr-creator-seek-fill {\n  height: 100%;\n  width: 0%;\n  background: linear-gradient(90deg, #60a5fa, #a78bfa);\n  border-radius: 999px;\n}\n";
+const STYLES = "\n/* --- variables.css --- */\n:root {\n  --fr-bg: #07070b;\n  --fr-fg: #ffffff;\n  --fr-fg-dim: rgba(255, 255, 255, 0.78);\n  --fr-fg-faint: rgba(255, 255, 255, 0.54);\n  --fr-accent: #ffffff;\n  --fr-accent-2: #101018;\n  --fr-radius: 22px;\n  --fr-font: -apple-system, BlinkMacSystemFont, \"SF Pro Display\", \"Spotify Circular\", \"Circular Std\", \"Segoe UI\", Helvetica, Arial, sans-serif;\n  --fr-transition: 900ms;\n  --fr-spring: cubic-bezier(0.32, 0.72, 0, 1);\n  --fr-glass-bg: rgba(255, 255, 255, 0.09);\n  --fr-glass-surface: rgba(20, 20, 28, 0.52);\n  --fr-glass-border: rgba(255, 255, 255, 0.22);\n  --fr-glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.34), inset 0 -1px 0 rgba(0, 0, 0, 0.16);\n}\n\n#fullscreen-reloaded-root {\n  position: fixed;\n  inset: 0;\n  z-index: 999999;\n  font-family: var(--fr-font);\n  color: var(--fr-fg);\n  visibility: hidden;\n  opacity: 0;\n  transition: opacity 600ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 600ms;\n  overflow: hidden;\n  user-select: none;\n}\n\n#fullscreen-reloaded-root.fr-open {\n  visibility: visible;\n  opacity: 1;\n}\n\n#fullscreen-reloaded-root * {\n  box-sizing: border-box;\n}\n\n/* --- background.css --- */\n/* ---------------- Background ---------------- */\n.fr-bg-root {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  z-index: 0;\n}\n\n.fr-bg-layer {\n  position: absolute;\n  inset: -5%;\n  width: 110%;\n  height: 110%;\n  background-position: center;\n  background-size: cover;\n  opacity: 0;\n  transition: opacity var(--fr-transition) ease;\n  will-change: opacity;\n}\n\n.fr-bg-layer.fr-bg-active {\n  opacity: 1;\n}\n\n.fr-bg-tint {\n  position: absolute;\n  inset: 0;\n  background: radial-gradient(ellipse at 30% 20%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 75%);\n  pointer-events: none;\n}\n\n.fr-bg-scrim {\n  position: absolute;\n  inset: 0;\n  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.05) 30%, rgba(0, 0, 0, 0.55) 100%);\n  pointer-events: none;\n}\n\n/* --- stage.css --- */\n/* ---------------- Layout & Album Art ---------------- */\n.fr-stage {\n  position: relative;\n  z-index: 2;\n  height: 100%;\n  display: grid;\n  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);\n  grid-template-rows: 1fr;\n  grid-template-areas: \"art lyrics\";\n  padding: clamp(24px, 3.2vw, 64px);\n  padding-bottom: clamp(100px, 14vh, 160px);\n  gap: clamp(16px, 2vw, 40px);\n  opacity: 0;\n  transform: translateY(24px) scale(0.98);\n  transition: grid-template-columns 0.8s cubic-bezier(0.2, 0.8, 0.2, 1), gap 0.8s, opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms, transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-stage {\n  opacity: 1;\n  transform: translateY(0) scale(1);\n}\n\n.fr-stage.fr-centered {\n  grid-template-columns: 1fr;\n  grid-template-areas: \"art\";\n}\n\n.fr-stage.fr-centered .fr-lyrics-panel {\n  display: none;\n}\n\n/* ---------------- Album art ---------------- */\n.fr-art-panel {\n  grid-area: art;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 0;\n  min-width: 0;\n}\n\n.fr-art-wrap {\n  --fr-art-beat: 0;\n  --fr-glow-beat: 0.55;\n  --fr-glow-spread: 0%;\n  position: relative;\n  width: min(58vh, 44vw, 640px);\n  aspect-ratio: 1 / 1;\n  transform: scale(calc(1 + var(--fr-art-beat, 0)));\n  transition: width 300ms ease, transform 75ms linear;\n  will-change: transform;\n}\n\n.fr-stage.fr-size-medium .fr-art-wrap { width: min(48vh, 35vw, 520px); }\n.fr-stage.fr-size-small .fr-art-wrap { width: min(38vh, 28vw, 420px); }\n.fr-stage.fr-centered .fr-art-wrap { width: min(62vh, 40vw, 720px); }\n\n.fr-art-img {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n  border-radius: var(--fr-radius);\n  box-shadow: 0 32px 84px -18px rgba(0, 0, 0, 0.68);\n  opacity: 0;\n  z-index: 1;\n  transform: scale(0.985);\n  pointer-events: none;\n  user-select: none;\n  -webkit-user-drag: none;\n  transition: opacity 520ms ease, transform 520ms var(--fr-spring), box-shadow 300ms ease;\n}\n\n.fr-art-img.fr-art-active {\n  opacity: 1;\n  z-index: 2;\n  transform: scale(1);\n}\n\n.fr-art-wrap.fr-no-shadow .fr-art-img {\n  box-shadow: none;\n}\n\n.fr-art-wrap.fr-glow::after {\n  content: \"\";\n  position: absolute;\n  inset: calc(-6% - var(--fr-glow-spread, 0%));\n  border-radius: calc(var(--fr-radius) + 14px);\n  background: var(--fr-art-glow, transparent);\n  filter: blur(54px) saturate(1.45);\n  opacity: var(--fr-glow-beat, 0.55);\n  z-index: -1;\n  pointer-events: none;\n  transition: background 700ms ease, opacity 85ms linear, inset 85ms linear;\n  will-change: opacity, inset;\n}\n\n.fr-art-wrap:hover .fr-art-img.fr-art-active {\n  transform: scale(1.012);\n}\n\n/* ---------------- Apple Music Mobile Liquid Cover Overlay Player (Switch to New Player) ---------------- */\n.fr-cover-player {\n  position: absolute;\n  left: 14px;\n  right: 14px;\n  bottom: 14px;\n  z-index: 5;\n  padding: 16px 18px 14px;\n  border-radius: calc(var(--fr-radius) - 4px);\n  background: linear-gradient(\n    180deg,\n    rgba(255, 255, 255, 0.14) 0%,\n    rgba(18, 18, 26, 0.56) 100%\n  );\n  backdrop-filter: blur(36px) saturate(2.1);\n  -webkit-backdrop-filter: blur(36px) saturate(2.1);\n  border: 1px solid rgba(255, 255, 255, 0.24);\n  box-shadow:\n    0 20px 44px rgba(0, 0, 0, 0.44),\n    inset 0 1px 0 rgba(255, 255, 255, 0.34),\n    inset 0 -1px 0 rgba(0, 0, 0, 0.18);\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(14px) scale(0.96);\n  transition: opacity 380ms var(--fr-spring), transform 420ms var(--fr-spring);\n}\n\n#fullscreen-reloaded-root.fr-new-player .fr-cover-player {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n#fullscreen-reloaded-root.fr-new-player.fr-idle .fr-cover-player {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(16px) scale(0.96);\n}\n\n.fr-cp-scrubber-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n}\n\n.fr-cp-progress-bar {\n  width: 100%;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.22);\n  overflow: hidden;\n  cursor: pointer;\n  transition: height 200ms var(--fr-spring), background 200ms ease;\n}\n\n.fr-cp-progress-bar:hover {\n  height: 10px;\n  background: rgba(255, 255, 255, 0.28);\n}\n\n.fr-cp-progress-fill {\n  height: 100%;\n  width: 0%;\n  border-radius: 999px;\n  background: linear-gradient(90deg, rgba(255, 255, 255, 0.88), #ffffff);\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.42);\n}\n\n.fr-cp-times {\n  display: flex;\n  justify-content: space-between;\n  font-size: 11px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.72);\n  font-variant-numeric: tabular-nums;\n}\n\n.fr-cp-transport {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  padding: 0 4px;\n}\n\n.fr-cp-btn {\n  padding: 8px;\n  width: 40px;\n  height: 40px;\n  border-radius: 50%;\n  color: rgba(255, 255, 255, 0.9);\n  transition: transform 180ms var(--fr-spring), background 180ms ease, color 180ms ease;\n}\n\n.fr-cp-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  transform: scale(1.06);\n}\n\n.fr-cp-btn:active {\n  transform: scale(0.92);\n}\n\n.fr-cp-btn-sm {\n  width: 34px;\n  height: 34px;\n  color: rgba(255, 255, 255, 0.68);\n}\n\n.fr-cp-btn-xs {\n  width: 26px;\n  height: 26px;\n  padding: 4px;\n  color: rgba(255, 255, 255, 0.76);\n}\n\n.fr-cp-btn-play {\n  width: 50px;\n  height: 50px;\n  background: rgba(255, 255, 255, 0.94);\n  color: #0b0b10;\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34), inset 0 1px 0 #ffffff;\n}\n\n.fr-cp-btn-play:hover {\n  background: #ffffff;\n  color: #000000;\n  transform: scale(1.08);\n}\n\n.fr-cp-volume-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 0 2px;\n}\n\n.fr-cp-vol-bar {\n  flex: 1;\n  height: 5px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.22);\n  overflow: hidden;\n  cursor: pointer;\n  transition: height 180ms var(--fr-spring);\n}\n\n.fr-cp-vol-bar:hover {\n  height: 8px;\n}\n\n.fr-cp-vol-fill {\n  height: 100%;\n  width: 80%;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.92);\n}\n\n/* Clickable Track / Artist / Album navigation links */\n.fr-meta-link,\n.fr-artist-link {\n  cursor: pointer;\n  transition: color 180ms ease, opacity 180ms ease, text-shadow 220ms ease;\n}\n\n.fr-meta-link:hover,\n.fr-artist-link:hover {\n  color: #ffffff;\n  text-decoration: underline;\n  text-underline-offset: 4px;\n  text-decoration-thickness: 1.5px;\n  text-shadow: 0 2px 14px rgba(255, 255, 255, 0.35);\n}\n\n.fr-meta {\n  margin-top: clamp(18px, 2vw, 32px);\n  text-align: left;\n  max-width: min(58vh, 44vw, 640px);\n  transition: opacity 300ms ease, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-meta.fr-meta-animating {\n  opacity: 0;\n  transform: translateY(8px);\n}\n\n.fr-stage.fr-centered .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n}\n\n.fr-title {\n  font-size: clamp(22px, 2.4vw, 38px);\n  font-weight: 700;\n  letter-spacing: -0.01em;\n  line-height: 1.15;\n  margin: 0 0 6px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-artist {\n  font-size: clamp(14px, 1.2vw, 18px);\n  color: var(--fr-fg-dim);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-album {\n  font-size: clamp(12px, 1vw, 15px);\n  color: var(--fr-fg-faint);\n  margin: 0;\n}\n\n/* ---------------- Progress Ring ---------------- */\n.fr-progress-ring {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 100%;\n  overflow: visible;\n  pointer-events: none;\n  z-index: 3;\n  transform: rotate(-90deg);\n  transform-origin: center;\n  opacity: 0;\n  transition: opacity 400ms ease;\n}\n\n#fullscreen-reloaded-root.fr-open .fr-progress-ring {\n  opacity: 0.75;\n}\n\n.fr-progress-ring-rect {\n  fill: transparent;\n  stroke: var(--fr-word-accent, #fff);\n  stroke-width: 4;\n  stroke-linecap: round;\n  stroke-dasharray: 100;\n  stroke-dashoffset: 100;\n  transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;\n}\n\n/* --- lyrics.css --- */\n/* ---------------- Lyrics Panel (True Per-Line & Per-Word Waterfall Engine) ---------------- */\n.fr-lyrics-panel {\n  grid-area: lyrics;\n  position: relative;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n}\n\n/* ---------------- \"Provided by\" 3-Second Startup Badge ---------------- */\n.fr-provider-badge {\n  position: absolute;\n  top: 10px;\n  left: 14px;\n  z-index: 8;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 14px;\n  border-radius: 999px;\n  background: rgba(18, 18, 24, 0.74);\n  backdrop-filter: blur(28px) saturate(1.8);\n  -webkit-backdrop-filter: blur(28px) saturate(1.8);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.16);\n  pointer-events: none;\n  opacity: 0;\n  transform: translate3d(0, -10px, 0) scale(0.96);\n  transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),\n              transform 400ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-provider-badge.fr-show {\n  opacity: 1;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-provider-dot {\n  width: 6px;\n  height: 6px;\n  border-radius: 50%;\n  background: #30d158;\n  box-shadow: 0 0 8px rgba(48, 209, 88, 0.85);\n  flex-shrink: 0;\n}\n\n.fr-provider-prefix {\n  font-size: 11.5px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-provider-name {\n  font-size: 12px;\n  font-weight: 700;\n  color: #ffffff;\n}\n\n.fr-provider-tag {\n  font-size: 9.5px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.13);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n/* ---------------- Scroll & Waterfall Viewport ---------------- */\n.fr-lyrics-scroll {\n  --fr-word-step: 120ms;\n  --fr-word-dur: 900ms;\n  --fr-line-dur: 820ms;\n  --fr-word-drop-future: -9px;\n  --fr-word-drop-past: 7px;\n  flex: 1;\n  overflow: hidden;\n  position: relative;\n  mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  -webkit-mask-image: linear-gradient(\n    180deg,\n    transparent 0%,\n    rgba(0, 0, 0, 0.45) 8%,\n    #000 20%,\n    #000 80%,\n    rgba(0, 0, 0, 0.45) 92%,\n    transparent 100%\n  );\n  padding: 6vh 14px 40vh 14px;\n  scrollbar-width: none;\n  opacity: 0;\n  transition: opacity 420ms ease;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"intense\"] {\n  --fr-word-step: 165ms;\n  --fr-word-dur: 1150ms;\n  --fr-line-dur: 980ms;\n  --fr-word-drop-future: -13px;\n  --fr-word-drop-past: 10px;\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] {\n  --fr-word-step: 0ms;\n  --fr-word-dur: 450ms;\n  --fr-line-dur: 500ms;\n  --fr-word-drop-future: 0px;\n  --fr-word-drop-past: 0px;\n}\n\n.fr-lyrics-scroll.fr-unsynced {\n  overflow-y: auto;\n  padding: 14vh 14px 28vh 14px;\n}\n\n.fr-lyrics-scroll.fr-ready {\n  opacity: 1;\n}\n\n.fr-lyrics-scroll::-webkit-scrollbar {\n  display: none;\n}\n\n/* ---------------- Per-Line Staggered Spring Waterfall Positioning ---------------- */\n.fr-lyric-line {\n  --fr-scale: 0.935;\n  font-size: clamp(20px, 2.35vw, 31px);\n  font-weight: 600;\n  letter-spacing: -0.01em;\n  line-height: 1.48;\n  color: rgba(255, 255, 255, 0.32);\n  margin: 6px 0;\n  padding: 10px 14px;\n  border-radius: 16px;\n  transform-origin: left center;\n  transform: translate3d(0, var(--fr-cascade-y, 0px), 0) scale(var(--fr-scale));\n  filter: blur(0px);\n  transition:\n    transform var(--fr-line-dur, 820ms) cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    color 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    opacity 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    filter 720ms cubic-bezier(0.22, 1, 0.36, 1) var(--fr-stagger, 0ms),\n    background-color 250ms ease;\n  cursor: default;\n  -webkit-font-smoothing: antialiased;\n  -moz-osx-font-smoothing: grayscale;\n  will-change: transform, filter, opacity;\n}\n\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-line,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-word .fr-char,\n.fr-lyrics-scroll.fr-no-transition .fr-lyric-sentence {\n  transition: none !important;\n}\n\n.fr-lyrics-scroll.fr-user-scrolling .fr-lyric-line {\n  transition:\n    transform 90ms linear 0ms,\n    color 300ms ease 0ms,\n    filter 300ms ease 0ms !important;\n}\n\n/* Depth-of-field distance classes */\n.fr-lyric-line.fr-near-1 {\n  --fr-scale: 0.965;\n  color: rgba(255, 255, 255, 0.44);\n  filter: blur(0.6px);\n}\n\n.fr-lyric-line.fr-near-2 {\n  --fr-scale: 0.935;\n  color: rgba(255, 255, 255, 0.28);\n  filter: blur(1.5px);\n}\n\n.fr-lyric-line.fr-far {\n  --fr-scale: 0.905;\n  color: rgba(255, 255, 255, 0.17);\n  filter: blur(2.4px);\n}\n\n.fr-lyrics-scroll[data-waterfall=\"off\"] .fr-lyric-line {\n  filter: none !important;\n}\n\n.fr-lyric-line.fr-active {\n  --fr-scale: 1.035;\n  color: #ffffff;\n  filter: blur(0px);\n}\n\n/* ---------------- Full-Sentence Sweep & Waterfall Flow (Line-Synced 'synced' Mode — NOT Word-by-Word) ---------------- */\n.fr-lyric-sentence {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.78;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 680ms ease;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence {\n  color: transparent;\n  background-image: linear-gradient(\n    100deg,\n    #ffffff 0%,\n    #ffffff calc(var(--bar-pct, 0%) - 18%),\n    rgba(255, 255, 255, 0.64) calc(var(--bar-pct, 0%) - 9%),\n    rgba(255, 255, 255, 0.32) calc(var(--bar-pct, 0%)),\n    rgba(255, 255, 255, 0.32) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  transform: translate3d(0, var(--bar-flow-y, var(--fr-word-drop-future)), 0);\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.32));\n  transition:\n    transform 80ms linear,\n    filter 280ms ease;\n  will-change: transform, background-image;\n}\n\n/* Wrapped multi-row line-synced sentence: sweep each visual row sequentially (Row 1 -> Row 2 -> ...) */\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence.fr-sentence-multirow {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  -webkit-background-clip: border-box;\n  background-clip: border-box;\n  filter: none;\n}\n\n.fr-lyric-sentence.fr-sentence-multirow .fr-s-row {\n  display: block;\n  width: fit-content;\n  max-width: 100%;\n}\n\n.fr-lyric-line.fr-duet-right .fr-lyric-sentence.fr-sentence-multirow .fr-s-row {\n  margin-left: auto;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence.fr-sentence-multirow .fr-s-row {\n  color: transparent;\n  background-image: linear-gradient(\n    100deg,\n    #ffffff 0%,\n    #ffffff calc(var(--row-pct, 0%) - 18%),\n    rgba(255, 255, 255, 0.68) calc(var(--row-pct, 0%) - 9%),\n    rgba(255, 255, 255, 0.32) calc(var(--row-pct, 0%)),\n    rgba(255, 255, 255, 0.32) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.28));\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence.fr-sentence-multirow .fr-s-row,\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence.fr-sentence-multirow .fr-s-row {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  filter: none;\n}\n\n.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.72;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 720ms ease,\n    filter 450ms ease;\n}\n\n/* ---------------- Per-Word Waterfall & Karaoke Sweep (ONLY on Word-Synced 'word-by-word' Mode) ---------------- */\n.fr-lyric-word {\n  display: inline-block;\n  white-space: pre-wrap;\n  color: inherit;\n}\n\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-lyric-word {\n  transform: translate3d(0, var(--fr-word-drop-future), 0);\n  opacity: 0.74;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 680ms ease;\n}\n\n/* Unsung word inside active line: poised above (-8px) in soft muted white, waiting for its timestamp */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);\n  background-image: none;\n  opacity: 1;\n  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0) scale(var(--w-scale, 0.985));\n  transform-origin: center baseline;\n  filter: none;\n  transition:\n    transform 75ms linear,\n    filter 180ms ease,\n    color 180ms ease;\n  will-change: transform, background-image, filter;\n}\n\n/* Word currently being sung: glides smoothly from top to 0px while sweeping white light left-to-right */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-active {\n  color: transparent;\n  background-image: linear-gradient(\n    105deg,\n    #ffffff 0%,\n    #ffffff calc(var(--w-pct, -18%) - 14%),\n    rgba(255, 255, 255, 0.9) calc(var(--w-pct, -18%)),\n    rgba(255, 255, 255, 0.34) calc(var(--w-pct, -18%) + 14%),\n    rgba(255, 255, 255, 0.34) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.38));\n}\n\n/* Word finished being sung: rests cleanly at 0px in full bright white */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-active .fr-lyric-word.fr-w-done {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  transform: translate3d(0, 0px, 0) scale(1);\n  filter: drop-shadow(0 2px 16px rgba(255, 255, 255, 0.28));\n}\n\n/* Past line: words cascade gently downward (+7px) with a left-to-right stagger */\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-lyric-word {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: translate3d(0, var(--fr-word-drop-past), 0);\n  opacity: 0.72;\n  filter: none;\n  transition:\n    transform var(--fr-word-dur, 900ms) cubic-bezier(0.22, 1, 0.36, 1) calc(var(--w-idx, 0) * 55ms),\n    opacity 720ms ease calc(var(--w-idx, 0) * 55ms),\n    filter 450ms ease;\n}\n\n/* ---------------- Letter-by-Letter Liquid Prism Wave (Word-Synced Karaoke Enhancement) ---------------- */\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-word.fr-word-letters {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  -webkit-background-clip: border-box;\n  background-clip: border-box;\n  filter: none;\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters,\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters.fr-w-active,\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters.fr-w-done {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  -webkit-background-clip: border-box;\n  background-clip: border-box;\n  filter: none;\n  transform: translate3d(0, var(--w-lift, var(--fr-word-drop-future)), 0);\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-lyric-word.fr-word-letters.fr-w-done {\n  transform: translate3d(0, 0px, 0);\n}\n\n.fr-word-letters .fr-char {\n  display: inline-block;\n  padding: 0 0.04em;\n  margin: 0 -0.04em;\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform-origin: center 75%;\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char {\n  color: rgba(255, 255, 255, 0.34);\n  -webkit-text-fill-color: rgba(255, 255, 255, 0.34);\n  background-image: none;\n  transform: translate3d(0, var(--c-lift, 0px), 0) scale(var(--c-scale, 1));\n  filter: none;\n  transition:\n    transform 65ms linear,\n    filter 140ms ease;\n  will-change: transform, background-image, filter;\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char.fr-c-active {\n  color: transparent;\n  background-image: linear-gradient(\n    108deg,\n    #ffffff 0%,\n    #ffffff calc(var(--c-pct, -18%) - 18%),\n    color-mix(in srgb, #ffffff 68%, var(--fr-word-accent, #ffffff)) calc(var(--c-pct, -18%)),\n    rgba(255, 255, 255, 0.34) calc(var(--c-pct, -18%) + 18%),\n    rgba(255, 255, 255, 0.34) 100%\n  );\n  -webkit-background-clip: text;\n  background-clip: text;\n  -webkit-text-fill-color: transparent;\n  filter:\n    drop-shadow(0 0 calc(11px * var(--c-glow, 0)) color-mix(in srgb, #ffffff 55%, var(--fr-word-accent, #ffffff)))\n    drop-shadow(0 2px calc(18px * var(--c-glow, 0)) rgba(255, 255, 255, 0.52));\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char.fr-c-done {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  filter:\n    drop-shadow(0 0 calc(9px * var(--c-glow, 0)) color-mix(in srgb, #ffffff 62%, var(--fr-word-accent, #ffffff)))\n    drop-shadow(0 2px 14px rgba(255, 255, 255, 0.28));\n}\n\n.fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters.fr-w-done .fr-char {\n  color: #ffffff;\n  -webkit-text-fill-color: #ffffff;\n  background-image: none;\n  transform: translate3d(0, 0px, 0) scale(1);\n  filter: drop-shadow(0 2px 15px rgba(255, 255, 255, 0.26));\n}\n\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-future .fr-word-letters .fr-char,\n.fr-lyrics-scroll.fr-mode-word .fr-lyric-line.fr-past .fr-word-letters .fr-char,\n.fr-lyrics-scroll.fr-unsynced .fr-word-letters .fr-char {\n  color: inherit;\n  -webkit-text-fill-color: currentColor;\n  background-image: none;\n  transform: none;\n  filter: none;\n  transition: none;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .fr-lyrics-scroll.fr-mode-word.fr-letter-mode .fr-lyric-line.fr-active .fr-word-letters .fr-char {\n    transform: none !important;\n  }\n}\n\n/* Interactive hover for synced lines */\n.fr-lyric-line.fr-synced {\n  cursor: pointer;\n}\n\n.fr-lyric-line.fr-synced:hover {\n  background-color: rgba(255, 255, 255, 0.05);\n  color: rgba(255, 255, 255, 0.85);\n  filter: blur(0px);\n}\n\n/* ---------------- Apple Music Duet (Right-Aligned Singer v2) & Background Vocals ---------------- */\n.fr-lyric-line.fr-duet-right {\n  text-align: right;\n  transform-origin: right center;\n}\n\n.fr-lyric-line.fr-duet-right .fr-interlude-dots {\n  justify-content: flex-end;\n  transform-origin: right center;\n}\n\n/* Standalone background vocal line (e.g. \"(Yeah, ooh)\" or full x-bg paragraph) */\n.fr-lyric-line.fr-bg-only-line {\n  font-size: clamp(16px, 1.85vw, 24px);\n  font-weight: 500;\n  font-style: italic;\n  letter-spacing: 0;\n  padding-top: 5px;\n  padding-bottom: 5px;\n}\n\n.fr-lyric-line.fr-bg-only-line.fr-active {\n  --fr-scale: 1.0;\n  opacity: 0.88;\n}\n\n/* Sub-line background vocal attached right below a main vocal line */\n.fr-bg-vocal-sub {\n  display: block;\n  margin-top: 3px;\n  font-size: 0.72em;\n  font-weight: 500;\n  font-style: italic;\n  line-height: 1.35;\n  letter-spacing: 0;\n  opacity: 0.82;\n}\n\n.fr-lyric-line.fr-future .fr-bg-vocal-sub {\n  opacity: 0.65;\n}\n\n.fr-lyric-line.fr-past .fr-bg-vocal-sub {\n  opacity: 0.58;\n}\n\n/* ---------------- Unsynced Teleprompter Mode ---------------- */\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-line {\n  font-size: clamp(19px, 2.2vw, 28px);\n  font-weight: 500;\n  line-height: 1.6;\n  color: rgba(255, 255, 255, 0.84);\n  transform: none !important;\n  filter: none !important;\n  padding: 8px 14px;\n}\n\n.fr-lyrics-scroll.fr-unsynced .fr-lyric-word {\n  transform: none !important;\n  opacity: 1 !important;\n}\n\n/* ---------------- Instrumental Symbol & Apple Music Interlude Dots (• • •) ---------------- */\n.fr-lyric-line.fr-is-music {\n  padding: 16px 14px;\n}\n\n.fr-interlude-dots {\n  display: flex;\n  width: 100%;\n  align-items: center;\n  gap: 10px;\n  height: 0;\n  opacity: 0;\n  overflow: hidden;\n  margin-bottom: 0;\n  transform: translate3d(0, -6px, 0) scale(0.75);\n  transform-origin: left center;\n  pointer-events: none;\n  transition:\n    height 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    margin-bottom 420ms cubic-bezier(0.22, 1, 0.36, 1),\n    opacity 380ms ease,\n    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-interlude-dots.fr-inline-music-dots {\n  height: 28px;\n  opacity: 0.45;\n  overflow: visible;\n  transform: scale(0.9);\n}\n\n.fr-interlude-dots.fr-interlude-active {\n  height: 28px;\n  margin-bottom: 10px;\n  opacity: 1;\n  overflow: visible;\n  transform: translate3d(0, 0, 0) scale(1);\n}\n\n.fr-interlude-dot {\n  width: 11px;\n  height: 11px;\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0.25;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.55);\n  transition: opacity 150ms linear;\n  will-change: transform, opacity;\n}\n\n/* ---------------- Resume Sync Pill ---------------- */\n.fr-resume-sync {\n  position: absolute;\n  bottom: 12px;\n  left: 50%;\n  transform: translateX(-50%);\n  background: rgba(24, 24, 30, 0.78);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  padding: 8px 18px;\n  border-radius: 999px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 220ms ease, transform 220ms ease;\n  z-index: 9;\n}\n\n.fr-resume-sync.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateX(-50%) translateY(-4px);\n}\n\n.fr-resume-sync:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n/* ---------------- Instrumental / No-Lyrics Panel ---------------- */\n.fr-instrumental {\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  transform: translate(-50%, -50%) scale(0.85);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 20px;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);\n  z-index: 3;\n}\n\n.fr-instrumental.fr-show {\n  opacity: 1;\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-instrumental-bars {\n  display: flex;\n  align-items: flex-end;\n  gap: 5px;\n  height: 44px;\n}\n\n.fr-instrumental-bar {\n  width: 5px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.75);\n  animation: instrBar 1.2s ease-in-out infinite alternate;\n}\n\n.fr-instrumental-bar:nth-child(1) { animation-delay: 0s;    animation-duration: 0.9s; }\n.fr-instrumental-bar:nth-child(2) { animation-delay: 0.15s; animation-duration: 1.1s; }\n.fr-instrumental-bar:nth-child(3) { animation-delay: 0.3s;  animation-duration: 0.8s; }\n.fr-instrumental-bar:nth-child(4) { animation-delay: 0.1s;  animation-duration: 1.3s; }\n.fr-instrumental-bar:nth-child(5) { animation-delay: 0.25s; animation-duration: 1.0s; }\n.fr-instrumental-bar:nth-child(6) { animation-delay: 0.4s;  animation-duration: 0.85s; }\n.fr-instrumental-bar:nth-child(7) { animation-delay: 0.05s; animation-duration: 1.2s; }\n\n@keyframes instrBar {\n  0%   { height: 6px; opacity: 0.35; }\n  100% { height: 40px; opacity: 0.95; }\n}\n\n.fr-instrumental-label {\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.48);\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n\n/* --- controls.css --- */\n/* ---------------- Bottom Dock (Controls + Volume + Queue) ---------------- */\n.fr-bottom-bar {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 40px);\n  left: 50%;\n  transform: translateX(-50%);\n  width: min(92vw, 960px);\n  background: linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(22, 22, 30, 0.44) 100%);\n  backdrop-filter: blur(48px) saturate(2.2);\n  -webkit-backdrop-filter: blur(48px) saturate(2.2);\n  border: 1px solid rgba(255, 255, 255, 0.22);\n  box-shadow:\n    0 24px 56px rgba(0, 0, 0, 0.42),\n    inset 0 1px 0 rgba(255, 255, 255, 0.34),\n    inset 0 -1px 0 rgba(0, 0, 0, 0.14);\n  border-radius: 999px;\n  padding: 11px 24px;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 28px;\n  z-index: 5;\n  transition: opacity 0.45s var(--fr-spring), transform 0.45s var(--fr-spring);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-bottom-bar,\n#fullscreen-reloaded-root.fr-hide-legacy-player .fr-bottom-bar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translate(-50%, 38px) scale(0.95);\n}\n\n.fr-controls-left,\n.fr-controls-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-controls-center {\n  flex: 1;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  font-size: 12px;\n  color: var(--fr-fg-dim);\n  font-variant-numeric: tabular-nums;\n}\n\n.fr-progress-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-progress-bar:hover {\n  overflow: visible;\n}\n\n.fr-progress-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 0%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n}\n\n.fr-progress-bar:hover .fr-progress-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-progress-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 0%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 120ms ease;\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-progress-bar:hover .fr-progress-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n.fr-btn {\n  background: transparent;\n  border: none;\n  color: var(--fr-fg-dim);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 10px;\n  border-radius: 50%;\n  transition: color 150ms ease, transform 100ms ease, background 150ms ease;\n}\n\n.fr-btn:hover {\n  color: var(--fr-fg);\n  background: rgba(255, 255, 255, 0.08);\n}\n\n.fr-btn:active {\n  transform: scale(0.92);\n}\n\n.fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-btn-play {\n  width: 48px;\n  height: 48px;\n  background: var(--fr-fg);\n  color: #000;\n}\n\n.fr-btn-play:hover {\n  background: var(--fr-fg);\n  transform: scale(1.04);\n  color: #000;\n}\n\n.fr-btn svg {\n  width: 22px;\n  height: 22px;\n}\n\n.fr-btn-play svg {\n  width: 24px;\n  height: 24px;\n}\n\n.fr-volume-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  width: 140px;\n}\n\n.fr-volume-bar {\n  flex: 1;\n  height: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.12);\n  position: relative;\n  cursor: pointer;\n  overflow: hidden;\n}\n\n.fr-volume-bar:hover {\n  overflow: visible;\n}\n\n.fr-volume-fill {\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 100%;\n  border-radius: 999px;\n  background: var(--fr-fg);\n  transition: width 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-volume-bar:hover .fr-volume-fill {\n  background: var(--fr-word-accent, #ffffff);\n}\n\n.fr-volume-handle {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  background: var(--fr-fg);\n  left: 100%;\n  transform: translate(-50%, -50%) scale(0);\n  transition: transform 150ms ease, left 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n}\n\n.fr-volume-bar:hover .fr-volume-handle {\n  transform: translate(-50%, -50%) scale(1);\n}\n\n/* --- topbar.css --- */\n/* ---------------- Top bar ---------------- */\n.fr-topbar {\n  position: absolute;\n  top: clamp(18px, 2.4vw, 36px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 14;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(22, 22, 30, 0.42) 100%);\n  backdrop-filter: blur(44px) saturate(2.2);\n  -webkit-backdrop-filter: blur(44px) saturate(2.2);\n  border: 1px solid rgba(255, 255, 255, 0.22);\n  border-radius: 999px;\n  padding: 6px 8px;\n  box-shadow:\n    0 12px 34px rgba(0, 0, 0, 0.34),\n    inset 0 1px 0 rgba(255, 255, 255, 0.34),\n    inset 0 -1px 0 rgba(0, 0, 0, 0.14);\n  transition: opacity 0.45s var(--fr-spring), transform 0.45s var(--fr-spring);\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-topbar {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-20px) scale(0.95);\n}\n\n.fr-topbar .fr-btn {\n  padding: 8px;\n  border-radius: 50%;\n  width: 36px;\n  height: 36px;\n}\n\n.fr-topbar .fr-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n.fr-topbar-sep {\n  width: 1px;\n  height: 20px;\n  background: rgba(255, 255, 255, 0.12);\n  margin: 0 2px;\n}\n\n.fr-topbar .fr-btn.fr-active {\n  color: var(--fr-word-accent, #1ed760);\n}\n\n.fr-topbar .fr-btn.fr-heart-active {\n  color: #ff4d6a;\n}\n\n/* --- settings.css --- */\n/* ---------------- Settings Panel (Apple Music iOS Liquid Sheet) ---------------- */\n.fr-settings-panel {\n  position: absolute;\n  top: clamp(64px, 6.2vw, 88px);\n  right: clamp(18px, 2.4vw, 36px);\n  z-index: 25;\n  width: min(500px, 94vw);\n  max-height: min(82vh, 690px);\n  overflow: hidden;\n  background: linear-gradient(180deg, rgba(32, 32, 42, 0.72) 0%, rgba(16, 16, 22, 0.84) 100%);\n  backdrop-filter: blur(52px) saturate(2.15);\n  -webkit-backdrop-filter: blur(52px) saturate(2.15);\n  border: 1px solid rgba(255, 255, 255, 0.22);\n  border-radius: 28px;\n  padding: 18px 20px 20px;\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n  box-shadow:\n    0 32px 72px rgba(0, 0, 0, 0.56),\n    inset 0 1px 0 rgba(255, 255, 255, 0.34),\n    inset 0 -1px 0 rgba(0, 0, 0, 0.16);\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-10px) scale(0.96);\n  transform-origin: top right;\n  transition: opacity 0.32s var(--fr-spring), transform 0.36s var(--fr-spring);\n}\n\n.fr-settings-panel.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-settings-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  padding: 0 2px;\n}\n\n.fr-settings-heading {\n  font-size: 18px;\n  font-weight: 800;\n  letter-spacing: -0.02em;\n  color: #ffffff;\n}\n\n.fr-settings-close {\n  width: 32px;\n  height: 32px;\n  padding: 6px;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n}\n\n.fr-settings-tabs {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 4px;\n  border-radius: 16px;\n  background: rgba(255, 255, 255, 0.07);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n}\n\n.fr-settings-tab {\n  flex: 1;\n  padding: 8px 10px;\n  border-radius: 12px;\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.68);\n  font-family: inherit;\n  font-size: 12.5px;\n  font-weight: 700;\n  cursor: pointer;\n  white-space: nowrap;\n  transition: background 220ms var(--fr-spring), color 200ms ease, box-shadow 220ms ease;\n}\n\n.fr-settings-tab:hover {\n  color: #ffffff;\n}\n\n.fr-settings-tab.fr-tab-active {\n  background: rgba(255, 255, 255, 0.18);\n  color: #ffffff;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.28);\n}\n\n.fr-settings-body {\n  flex: 1;\n  overflow-y: auto;\n  overflow-x: hidden;\n  padding-right: 4px;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n}\n\n.fr-settings-body::-webkit-scrollbar {\n  width: 5px;\n}\n.fr-settings-body::-webkit-scrollbar-track {\n  background: transparent;\n}\n.fr-settings-body::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.2);\n  border-radius: 999px;\n}\n\n.fr-settings-pane {\n  display: none;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-settings-pane.fr-pane-active {\n  display: flex;\n}\n\n.fr-settings-card {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n\n.fr-settings-card-body {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  padding: 12px 14px;\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.06);\n  border: 1px solid rgba(255, 255, 255, 0.11);\n  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);\n}\n\n.fr-settings-title {\n  font-size: 11px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.48);\n  text-transform: uppercase;\n  letter-spacing: 0.09em;\n  padding: 0 6px;\n}\n\n.fr-settings-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  min-height: 34px;\n}\n\n.fr-settings-row.fr-hidden {\n  display: none;\n}\n\n.fr-settings-subrow {\n  padding-left: 12px;\n  border-left: 2px solid rgba(255, 255, 255, 0.18);\n  margin-left: 2px;\n}\n\n.fr-settings-label-group {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n}\n\n.fr-settings-desc {\n  font-size: 11.5px;\n  line-height: 1.3;\n  color: rgba(255, 255, 255, 0.52);\n}\n\n.fr-settings-row label {\n  font-size: 13.5px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.92);\n  user-select: none;\n}\n\n/* ---------------- Custom Liquid Glass Dropdown ---------------- */\n.fr-select-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-select-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg);\n  border-radius: 999px;\n  padding: 6px 14px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n  max-width: 170px;\n}\n\n.fr-select-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.02);\n}\n\n.fr-select-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-select-wrap.fr-open .fr-select-btn {\n  background: rgba(255, 255, 255, 0.18);\n  border-color: rgba(255, 255, 255, 0.38);\n  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);\n}\n\n.fr-select-label {\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.fr-select-arrow {\n  width: 16px;\n  height: 16px;\n  fill: currentColor;\n  flex-shrink: 0;\n  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-wrap.fr-open .fr-select-arrow {\n  transform: rotate(180deg);\n}\n\n.fr-select-menu {\n  position: absolute;\n  top: calc(100% + 6px);\n  right: 0;\n  width: max-content;\n  min-width: 190px;\n  max-width: 285px;\n  max-height: 260px;\n  overflow-y: auto;\n  overflow-x: hidden;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n  background: rgba(20, 20, 26, 0.96);\n  backdrop-filter: blur(44px) saturate(2);\n  -webkit-backdrop-filter: blur(44px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 18px;\n  padding: 6px;\n  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.18);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-select-menu::-webkit-scrollbar {\n  width: 4px;\n}\n.fr-select-menu::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.25);\n  border-radius: 999px;\n}\n\n.fr-select-wrap.fr-open .fr-select-menu {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-select-item {\n  padding: 8px 12px;\n  border-radius: 12px;\n  font-size: 13px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.86);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  transition: all 0.15s ease;\n  user-select: none;\n}\n\n.fr-select-item-left {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n}\n\n.fr-select-item-title {\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-select-item-sub {\n  font-size: 10px;\n  font-weight: 500;\n  color: rgba(255, 255, 255, 0.45);\n  letter-spacing: 0.01em;\n  white-space: nowrap;\n}\n\n.fr-select-item-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-shrink: 0;\n}\n\n.fr-select-item-badge {\n  font-size: 10px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  padding: 2px 7px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.09);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: rgba(255, 255, 255, 0.72);\n}\n\n.fr-select-item:hover {\n  background: rgba(255, 255, 255, 0.11);\n  color: #ffffff;\n}\n\n.fr-select-item.fr-selected {\n  background: rgba(255, 255, 255, 0.16);\n  color: #ffffff;\n  font-weight: 600;\n}\n\n.fr-select-item.fr-selected .fr-select-item-badge {\n  background: rgba(255, 255, 255, 0.2);\n  border-color: rgba(255, 255, 255, 0.32);\n  color: #ffffff;\n}\n\n.fr-select-item .fr-check {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  flex-shrink: 0;\n  opacity: 0;\n}\n\n.fr-select-item.fr-selected .fr-check {\n  opacity: 1;\n}\n\n/* ---------------- Custom Liquid Glass Color Picker ---------------- */\n.fr-color-picker-wrap {\n  position: relative;\n  display: inline-block;\n}\n\n.fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.09);\n  backdrop-filter: blur(20px);\n  -webkit-backdrop-filter: blur(20px);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: var(--fr-fg, #ffffff);\n  border-radius: 999px;\n  padding: 5px 12px 5px 6px;\n  font-family: inherit;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  user-select: none;\n  outline: none;\n}\n\n.fr-color-swatch-btn:hover {\n  background: rgba(255, 255, 255, 0.16);\n  border-color: rgba(255, 255, 255, 0.28);\n  transform: scale(1.03);\n}\n\n.fr-color-swatch-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-swatch-btn {\n  background: rgba(255, 255, 255, 0.22);\n  border-color: var(--fr-word-accent, #1ed760);\n  box-shadow: 0 0 16px rgba(30, 215, 96, 0.25);\n}\n\n.fr-color-swatch-inner {\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.35);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n  flex-shrink: 0;\n  transition: background-color 0.2s ease;\n}\n\n.fr-color-hex-label {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 12px;\n  letter-spacing: 0.04em;\n  color: rgba(255, 255, 255, 0.9);\n}\n\n.fr-color-popup {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  width: 240px;\n  max-height: 480px;\n  overflow-y: auto;\n  scrollbar-width: none;\n  background: rgba(22, 22, 28, 0.96);\n  backdrop-filter: blur(40px) saturate(2);\n  -webkit-backdrop-filter: blur(40px) saturate(2);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 22px;\n  padding: 16px;\n  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.2);\n  z-index: 100;\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(-8px) scale(0.95);\n  transform-origin: top right;\n  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n}\n\n.fr-color-popup::-webkit-scrollbar {\n  display: none;\n}\n\n.fr-color-picker-wrap.fr-open .fr-color-popup {\n  opacity: 1;\n  pointer-events: auto;\n  transform: translateY(0) scale(1);\n}\n\n.fr-color-popup-title {\n  font-size: 10px;\n  font-weight: 800;\n  color: rgba(255, 255, 255, 0.45);\n  text-transform: uppercase;\n  letter-spacing: 0.1em;\n  margin-top: 2px;\n}\n\n.fr-color-preset-grid {\n  display: grid;\n  grid-template-columns: repeat(4, 1fr);\n  gap: 10px;\n  justify-items: center;\n}\n\n.fr-color-preset-item {\n  width: 34px;\n  height: 34px;\n  border-radius: 50%;\n  border: 1.5px solid rgba(255, 255, 255, 0.2);\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);\n  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.15s ease, box-shadow 0.15s ease;\n  outline: none;\n}\n\n.fr-color-preset-item:hover {\n  transform: scale(1.18);\n  border-color: rgba(255, 255, 255, 0.7);\n  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);\n}\n\n.fr-color-preset-item.fr-selected {\n  border-color: #ffffff;\n  box-shadow: 0 0 14px rgba(255, 255, 255, 0.6);\n  transform: scale(1.12);\n}\n\n.fr-check-sm {\n  width: 14px;\n  height: 14px;\n  fill: #ffffff;\n  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));\n  opacity: 0;\n  transition: opacity 0.15s ease;\n}\n\n.fr-color-preset-item.fr-selected .fr-check-sm {\n  opacity: 1;\n}\n\n/* ---------------- Rainbow Hue Slider ---------------- */\n.fr-hue-slider-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding: 4px 0 2px 0;\n}\n\n.fr-hue-slider {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 100%;\n  height: 12px;\n  border-radius: 999px;\n  background: linear-gradient(\n    to right,\n    #ff0000 0%,\n    #ffff00 17%,\n    #00ff00 33%,\n    #00ffff 50%,\n    #0000ff 67%,\n    #ff00ff 83%,\n    #ff0000 100%\n  );\n  outline: none;\n  cursor: pointer;\n  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n}\n\n.fr-hue-slider::-webkit-slider-thumb {\n  -webkit-appearance: none;\n  appearance: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #ffffff;\n  border: 2px solid rgba(0, 0, 0, 0.4);\n  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.fr-hue-slider::-webkit-slider-thumb:hover {\n  transform: scale(1.2);\n}\n\n.fr-color-custom-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding-top: 8px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-color-wheel-btn {\n  background: transparent;\n  border: none;\n  padding: 0;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  outline: none;\n  border-radius: 50%;\n  transition: transform 0.2s ease;\n}\n\n.fr-color-wheel-btn:hover {\n  transform: scale(1.15);\n}\n\n.fr-color-wheel-btn:active {\n  transform: scale(0.95);\n}\n\n.fr-color-preview-circle {\n  width: 28px;\n  height: 28px;\n  border-radius: 50%;\n  border: 2px solid rgba(255, 255, 255, 0.4);\n  flex-shrink: 0;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);\n}\n\n.fr-color-text-input {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.15);\n  border-radius: 10px;\n  padding: 6px 12px;\n  color: #ffffff;\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  font-size: 13px;\n  font-weight: 600;\n  letter-spacing: 0.05em;\n  outline: none;\n  transition: border-color 0.2s ease, background 0.2s ease;\n}\n\n.fr-color-text-input:focus {\n  border-color: var(--fr-word-accent, #1ed760);\n  background: rgba(255, 255, 255, 0.14);\n}\n\n.fr-color-input {\n  -webkit-appearance: none;\n  appearance: none;\n  border: 2px solid rgba(255, 255, 255, 0.22);\n  width: 32px;\n  height: 32px;\n  border-radius: 50%;\n  cursor: pointer;\n  background: transparent;\n  padding: 0;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);\n  transition: transform 0.2s ease, border-color 0.2s ease;\n  outline: none;\n}\n\n.fr-color-input:hover {\n  transform: scale(1.12);\n  border-color: rgba(255, 255, 255, 0.6);\n}\n\n.fr-color-input::-webkit-color-swatch-wrapper {\n  padding: 0;\n}\n\n.fr-color-input::-webkit-color-swatch {\n  border: none;\n  border-radius: 50%;\n}\n\n/* ---------------- Toggles ---------------- */\n.fr-toggle {\n  width: 48px;\n  height: 26px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.3);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(255, 255, 255, 0.05);\n  position: relative;\n  cursor: pointer;\n  border: none;\n  outline: none;\n  transition: background 0.3s ease;\n  flex-shrink: 0;\n}\n\n.fr-toggle::after {\n  content: \"\";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 20px;\n  height: 20px;\n  border-radius: 50%;\n  background: #ffffff;\n  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);\n  transition: left 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n.fr-toggle.fr-on {\n  background: var(--fr-word-accent, #1ed760);\n  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(255, 255, 255, 0.05);\n}\n\n.fr-toggle.fr-on::after {\n  left: 25px;\n}\n\n/* --- ambient.css --- */\n/* ---------------- Mood-Adaptive & Beat-Reactive Atmosphere ---------------- */\n.fr-ambient {\n  --fr-beat: 0;\n  --fr-bar: 0;\n  --fr-energy: 0.5;\n  --fr-amb-dominant: #4a3f78;\n  --fr-amb-accent: #7b52ab;\n  --fr-amb-dark: #14121d;\n  --fr-amb-accent-soft: rgba(123, 82, 171, 0.55);\n  --fr-amb-dominant-soft: rgba(74, 63, 120, 0.5);\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 1;\n  overflow: hidden;\n  opacity: 0;\n  transition: opacity 1.2s ease;\n}\n\n.fr-ambient.fr-show {\n  opacity: 1;\n}\n\n.fr-ambient[data-mood=\"off\"] {\n  opacity: 0 !important;\n}\n\n/* ---------------- 1. Aurora Ribbons (Energetic & Dreamy) ---------------- */\n.fr-mood-aurora {\n  position: absolute;\n  inset: -15%;\n  pointer-events: none;\n  mix-blend-mode: screen;\n  opacity: calc(0.28 + var(--fr-energy, 0.5) * 0.35 + var(--fr-beat, 0) * 0.25);\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.045));\n  transition: opacity 450ms ease;\n  will-change: transform, opacity;\n}\n\n.fr-aurora-wave {\n  position: absolute;\n  inset: 0;\n  border-radius: 50%;\n  filter: blur(85px);\n}\n\n.fr-aurora-1 {\n  background: radial-gradient(\n    ellipse 68% 34% at 32% 28%,\n    var(--fr-amb-accent-soft) 0%,\n    transparent 72%\n  );\n  animation: auroraDrift1 16s ease-in-out infinite alternate;\n}\n\n.fr-aurora-2 {\n  background: radial-gradient(\n    ellipse 64% 38% at 68% 66%,\n    var(--fr-amb-dominant-soft) 0%,\n    transparent 74%\n  );\n  animation: auroraDrift2 21s ease-in-out infinite alternate;\n}\n\n@keyframes auroraDrift1 {\n  0%   { transform: translate3d(-6%, -4%, 0) rotate(-6deg) scale(1); }\n  100% { transform: translate3d(8%, 6%, 0) rotate(8deg) scale(1.14); }\n}\n\n@keyframes auroraDrift2 {\n  0%   { transform: translate3d(6%, 5%, 0) rotate(5deg) scale(1.08); }\n  100% { transform: translate3d(-8%, -6%, 0) rotate(-9deg) scale(0.96); }\n}\n\n.fr-ambient[data-mood=\"energetic\"] .fr-mood-aurora {\n  opacity: calc(0.42 + var(--fr-energy, 0.5) * 0.38 + var(--fr-beat, 0) * 0.35);\n}\n\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-aurora {\n  opacity: calc(0.14 + var(--fr-energy, 0.4) * 0.18);\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-aurora {\n  opacity: calc(0.2 + var(--fr-energy, 0.4) * 0.22);\n}\n\n/* ---------------- 2. Beat-Reactive Light Orbs ---------------- */\n.fr-orbs-wrap {\n  position: absolute;\n  inset: 0;\n  mix-blend-mode: screen;\n  opacity: calc(0.38 + var(--fr-energy, 0.5) * 0.28 + var(--fr-beat, 0) * 0.22);\n  transform: scale(calc(1 + var(--fr-beat, 0) * 0.035 + var(--fr-bar, 0) * 0.02));\n  transform-origin: center center;\n  will-change: transform, opacity;\n}\n\n.fr-orb {\n  position: absolute;\n  border-radius: 50%;\n  filter: blur(88px);\n  opacity: 0.62;\n  animation: floatOrb 20s infinite alternate ease-in-out;\n  transition: background-color 900ms ease;\n}\n\n@keyframes floatOrb {\n  0%   { transform: translate3d(0, 0, 0) scale(1); }\n  100% { transform: translate3d(85px, -75px, 0) scale(1.18); }\n}\n\n/* ---------------- 3. Mood-Morphing Particle System ---------------- */\n.fr-particles-wrap {\n  position: absolute;\n  inset: 0;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.fr-particle {\n  position: absolute;\n  left: var(--p-x, 50%);\n  top: var(--p-y, 50%);\n  width: var(--p-size, 4px);\n  height: var(--p-size, 4px);\n  border-radius: 50%;\n  background: #ffffff;\n  opacity: 0;\n  will-change: transform, opacity;\n}\n\n/* --- Mood A: ENERGETIC ⚡ (Fast Rising Neon Sparks pulsing with the Beat) --- */\n.fr-ambient[data-mood=\"energetic\"] .fr-particle {\n  top: auto;\n  bottom: -5vh;\n  width: var(--p-size, 4px);\n  height: var(--p-size, 4px);\n  background: #ffffff;\n  box-shadow: 0 0 calc(8px + var(--fr-beat, 0) * 14px) var(--fr-amb-accent),\n              0 0 4px #ffffff;\n  animation: frSparkRise calc(var(--p-dur, 10s) * 0.58) linear infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frSparkRise {\n  0% {\n    transform: translate3d(0, 5vh, 0) scale(0.5);\n    opacity: 0;\n  }\n  20% {\n    opacity: calc(0.38 + var(--fr-beat, 0) * 0.45);\n  }\n  80% {\n    opacity: calc(0.32 + var(--fr-beat, 0) * 0.45);\n  }\n  100% {\n    transform: translate3d(var(--p-drift, 20px), -110vh, 0) scale(1.35);\n    opacity: 0;\n  }\n}\n\n/* --- Mood B: MELANCHOLIC 🌧️ (Soft Falling Rain / Dew Streaks & Mist) --- */\n.fr-ambient[data-mood=\"melancholic\"] .fr-particle {\n  top: -8vh;\n  width: 1.5px;\n  height: calc(var(--p-size, 4px) * 5.2);\n  border-radius: 999px;\n  background: linear-gradient(\n    180deg,\n    rgba(255, 255, 255, 0) 0%,\n    rgba(255, 255, 255, 0.42) 70%,\n    rgba(255, 255, 255, 0.72) 100%\n  );\n  box-shadow: none;\n  animation: frRainFall calc(var(--p-dur, 10s) * 0.48) linear infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frRainFall {\n  0% {\n    transform: translate3d(0, -10vh, 0) rotate(8deg);\n    opacity: 0;\n  }\n  15% {\n    opacity: 0.34;\n  }\n  85% {\n    opacity: 0.28;\n  }\n  100% {\n    transform: translate3d(-24px, 112vh, 0) rotate(8deg);\n    opacity: 0;\n  }\n}\n\n/* --- Mood C: LATE NIGHT 🌙 (Warm Hovering Fireflies & Analog Vibe) --- */\n.fr-ambient[data-mood=\"latenight\"] .fr-particle {\n  width: calc(var(--p-size, 4px) * 1.15);\n  height: calc(var(--p-size, 4px) * 1.15);\n  background: rgba(255, 232, 185, 0.92);\n  box-shadow: 0 0 12px rgba(255, 200, 120, 0.75), 0 0 22px var(--fr-amb-accent);\n  animation: frFireflyDrift calc(var(--p-dur, 12s) * 1.1) ease-in-out infinite alternate;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frFireflyDrift {\n  0% {\n    transform: translate3d(0, 0, 0) scale(0.65);\n    opacity: 0.08;\n  }\n  50% {\n    transform: translate3d(var(--p-drift, 18px), -26px, 0) scale(calc(1.1 + var(--fr-beat, 0) * 0.35));\n    opacity: calc(0.45 + var(--fr-beat, 0) * 0.35);\n  }\n  100% {\n    transform: translate3d(calc(var(--p-drift, 18px) * -0.7), 18px, 0) scale(0.8);\n    opacity: 0.12;\n  }\n}\n\n/* --- Mood D: DREAMY ✨ (Soft Out-of-Focus Bokeh Light Circles) --- */\n.fr-ambient[data-mood=\"dreamy\"] .fr-particle {\n  top: auto;\n  bottom: -10vh;\n  width: calc(var(--p-size, 4px) * 3.8);\n  height: calc(var(--p-size, 4px) * 3.8);\n  background: radial-gradient(\n    circle,\n    rgba(255, 255, 255, 0.45) 0%,\n    var(--fr-amb-accent-soft) 55%,\n    transparent 100%\n  );\n  filter: blur(2.5px);\n  animation: frBokehFloat calc(var(--p-dur, 12s) * 1.15) ease-in-out infinite;\n  animation-delay: var(--p-delay, 0s);\n}\n\n@keyframes frBokehFloat {\n  0% {\n    transform: translate3d(0, 8vh, 0) scale(0.7);\n    opacity: 0;\n  }\n  25% {\n    opacity: calc(0.24 + var(--fr-beat, 0) * 0.22);\n  }\n  75% {\n    opacity: calc(0.22 + var(--fr-beat, 0) * 0.22);\n  }\n  100% {\n    transform: translate3d(var(--p-drift, 24px), -108vh, 0) scale(1.25);\n    opacity: 0;\n  }\n}\n\n/* ---------------- 4. Atmospheric Mist & Cinematic Vignette ---------------- */\n.fr-mood-mist {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  opacity: 0;\n  background:\n    radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.52) 100%),\n    linear-gradient(180deg, transparent 55%, rgba(12, 14, 22, 0.48) 100%);\n  transition: opacity 900ms ease;\n}\n\n.fr-ambient[data-mood=\"melancholic\"] .fr-mood-mist {\n  opacity: 0.88;\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-mist {\n  opacity: 0.72;\n}\n\n/* ---------------- 5. Late-Night Analog Film Grain ---------------- */\n.fr-mood-grain {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  opacity: 0;\n  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 0);\n  background-size: 3px 3px;\n  mix-blend-mode: overlay;\n  transition: opacity 900ms ease;\n}\n\n.fr-ambient[data-mood=\"latenight\"] .fr-mood-grain {\n  opacity: 0.45;\n}\n\n/* --- upnext.css --- */\n/* ---------------- Up Next Card ---------------- */\n.fr-up-next {\n  position: absolute;\n  bottom: clamp(24px, 3.2vw, 64px);\n  right: clamp(24px, 3.2vw, 64px);\n  background: rgba(30, 30, 35, 0.35);\n  backdrop-filter: blur(60px) saturate(2.5);\n  border: none;\n  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);\n  border-radius: 999px;\n  padding: 12px 24px 12px 12px;\n  display: flex;\n  align-items: center;\n  gap: 16px;\n  z-index: 10;\n  transform: translateX(120%);\n  opacity: 0;\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.6s ease;\n  pointer-events: auto;\n  cursor: pointer;\n}\n\n.fr-up-next.fr-show {\n  transform: translateX(0);\n  opacity: 1;\n}\n\n.fr-up-next-img {\n  width: 48px;\n  height: 48px;\n  border-radius: 50%;\n  object-fit: cover;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n}\n\n.fr-up-next-info {\n  display: flex;\n  flex-direction: column;\n  max-width: 200px;\n}\n\n.fr-up-next-label {\n  font-size: 10px;\n  font-weight: 700;\n  color: var(--fr-fg-dim);\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  margin-bottom: 2px;\n}\n\n.fr-up-next-title {\n  font-size: 14px;\n  font-weight: 700;\n  color: var(--fr-fg);\n  margin: 0 0 2px 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-up-next-artist {\n  font-size: 12px;\n  color: var(--fr-fg-faint);\n  margin: 0;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-up-next {\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* --- idle.css --- */\n/* ---------------- Idle Mode & Clock ---------------- */\n#fullscreen-reloaded-root.fr-idle,\n#fullscreen-reloaded-root.fr-idle * {\n  cursor: none !important;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-controls,\n#fullscreen-reloaded-root.fr-idle .fr-topbar,\n#fullscreen-reloaded-root.fr-idle .fr-side-controls,\n#fullscreen-reloaded-root.fr-idle .fr-settings-panel,\n#fullscreen-reloaded-root.fr-idle .fr-resume-sync {\n  opacity: 0;\n  pointer-events: none;\n  transform: translateY(12px);\n}\n\n.fr-controls,\n.fr-topbar,\n.fr-side-controls,\n.fr-settings-panel,\n.fr-resume-sync {\n  transition: opacity 400ms ease, transform 400ms ease;\n}\n\n/* ---------------- Clock & Idle Cinema Mode ---------------- */\n.fr-clock {\n  position: absolute;\n  left: 50%;\n  font-size: clamp(50px, 6vw, 80px);\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.9);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 10;\n  letter-spacing: 0.02em;\n  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.7);\n  font-variant-numeric: tabular-nums;\n  line-height: 1;\n}\n\n.fr-clock.fr-pos-top {\n  top: clamp(24px, 4.5vh, 48px);\n  bottom: auto;\n  transform: translateX(-50%) translateY(-20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, top 0.4s;\n}\n\n.fr-clock.fr-pos-bottom {\n  bottom: clamp(28px, 5vh, 56px);\n  top: auto;\n  transform: translateX(-50%) translateY(20px);\n  transition: opacity 0.8s ease, transform 0.8s ease, bottom 0.4s;\n}\n\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-top,\n#fullscreen-reloaded-root.fr-idle .fr-clock.fr-pos-bottom {\n  opacity: 1;\n  transform: translateX(-50%) translateY(0);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n  grid-template-columns: 1fr 0px;\n  gap: 0;\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-lyrics-panel {\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.8s ease;\n}\n\n/* Gracefully scale artwork in idle mode to prevent clock collision */\n#fullscreen-reloaded-root.fr-idle .fr-art-wrap {\n  width: min(48vh, 38vw, 520px);\n  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n/* Shift artwork cleanly away from clock */\n#fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel {\n  transform: translateY(clamp(45px, 7vh, 80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n  transform: translateY(clamp(-45px, -7vh, -80px));\n  transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-meta {\n  text-align: center;\n  margin-left: auto;\n  margin-right: auto;\n  margin-top: clamp(20px, 2.8vh, 36px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-title {\n  font-size: clamp(28px, 3.2vw, 44px);\n}\n\n#fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-artist {\n  font-size: clamp(16px, 1.6vw, 22px);\n}\n\n/* ---------------- Responsive Styles ---------------- */\n@media (max-aspect-ratio: 5/4), (max-width: 900px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: auto 1fr;\n    grid-template-areas: \"art\" \"lyrics\";\n    gap: clamp(10px, 1.5vh, 20px);\n    padding-top: clamp(88px, 9.5vh, 145px);\n    padding-bottom: clamp(84px, 10vh, 125px);\n    transition: padding-top 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n      padding-bottom 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n      opacity 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms,\n      transform 800ms cubic-bezier(0.2, 0.8, 0.2, 1) 150ms;\n  }\n\n  .fr-stage.fr-centered {\n    grid-template-rows: 1fr;\n    padding-top: clamp(40px, 5vh, 80px);\n  }\n\n  .fr-clock.fr-pos-top {\n    top: clamp(22px, 2.8vh, 42px);\n    font-size: clamp(38px, 6.2vw, 58px);\n  }\n\n  .fr-clock.fr-pos-bottom {\n    bottom: clamp(22px, 3vh, 42px);\n    font-size: clamp(38px, 6.2vw, 58px);\n  }\n\n  .fr-lyrics-panel {\n    display: flex;\n    min-height: 0;\n  }\n\n  .fr-lyrics-scroll {\n    padding: 1vh 8px 18vh 8px;\n    mask-image: linear-gradient(\n      180deg,\n      transparent 0%,\n      rgba(0, 0, 0, 0.65) 4%,\n      #000 10%,\n      #000 82%,\n      rgba(0, 0, 0, 0.45) 93%,\n      transparent 100%\n    );\n    -webkit-mask-image: linear-gradient(\n      180deg,\n      transparent 0%,\n      rgba(0, 0, 0, 0.65) 4%,\n      #000 10%,\n      #000 82%,\n      rgba(0, 0, 0, 0.45) 93%,\n      transparent 100%\n    );\n  }\n\n  /* Balanced artwork in portrait mode when lyrics are visible */\n  .fr-stage .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle .fr-stage .fr-art-wrap {\n    width: min(26vh, 54vw, 340px);\n    margin: 0 auto;\n  }\n\n  .fr-stage.fr-size-medium .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle .fr-stage.fr-size-medium .fr-art-wrap {\n    width: min(22vh, 46vw, 290px);\n  }\n\n  .fr-stage.fr-size-small .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle .fr-stage.fr-size-small .fr-art-wrap {\n    width: min(18vh, 38vw, 240px);\n  }\n\n  /* Larger artwork when lyrics are hidden in portrait mode */\n  .fr-stage.fr-centered .fr-art-wrap,\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage .fr-art-wrap {\n    width: min(38vh, 68vw, 420px);\n  }\n\n  .fr-meta {\n    text-align: center;\n    margin-top: clamp(12px, 1.5vh, 20px);\n    margin-left: auto;\n    margin-right: auto;\n    max-width: 86vw;\n  }\n\n  .fr-title {\n    font-size: clamp(20px, 4.2vw, 28px);\n    margin-bottom: 3px;\n  }\n\n  .fr-artist {\n    font-size: clamp(13px, 2.8vw, 16px);\n  }\n\n  .fr-album {\n    font-size: clamp(11px, 2.2vw, 13px);\n  }\n\n  /* Make bottom dock more compact */\n  .fr-bottom-bar {\n    gap: 12px;\n    padding: 12px 16px;\n    width: 94vw;\n  }\n\n  .fr-volume-row {\n    width: 90px;\n  }\n\n  /* Override idle grid & clock clearance for portrait without overlapping lyrics */\n  #fullscreen-reloaded-root.fr-idle:not([data-idle-lyrics=\"true\"]) .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-art-panel,\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-art-panel {\n    transform: none;\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"top\"] .fr-stage {\n    padding-top: clamp(110px, 11.5vh, 175px);\n  }\n\n  #fullscreen-reloaded-root.fr-idle[data-clock=\"bottom\"] .fr-stage {\n    padding-bottom: clamp(96px, 11.5vh, 145px);\n  }\n}\n\n@media (max-width: 600px) {\n  .fr-controls-center {\n    display: none; /* Hide progress bar on small screens */\n  }\n}\n\n@media (max-height: 500px) {\n  .fr-stage {\n    grid-template-columns: 1fr;\n    grid-template-rows: 1fr;\n    grid-template-areas: \"art\";\n  }\n\n  .fr-lyrics-panel {\n    display: none !important;\n  }\n\n  .fr-art-wrap {\n    width: min(46vh, 60vw, 420px);\n  }\n}\n\n/* --- creator.css --- */\n/* ==========================================================================\n   FullLyrics Creator Studio (Liquid Glass Modal & Word/Line Synchronizer)\n   ========================================================================== */\n\n.fr-creator-backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 10020;\n  background: rgba(6, 8, 14, 0.72);\n  backdrop-filter: blur(22px) saturate(150%);\n  -webkit-backdrop-filter: blur(22px) saturate(150%);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: clamp(12px, 2.5vw, 32px);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.25s cubic-bezier(0.22, 1, 0.36, 1);\n}\n\n.fr-creator-backdrop.fr-show {\n  opacity: 1;\n  pointer-events: auto;\n}\n\n.fr-creator-modal {\n  position: relative;\n  width: min(1140px, 96vw);\n  height: min(840px, 90vh);\n  background: linear-gradient(\n    155deg,\n    rgba(28, 32, 44, 0.92) 0%,\n    rgba(16, 18, 26, 0.95) 100%\n  );\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 24px;\n  box-shadow:\n    0 32px 80px rgba(0, 0, 0, 0.65),\n    inset 0 1px 0 rgba(255, 255, 255, 0.18);\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n  color: #f5f7fa;\n  font-family: inherit;\n}\n\n/* Toast Notification */\n.fr-creator-toast {\n  position: absolute;\n  bottom: 74px;\n  left: 50%;\n  transform: translate(-50%, 14px);\n  background: rgba(20, 24, 34, 0.95);\n  border: 1px solid rgba(255, 255, 255, 0.22);\n  color: #fff;\n  padding: 9px 18px;\n  border-radius: 999px;\n  font-size: 13px;\n  font-weight: 600;\n  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);\n  opacity: 0;\n  pointer-events: none;\n  z-index: 50;\n  transition: all 0.22s ease;\n}\n\n.fr-creator-toast.fr-show {\n  opacity: 1;\n  transform: translate(-50%, 0);\n}\n\n/* Header */\n.fr-creator-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 14px;\n  padding: 16px 22px;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(255, 255, 255, 0.02);\n  flex-wrap: wrap;\n}\n\n.fr-creator-title-wrap {\n  display: flex;\n  flex-direction: column;\n  gap: 3px;\n  min-width: 180px;\n}\n\n.fr-creator-title-row {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.fr-creator-title {\n  margin: 0;\n  font-size: 18px;\n  font-weight: 700;\n  letter-spacing: -0.02em;\n  color: #fff;\n}\n\n.fr-creator-saved-pill {\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 9px;\n  border-radius: 999px;\n  background: rgba(52, 211, 153, 0.18);\n  border: 1px solid rgba(52, 211, 153, 0.45);\n  color: #6ee7b7;\n}\n\n.fr-creator-sub {\n  font-size: 12.5px;\n  color: rgba(255, 255, 255, 0.62);\n  max-width: 340px;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* Mode Switcher */\n.fr-creator-mode-switch {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.35);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 12px;\n  padding: 3px;\n  gap: 3px;\n}\n\n.fr-creator-mode-btn {\n  background: transparent;\n  border: none;\n  color: rgba(255, 255, 255, 0.68);\n  font-size: 12.5px;\n  font-weight: 600;\n  padding: 6px 13px;\n  border-radius: 9px;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-mode-btn:hover {\n  color: #fff;\n}\n\n.fr-creator-mode-btn.fr-active {\n  background: rgba(255, 255, 255, 0.16);\n  color: #fff;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);\n}\n\n/* Header Actions */\n.fr-creator-header-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-creator-btn {\n  display: inline-flex;\n  align-items: center;\n  gap: 7px;\n  height: 36px;\n  padding: 0 14px;\n  border-radius: 10px;\n  font-size: 12.5px;\n  font-weight: 600;\n  cursor: pointer;\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  transition: all 0.18s ease;\n}\n\n.fr-creator-btn svg {\n  width: 15px;\n  height: 15px;\n}\n\n.fr-creator-btn-ghost {\n  background: rgba(255, 255, 255, 0.06);\n  color: rgba(255, 255, 255, 0.88);\n}\n\n.fr-creator-btn-ghost:hover,\n.fr-creator-btn-ghost.fr-active {\n  background: rgba(255, 255, 255, 0.14);\n  color: #fff;\n}\n\n.fr-creator-btn-primary {\n  background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);\n  border-color: rgba(255, 255, 255, 0.25);\n  color: #fff;\n  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);\n}\n\n.fr-creator-btn-primary:hover {\n  filter: brightness(1.1);\n  transform: translateY(-1px);\n}\n\n.fr-creator-icon-btn {\n  width: 36px;\n  height: 36px;\n  border-radius: 10px;\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  background: rgba(255, 255, 255, 0.06);\n  color: rgba(255, 255, 255, 0.85);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-icon-btn svg {\n  width: 17px;\n  height: 17px;\n}\n\n.fr-creator-icon-btn:hover,\n.fr-creator-icon-btn.fr-active {\n  background: rgba(255, 255, 255, 0.16);\n  color: #fff;\n}\n\n/* More Dropdown */\n.fr-creator-more-wrap {\n  position: relative;\n}\n\n.fr-creator-dropdown {\n  position: absolute;\n  top: calc(100% + 8px);\n  right: 0;\n  min-width: 255px;\n  background: rgba(20, 23, 33, 0.98);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  border-radius: 14px;\n  padding: 6px;\n  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.6);\n  z-index: 40;\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n}\n\n.fr-creator-dropdown-item {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  width: 100%;\n  padding: 9px 12px;\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.88);\n  font-size: 12.5px;\n  font-weight: 500;\n  border-radius: 9px;\n  cursor: pointer;\n  text-align: left;\n}\n\n.fr-creator-dropdown-item svg {\n  width: 15px;\n  height: 15px;\n  opacity: 0.85;\n}\n\n.fr-creator-dropdown-item:hover {\n  background: rgba(255, 255, 255, 0.1);\n  color: #fff;\n}\n\n.fr-creator-dropdown-item.fr-danger {\n  color: #f87171;\n}\n\n.fr-creator-dropdown-item.fr-danger:hover {\n  background: rgba(248, 113, 113, 0.14);\n}\n\n/* Step Tabs */\n.fr-creator-steps {\n  display: flex;\n  gap: 8px;\n  padding: 10px 22px;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.08);\n  background: rgba(0, 0, 0, 0.2);\n}\n\n.fr-creator-step-btn {\n  background: transparent;\n  border: 1px solid transparent;\n  color: rgba(255, 255, 255, 0.6);\n  padding: 7px 16px;\n  border-radius: 10px;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.18s ease;\n}\n\n.fr-creator-step-btn:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.05);\n}\n\n.fr-creator-step-btn.fr-active {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n  border-color: rgba(255, 255, 255, 0.16);\n}\n\n/* Local DB Library Drawer */\n.fr-creator-library {\n  padding: 12px 22px;\n  background: rgba(10, 12, 18, 0.72);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.1);\n  max-height: 210px;\n  overflow-y: auto;\n}\n\n.fr-creator-library-head {\n  margin-bottom: 8px;\n}\n\n.fr-creator-library-title {\n  font-size: 12px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.05em;\n  color: rgba(255, 255, 255, 0.55);\n}\n\n.fr-creator-library-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n}\n\n.fr-creator-library-item {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  padding: 8px 12px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.08);\n  border-radius: 10px;\n}\n\n.fr-creator-library-song {\n  font-size: 13px;\n  font-weight: 600;\n  color: #fff;\n}\n\n.fr-creator-library-artist {\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.58);\n}\n\n.fr-creator-library-actions {\n  display: flex;\n  gap: 6px;\n}\n\n/* Body Container */\n.fr-creator-body {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}\n\n/* ==========================================================================\n   STEP 1: Text & Visual Builder\n   ========================================================================== */\n\n.fr-creator-text-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 14px 22px;\n  gap: 12px;\n}\n\n.fr-creator-subtoolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-subswitch {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 10px;\n  padding: 3px;\n  gap: 3px;\n}\n\n.fr-creator-subbtn {\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.65);\n  font-size: 12px;\n  font-weight: 600;\n  padding: 5px 12px;\n  border-radius: 7px;\n  cursor: pointer;\n}\n\n.fr-creator-subbtn.fr-active {\n  background: rgba(255, 255, 255, 0.15);\n  color: #fff;\n}\n\n.fr-creator-quick-actions {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-chip-btn {\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: #fff;\n  font-size: 12px;\n  font-weight: 600;\n  padding: 6px 12px;\n  border-radius: 999px;\n  cursor: pointer;\n  transition: all 0.16s ease;\n}\n\n.fr-creator-chip-btn:hover {\n  background: rgba(255, 255, 255, 0.18);\n}\n\n.fr-creator-textarea {\n  flex: 1;\n  min-height: 0;\n  width: 100%;\n  resize: none;\n  background: rgba(0, 0, 0, 0.28);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 14px;\n  padding: 14px 16px;\n  color: #fff;\n  font-size: 14px;\n  line-height: 1.65;\n  font-family: inherit;\n  outline: none;\n}\n\n.fr-creator-textarea:focus {\n  border-color: rgba(99, 102, 241, 0.65);\n}\n\n/* Visual Builder Cards */\n.fr-creator-builder-list {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  padding-right: 4px;\n}\n\n.fr-creator-line-card {\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 14px;\n  padding: 10px 14px;\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n\n.fr-creator-line-card.fr-is-duet {\n  border-color: rgba(168, 85, 247, 0.45);\n  background: rgba(168, 85, 247, 0.06);\n}\n\n.fr-creator-line-card.fr-is-interlude {\n  border-style: dashed;\n  border-color: rgba(255, 255, 255, 0.22);\n  background: rgba(255, 255, 255, 0.02);\n}\n\n.fr-creator-line-card-top {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-line-num {\n  font-size: 11.5px;\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.48);\n  min-width: 28px;\n}\n\n.fr-creator-interlude-title {\n  flex: 1;\n  font-size: 13px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.75);\n}\n\n.fr-creator-line-input {\n  flex: 1;\n  min-width: 200px;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 9px;\n  padding: 7px 11px;\n  color: #fff;\n  font-size: 13.5px;\n  font-weight: 500;\n  outline: none;\n}\n\n.fr-creator-line-input:focus {\n  border-color: rgba(99, 102, 241, 0.65);\n}\n\n.fr-creator-line-card-controls {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  flex-wrap: wrap;\n}\n\n/* Word Pills inside Visual Builder */\n.fr-creator-word-pills {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  padding-left: 36px;\n}\n\n.fr-creator-word-pill {\n  display: inline-flex;\n  align-items: center;\n  background: rgba(255, 255, 255, 0.07);\n  border: 1px solid rgba(255, 255, 255, 0.13);\n  border-radius: 8px;\n  padding: 2px 6px;\n  gap: 4px;\n}\n\n.fr-creator-word-pill-input {\n  background: transparent;\n  border: none;\n  color: #fff;\n  font-size: 12.5px;\n  font-weight: 500;\n  outline: none;\n  min-width: 22px;\n}\n\n.fr-creator-word-pill-del {\n  background: transparent;\n  border: none;\n  color: rgba(255, 255, 255, 0.45);\n  cursor: pointer;\n  font-size: 13px;\n  padding: 0 2px;\n}\n\n.fr-creator-word-pill-del:hover {\n  color: #f87171;\n}\n\n/* Background Vocal Row inside Visual Builder */\n.fr-creator-bg-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  padding-left: 36px;\n}\n\n.fr-creator-bg-edit-row {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.fr-creator-bg-badge {\n  font-size: 11px;\n  font-weight: 600;\n  color: #93c5fd;\n  background: rgba(59, 130, 246, 0.16);\n  padding: 3px 8px;\n  border-radius: 6px;\n}\n\n.fr-creator-bg-input {\n  flex: 1;\n  background: rgba(0, 0, 0, 0.28);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 8px;\n  padding: 5px 10px;\n  color: rgba(255, 255, 255, 0.9);\n  font-size: 12.5px;\n  outline: none;\n}\n\n.fr-creator-credit-row {\n  display: flex;\n}\n\n.fr-creator-credit-input {\n  width: 100%;\n  background: rgba(0, 0, 0, 0.25);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 10px;\n  padding: 8px 12px;\n  color: #fff;\n  font-size: 12.5px;\n  outline: none;\n}\n\n/* ==========================================================================\n   STEP 2: Sync Studio\n   ========================================================================== */\n\n.fr-creator-sync-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 12px 22px;\n  gap: 10px;\n}\n\n.fr-creator-sync-toolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-cue-btn {\n  background: linear-gradient(135deg, #10b981 0%, #059669 100%);\n  border: 1px solid rgba(255, 255, 255, 0.28);\n  color: #fff;\n  font-size: 13px;\n  font-weight: 700;\n  padding: 9px 18px;\n  border-radius: 11px;\n  cursor: pointer;\n  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35);\n  transition: all 0.15s ease;\n}\n\n.fr-creator-cue-btn:hover {\n  filter: brightness(1.08);\n}\n\n.fr-creator-cue-btn:active {\n  transform: scale(0.97);\n}\n\n.fr-creator-shift-group {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.08);\n  padding: 4px 8px;\n  border-radius: 10px;\n}\n\n.fr-creator-shift-label {\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.6);\n  margin-right: 4px;\n}\n\n.fr-creator-sync-right {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-sync-progress {\n  font-size: 12px;\n  font-weight: 700;\n  color: rgba(255, 255, 255, 0.78);\n  background: rgba(255, 255, 255, 0.08);\n  padding: 5px 11px;\n  border-radius: 999px;\n}\n\n.fr-creator-shortcuts-bar {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  flex-wrap: wrap;\n  font-size: 11.5px;\n  color: rgba(255, 255, 255, 0.56);\n  padding: 4px 2px;\n}\n\n.fr-creator-shortcuts-bar kbd {\n  background: rgba(255, 255, 255, 0.12);\n  border: 1px solid rgba(255, 255, 255, 0.2);\n  border-radius: 5px;\n  padding: 1px 6px;\n  font-size: 11px;\n  color: #fff;\n  font-family: inherit;\n}\n\n.fr-creator-sync-list {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  padding-right: 4px;\n}\n\n.fr-creator-sync-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 14px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid rgba(255, 255, 255, 0.09);\n  border-radius: 13px;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.fr-creator-sync-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.fr-creator-sync-row.fr-done {\n  border-color: rgba(52, 211, 153, 0.28);\n}\n\n.fr-creator-sync-row.fr-active {\n  background: rgba(59, 130, 246, 0.13);\n  border-color: rgba(96, 165, 250, 0.75);\n  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35);\n}\n\n.fr-creator-sync-row.fr-is-duet {\n  border-left: 3px solid #c084fc;\n}\n\n.fr-creator-word-row {\n  flex-direction: column;\n  align-items: stretch;\n  cursor: default;\n}\n\n.fr-creator-word-row-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-word-row-meta {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: pointer;\n  border-radius: 8px;\n  padding: 2px 4px;\n  transition: opacity 0.15s ease;\n}\n\n.fr-creator-word-row-meta:hover .fr-creator-time-pill {\n  border-color: rgba(96, 165, 250, 0.6);\n  background: rgba(59, 130, 246, 0.18);\n  color: #fff;\n}\n\n.fr-creator-time-pill {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 12px;\n  font-weight: 600;\n  color: #93c5fd;\n  background: rgba(0, 0, 0, 0.35);\n  padding: 3px 9px;\n  border-radius: 7px;\n  border: 1px solid rgba(255, 255, 255, 0.09);\n}\n\n.fr-creator-row-text {\n  flex: 1;\n  font-size: 14px;\n  font-weight: 600;\n  color: #fff;\n}\n\n.fr-creator-row-bgsub {\n  font-size: 12px;\n  color: rgba(255, 255, 255, 0.58);\n  margin-top: 2px;\n}\n\n.fr-creator-row-actions {\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  flex-wrap: wrap;\n}\n\n.fr-creator-mini-btn {\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: rgba(255, 255, 255, 0.88);\n  font-size: 11.5px;\n  font-weight: 600;\n  padding: 4px 9px;\n  border-radius: 7px;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.fr-creator-mini-btn:hover:not(:disabled) {\n  background: rgba(255, 255, 255, 0.18);\n  color: #fff;\n}\n\n.fr-creator-mini-btn:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n.fr-creator-mini-btn.fr-active-duet {\n  background: rgba(168, 85, 247, 0.28);\n  border-color: rgba(192, 132, 252, 0.65);\n  color: #e9d5ff;\n}\n\n.fr-creator-mini-btn.fr-danger,\n.fr-creator-mini-icon-btn.fr-danger {\n  color: #fca5a5;\n}\n\n.fr-creator-mini-icon-btn {\n  width: 26px;\n  height: 26px;\n  border-radius: 7px;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  color: rgba(255, 255, 255, 0.88);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n}\n\n.fr-creator-mini-icon-btn svg {\n  width: 13px;\n  height: 13px;\n}\n\n.fr-creator-mini-icon-btn:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n/* Word Token Chips */\n.fr-creator-tokens-wrap {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 7px;\n  padding-top: 4px;\n}\n\n.fr-creator-bg-tokens {\n  margin-top: 4px;\n  padding-top: 8px;\n  border-top: 1px dashed rgba(255, 255, 255, 0.1);\n  align-items: center;\n}\n\n.fr-creator-bg-tag {\n  font-size: 11px;\n  font-weight: 700;\n  color: #93c5fd;\n  background: rgba(59, 130, 246, 0.15);\n  padding: 3px 8px;\n  border-radius: 6px;\n}\n\n.fr-creator-token {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  padding: 6px 11px;\n  border-radius: 10px;\n  background: rgba(0, 0, 0, 0.34);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  color: #fff;\n  cursor: pointer;\n  transition: all 0.14s ease;\n}\n\n.fr-creator-token:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.fr-creator-token.fr-done {\n  border-color: rgba(52, 211, 153, 0.45);\n  background: rgba(16, 185, 129, 0.12);\n}\n\n.fr-creator-token.fr-active {\n  border-color: #60a5fa;\n  background: rgba(59, 130, 246, 0.28);\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.4);\n  transform: translateY(-1px);\n}\n\n.fr-creator-token-word {\n  font-size: 13.5px;\n  font-weight: 700;\n  color: #fff;\n}\n\n.fr-creator-token-time {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 10.5px;\n  color: rgba(255, 255, 255, 0.62);\n}\n\n.fr-creator-token-end {\n  flex-direction: row;\n  align-items: center;\n  gap: 5px;\n  padding: 6px 10px;\n  opacity: 0.85;\n}\n\n.fr-creator-token-flag svg {\n  width: 12px;\n  height: 12px;\n}\n\n/* Quick Add Bar at Bottom of Sync Step */\n.fr-creator-sync-quickadd {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding-top: 6px;\n  border-top: 1px solid rgba(255, 255, 255, 0.08);\n}\n\n.fr-creator-sync-quickinput {\n  flex: 1;\n  background: rgba(0, 0, 0, 0.3);\n  border: 1px solid rgba(255, 255, 255, 0.12);\n  border-radius: 9px;\n  padding: 7px 12px;\n  color: #fff;\n  font-size: 12.5px;\n  outline: none;\n}\n\n/* ==========================================================================\n   STEP 3: Live Preview\n   ========================================================================== */\n\n.fr-creator-preview-step {\n  flex: 1;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  padding: 18px 28px;\n}\n\n.fr-creator-preview-scroll {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  display: flex;\n  flex-direction: column;\n  gap: 18px;\n  padding: 40px 16px;\n}\n\n.fr-creator-preview-line {\n  font-size: 24px;\n  font-weight: 700;\n  line-height: 1.35;\n  color: rgba(255, 255, 255, 0.32);\n  cursor: pointer;\n  transition: all 0.25s ease;\n}\n\n.fr-creator-preview-line.fr-duet-right {\n  text-align: right;\n}\n\n.fr-creator-preview-line.fr-past {\n  color: rgba(255, 255, 255, 0.45);\n}\n\n.fr-creator-preview-line.fr-active {\n  color: rgba(255, 255, 255, 0.65);\n  transform: scale(1.02);\n  transform-origin: left center;\n}\n\n.fr-creator-preview-line.fr-duet-right.fr-active {\n  transform-origin: right center;\n}\n\n.fr-creator-preview-word {\n  transition: color 0.12s ease, text-shadow 0.12s ease;\n}\n\n.fr-creator-preview-word.fr-w-done,\n.fr-creator-preview-word.fr-w-active {\n  color: #fff;\n  text-shadow: 0 0 18px rgba(255, 255, 255, 0.45);\n}\n\n.fr-creator-preview-bg {\n  font-size: 16px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.5);\n  margin-top: 4px;\n}\n\n.fr-creator-empty-box {\n  padding: 36px 24px;\n  text-align: center;\n  color: rgba(255, 255, 255, 0.58);\n  font-size: 13.5px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px dashed rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  margin: auto 0;\n}\n\n/* ==========================================================================\n   Bottom Transport Bar\n   ========================================================================== */\n\n.fr-creator-transport {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 12px 22px;\n  background: rgba(0, 0, 0, 0.38);\n  border-top: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.fr-creator-play-btn {\n  width: 36px;\n  height: 36px;\n  border-radius: 50%;\n  background: #fff;\n  color: #090b10;\n  border: none;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n}\n\n.fr-creator-play-btn svg {\n  width: 17px;\n  height: 17px;\n}\n\n.fr-creator-transport-time {\n  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;\n  font-size: 12px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.78);\n  min-width: 48px;\n}\n\n.fr-creator-seek-bar {\n  flex: 1;\n  height: 7px;\n  background: rgba(255, 255, 255, 0.14);\n  border-radius: 999px;\n  cursor: pointer;\n  overflow: hidden;\n  position: relative;\n}\n\n.fr-creator-seek-fill {\n  height: 100%;\n  width: 0%;\n  background: linear-gradient(90deg, #60a5fa, #a78bfa);\n  border-radius: 999px;\n}\n\n/* --- sidebar.css --- */\n/* ---------------- Spotify Right Sidebar Live Lyrics Card (Apple Music Liquid) ---------------- */\n.fr-sidebar-card {\n  position: relative;\n  overflow: hidden;\n  border-radius: 22px;\n  margin: 10px 0;\n  background: rgba(24, 24, 30, 0.72);\n  border: 1px solid rgba(255, 255, 255, 0.16);\n  box-shadow:\n    0 18px 42px rgba(0, 0, 0, 0.36),\n    inset 0 1px 0 rgba(255, 255, 255, 0.24);\n  backdrop-filter: blur(36px) saturate(1.85);\n  -webkit-backdrop-filter: blur(36px) saturate(1.85);\n  color: #ffffff;\n  font-family: -apple-system, BlinkMacSystemFont, \"SF Pro Display\", \"Segoe UI\", Helvetica, Arial, sans-serif;\n  transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), border-color 260ms ease;\n}\n\n.fr-sb-bg {\n  position: absolute;\n  inset: -18%;\n  background-size: cover;\n  background-position: center;\n  filter: blur(42px) saturate(1.75) brightness(0.62);\n  opacity: 0;\n  transform: scale(1.08);\n  transition: opacity 520ms ease, background-image 600ms ease;\n  pointer-events: none;\n  z-index: 0;\n}\n\n.fr-sidebar-card.fr-sb-has-bg .fr-sb-bg {\n  opacity: 1;\n}\n\n.fr-sb-scrim {\n  position: absolute;\n  inset: 0;\n  background: linear-gradient(180deg, rgba(12, 12, 18, 0.34) 0%, rgba(10, 10, 16, 0.56) 100%);\n  pointer-events: none;\n  z-index: 1;\n}\n\n.fr-sb-header {\n  position: relative;\n  z-index: 2;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  padding: 11px 14px;\n  background: rgba(255, 255, 255, 0.06);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.fr-sb-title-btn {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  background: transparent;\n  border: none;\n  color: #ffffff;\n  cursor: pointer;\n  padding: 2px 0;\n  font-family: inherit;\n  min-width: 0;\n}\n\n.fr-sb-icon {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  color: rgba(255, 255, 255, 0.92);\n}\n\n.fr-sb-icon svg {\n  width: 16px;\n  height: 16px;\n}\n\n.fr-sb-title {\n  font-size: 13px;\n  font-weight: 700;\n  letter-spacing: -0.01em;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.fr-sb-controls {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 3px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n}\n\n.fr-sb-btn {\n  width: 28px;\n  height: 28px;\n  border-radius: 50%;\n  border: none;\n  background: transparent;\n  color: rgba(255, 255, 255, 0.78);\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  cursor: pointer;\n  transition: background 180ms ease, color 180ms ease, transform 180ms cubic-bezier(0.32, 0.72, 0, 1);\n}\n\n.fr-sb-btn:hover {\n  background: rgba(255, 255, 255, 0.14);\n  color: #ffffff;\n}\n\n.fr-sb-btn.fr-active {\n  background: rgba(255, 255, 255, 0.22);\n  color: #ffffff;\n}\n\n.fr-sb-btn svg {\n  width: 14px;\n  height: 14px;\n}\n\n.fr-sidebar-card.fr-sb-collapsed .fr-sb-chevron-btn svg {\n  transform: rotate(-90deg);\n}\n\n.fr-sb-body {\n  position: relative;\n  z-index: 2;\n  height: 310px;\n  overflow: hidden;\n  transition: height 420ms cubic-bezier(0.32, 0.72, 0, 1), opacity 280ms ease;\n}\n\n.fr-sidebar-card.fr-sb-expanded .fr-sb-body {\n  height: min(72vh, 680px);\n}\n\n.fr-sidebar-card.fr-sb-collapsed .fr-sb-body {\n  height: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.fr-sb-scroll {\n  height: 100%;\n  overflow-y: auto;\n  overflow-x: hidden;\n  padding: 28px 16px 64px;\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n  scroll-behavior: smooth;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;\n  mask-image: linear-gradient(180deg, transparent 0%, #000 12%, #000 84%, transparent 100%);\n  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 12%, #000 84%, transparent 100%);\n}\n\n.fr-sb-line {\n  font-size: 16px;\n  font-weight: 700;\n  line-height: 1.38;\n  text-align: center;\n  color: rgba(255, 255, 255, 0.4);\n  transform: scale(0.96);\n  transition:\n    color 380ms cubic-bezier(0.32, 0.72, 0, 1),\n    transform 420ms cubic-bezier(0.32, 0.72, 0, 1),\n    opacity 360ms ease,\n    text-shadow 360ms ease;\n}\n\n.fr-sb-line.fr-sb-clickable {\n  cursor: pointer;\n}\n\n.fr-sb-line.fr-sb-clickable:hover {\n  color: rgba(255, 255, 255, 0.85);\n}\n\n.fr-sb-line.fr-sb-active {\n  color: #ffffff;\n  transform: scale(1.03);\n  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.35);\n}\n\n.fr-sb-line.fr-sb-past {\n  color: rgba(255, 255, 255, 0.34);\n  transform: scale(0.95);\n}\n\n.fr-sb-status {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  font-size: 13px;\n  font-weight: 600;\n  color: rgba(255, 255, 255, 0.56);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 220ms ease;\n}\n\n.fr-sb-status.fr-show {\n  opacity: 1;\n}\n";
 
 function cleanupStyle(removeStyle) {
   try {
@@ -7015,10 +8214,39 @@ function compileDraftToSpicyLyrics(draft) {
     const tokenCount = Math.max(1, l.tokens.length);
     const sliceMs = (lineEnd - lineStart) / tokenCount;
 
+    // Pre-compute monotonic start timestamps so unstamped tokens interpolate cleanly
+    // between their nearest stamped neighbors instead of overlapping until lineEnd.
+    const resolvedStarts = new Array(l.tokens.length);
+    for (let idx = 0; idx < l.tokens.length; idx++) {
+      if (l.tokens[idx].start != null) {
+        resolvedStarts[idx] = Number(l.tokens[idx].start);
+      } else {
+        let prevIdx = idx - 1;
+        while (prevIdx >= 0 && l.tokens[prevIdx].start == null) prevIdx--;
+        let nextIdx = idx + 1;
+        while (nextIdx < l.tokens.length && l.tokens[nextIdx].start == null) nextIdx++;
+
+        const spanStart = prevIdx >= 0 ? Number(l.tokens[prevIdx].start) : lineStart;
+        const spanEnd = nextIdx < l.tokens.length ? Number(l.tokens[nextIdx].start) : lineEnd;
+        const steps = Math.max(1, nextIdx - prevIdx);
+        const stepPos = idx - prevIdx;
+        const interp = spanStart + ((Math.max(spanStart + 40, spanEnd) - spanStart) * stepPos) / steps;
+        resolvedStarts[idx] = Math.round(interp);
+      }
+    }
+
     const syllables = l.tokens.map((tok, idx) => {
-      const tStart = tok.start != null ? tok.start : Math.round(lineStart + idx * sliceMs);
-      const nextTokStart = l.tokens[idx + 1]?.start;
-      let tEnd = tok.end != null && tok.end > tStart ? tok.end : nextTokStart ?? lineEnd;
+      const tStart = resolvedStarts[idx];
+      const nextResolvedStart = resolvedStarts[idx + 1];
+      let tEnd =
+        tok.end != null && tok.end > tStart
+          ? Number(tok.end)
+          : nextResolvedStart != null && nextResolvedStart > tStart
+          ? nextResolvedStart
+          : lineEnd;
+      if (nextResolvedStart != null && nextResolvedStart > tStart && tEnd > nextResolvedStart) {
+        tEnd = nextResolvedStart;
+      }
       if (tEnd <= tStart) tEnd = tStart + Math.max(100, Math.round(sliceMs));
       return {
         Text: tok.text,
@@ -9319,20 +10547,72 @@ const SpotiKitBridge = exports.SpotiKitBridge = {
   },
 
   openQueue() {
+    this.navigateToPath("/queue");
+  },
+
+  uriToSpotifyPath(uri) {
+    if (!uri || typeof uri !== "string") return null;
+    const trimmed = uri.trim();
+    if (trimmed.startsWith("/")) return trimmed;
+    const match = trimmed.match(/^spotify:(track|album|artist|playlist|show|episode):([A-Za-z0-9]+)$/i);
+    if (match) {
+      return `/${match[1].toLowerCase()}/${match[2]}`;
+    }
+    return null;
+  },
+
+  navigateToPath(path) {
+    if (!path || typeof path !== "string") return false;
     try {
       if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Navigation?.go === "function") {
-        SpotiKit.Navigation.go("/queue");
-        return;
+        SpotiKit.Navigation.go(path);
+        return true;
       }
       if (typeof SpotiKit !== "undefined" && typeof SpotiKit.Platform?.History?.push === "function") {
-        SpotiKit.Platform.History.push("/queue");
-        return;
+        SpotiKit.Platform.History.push(path);
+        return true;
       }
     } catch (_) {}
 
     if (typeof window !== "undefined" && window.location) {
-      window.location.hash = "/queue";
+      window.location.hash = path;
+      return true;
     }
+    return false;
+  },
+
+  navigateToUri(uri) {
+    const path = this.uriToSpotifyPath(uri);
+    if (!path) return false;
+    return this.navigateToPath(path);
+  },
+
+  getTrackArtists(track) {
+    if (!track || typeof track !== "object") return [];
+    const meta = track.metadata || {};
+    if (Array.isArray(track.artists) && track.artists.length > 0) {
+      const list = track.artists
+        .map((a, idx) => {
+          const name = a?.name || a?.displayName || "";
+          const metaUriKey = idx === 0 ? "artist_uri" : `artist_uri:${idx}`;
+          const uri = a?.uri || meta[metaUriKey] || "";
+          return name ? { name, uri } : null;
+        })
+        .filter(Boolean);
+      if (list.length) return list;
+    }
+
+    const rawNames = String(meta.artist_name || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (rawNames.length) {
+      return rawNames.map((name, idx) => {
+        const metaUriKey = idx === 0 ? "artist_uri" : `artist_uri:${idx}`;
+        return { name, uri: meta[metaUriKey] || "" };
+      });
+    }
+    return [];
   },
 
   notify(message, options) {
@@ -9637,6 +10917,29 @@ const Locales = exports.Locales = {
     appleConnectError: "Could not reach Apple Music, please try again.",
     appleConnected: "Apple Music connected.",
     appleConnectFailed: "Apple Music connection failed.",
+    // Categorized Settings & New Features
+    settingsTitle: "Settings",
+    tabAppearance: "Appearance",
+    tabPlayer: "Player",
+    tabLyrics: "Lyrics",
+    tabSidebarPip: "Sidebar & PiP",
+    tabBackground: "Atmosphere",
+    switchToNewPlayer: "Switch to New Player",
+    switchToNewPlayerDesc: "Apple Music liquid overlay controls directly on album art",
+    showLegacyPlayer: "Show Old Player",
+    showLegacyPlayerDesc: "Keep the classic bottom dock visible alongside the new player",
+    sidebarLyrics: "Spotify Sidebar Lyrics",
+    sidebarLyricsDesc: "Show smooth live lyrics card in Spotify's right sidebar",
+    sidebarLyricsBg: "Sidebar Lyrics Background",
+    sidebarLyricsBgDesc: "Dynamic blurred album art backdrop behind sidebar lyrics",
+    pipLyrics: "Live Lyrics in PiP",
+    pipLyricsDesc: "Display synced lyrics inside the Picture-in-Picture window",
+    sidebarExpand: "Expand",
+    sidebarCollapse: "Collapse",
+    sidebarOpenFullscreen: "Open Fullscreen",
+    sidebarNoLyrics: "No lyrics available",
+    sidebarLoading: "Loading lyrics...",
+    openInSpotify: "Open in Spotify",
   },
   tr: {
     appearance: "Görünüm",
@@ -9754,6 +11057,29 @@ const Locales = exports.Locales = {
     appleConnectError: "Apple Music'e ulaşılamadı, tekrar deneyin.",
     appleConnected: "Apple Music bağlandı.",
     appleConnectFailed: "Apple Music bağlantısı başarısız oldu.",
+    // Kategorize Ayarlar & Yeni Özellikler
+    settingsTitle: "Ayarlar",
+    tabAppearance: "Görünüm",
+    tabPlayer: "Oynatıcı",
+    tabLyrics: "Sözler",
+    tabSidebarPip: "Sağ Bar & PiP",
+    tabBackground: "Atmosfer",
+    switchToNewPlayer: "Switch to New Player",
+    switchToNewPlayerDesc: "Albüm kapağı üzerinde Apple Music tarzı sıvı oynatıcı kontrolleri",
+    showLegacyPlayer: "Eski Oynatıcıyı Göster",
+    showLegacyPlayerDesc: "Yeni oynatıcı açıkken alttaki klasik oynatıcıyı da görünür tut",
+    sidebarLyrics: "Sağ Yan Bar Sözleri",
+    sidebarLyricsDesc: "Spotify sağ panelinde akıcı canlı şarkı sözleri kartı göster",
+    sidebarLyricsBg: "Sağ Bar Arka Planı",
+    sidebarLyricsBgDesc: "Sağ panel söz kartının arkasında dinamik bulanık kapak arka planı",
+    pipLyrics: "PiP İçinde Canlı Sözler",
+    pipLyricsDesc: "Picture-in-Picture penceresinde senkronize şarkı sözlerini göster",
+    sidebarExpand: "Genişlet",
+    sidebarCollapse: "Daralt",
+    sidebarOpenFullscreen: "Tam Ekranı Aç",
+    sidebarNoLyrics: "Şarkı sözü bulunamadı",
+    sidebarLoading: "Sözler yükleniyor...",
+    openInSpotify: "Spotify'da Aç",
   },
 };
 
@@ -10089,6 +11415,127 @@ function computeWordWaveParams(visible, progressMs, wStart, wEnd, options = {}) 
   };
 }
 
+/**
+ * Repairs word-synced timelines where some words have missing, identical,
+ * or overlapping endMs values so words flow sequentially instead of glowing simultaneously.
+ */
+function normalizeWordTimings(wordsArr, startBaseMs, spanDurMs) {
+  if (!Array.isArray(wordsArr) || !wordsArr.length) return [];
+
+  const lineStart = Number(startBaseMs) || 0;
+  const lineSpan = Math.max(200, Number(spanDurMs) || 2400);
+  const lineEnd = lineStart + lineSpan;
+
+  const weights = wordsArr.map((w) => {
+    const clean = (typeof w === "string" ? w : w?.text || "").trim();
+    return Math.pow(Math.max(1.8, clean.length), 0.78);
+  });
+
+  const normalized = wordsArr.map((rawW) => {
+    const wObj =
+      rawW && typeof rawW === "object"
+        ? rawW
+        : { text: rawW != null ? String(rawW) : "" };
+    return wObj;
+  });
+
+  // 1. Fill missing startMs & redistribute contiguous runs sharing identical startMs
+  let i = 0;
+  while (i < normalized.length) {
+    const curStart = normalized[i].startMs;
+    if (curStart == null || !Number.isFinite(Number(curStart))) {
+      let j = i;
+      while (j < normalized.length && (normalized[j].startMs == null || !Number.isFinite(Number(normalized[j].startMs)))) {
+        j++;
+      }
+      const prevEnd = i > 0 ? normalized[i - 1].endMs ?? normalized[i - 1].startMs ?? lineStart : lineStart;
+      const nextStart = j < normalized.length ? Number(normalized[j].startMs) : lineEnd;
+      const groupStart = Math.max(lineStart, Number(prevEnd) || lineStart);
+      const groupSpan = Math.max(80 * (j - i), nextStart - groupStart);
+      let totalW = 0;
+      for (let k = i; k < j; k++) totalW += weights[k];
+      totalW = totalW || 1;
+      let cursor = groupStart;
+      for (let k = i; k < j; k++) {
+        const slice = (weights[k] / totalW) * groupSpan;
+        normalized[k].startMs = cursor;
+        normalized[k].endMs = Math.max(cursor + 60, cursor + slice);
+        cursor += slice;
+      }
+      i = j;
+      continue;
+    }
+
+    // Check if multiple consecutive words share the exact same startMs (untimed chunk / forgotten sync)
+    const baseStart = Number(curStart);
+    let j = i + 1;
+    while (j < normalized.length && normalized[j].startMs != null && Math.abs(Number(normalized[j].startMs) - baseStart) <= 1) {
+      j++;
+    }
+    if (j - i > 1) {
+      const nextStart = j < normalized.length && normalized[j].startMs != null ? Number(normalized[j].startMs) : null;
+      const lastRawEnd = normalized[j - 1].endMs != null ? Number(normalized[j - 1].endMs) : null;
+      const groupEnd =
+        nextStart != null && nextStart > baseStart
+          ? nextStart
+          : lastRawEnd != null && lastRawEnd > baseStart
+          ? lastRawEnd
+          : Math.max(baseStart + 180 * (j - i), lineEnd);
+      const groupSpan = Math.max(80 * (j - i), groupEnd - baseStart);
+      let totalW = 0;
+      for (let k = i; k < j; k++) totalW += weights[k];
+      totalW = totalW || 1;
+      let cursor = baseStart;
+      for (let k = i; k < j; k++) {
+        const slice = (weights[k] / totalW) * groupSpan;
+        normalized[k].startMs = cursor;
+        normalized[k].endMs = Math.max(cursor + 60, cursor + slice);
+        cursor += slice;
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+
+  // 2. Ensure every word has a valid non-overlapping endMs <= nextWord.startMs
+  for (let k = 0; k < normalized.length; k++) {
+    const w = normalized[k];
+    const nextW = normalized[k + 1];
+    const nextStart = nextW && Number.isFinite(Number(nextW.startMs)) ? Number(nextW.startMs) : null;
+    const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+    const estSlice = (weights[k] / totalW) * lineSpan;
+
+    if (w.endMs == null || !Number.isFinite(Number(w.endMs)) || Number(w.endMs) <= Number(w.startMs)) {
+      w.endMs =
+        nextStart != null && nextStart > Number(w.startMs)
+          ? nextStart
+          : Number(w.startMs) + Math.max(160, estSlice);
+    } else if (nextStart != null && nextStart > Number(w.startMs) && Number(w.endMs) > nextStart) {
+      w.endMs = nextStart;
+    }
+  }
+
+  return normalized;
+}
+
+/**
+ * Computes sequential [startRatio, endRatio] ranges in [0, 1] for wrapped visual rows
+ * of a line-synced sentence, weighted by character length so Row 1 finishes before Row 2 begins.
+ */
+function computeWrappedRowRatios(rowTexts) {
+  if (!Array.isArray(rowTexts) || !rowTexts.length) return [];
+  const weights = rowTexts.map((txt) => Math.max(1, String(txt || "").trim().length));
+  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  let cursor = 0;
+  return rowTexts.map((text, idx) => {
+    const startRatio = cursor / total;
+    cursor += weights[idx];
+    const endRatio = idx === rowTexts.length - 1 ? 1 : cursor / total;
+    return { text, startRatio, endRatio };
+  });
+}
+
 // Exported functions
 exports.clamp01 = clamp01;
 exports.smoothstep = smoothstep;
@@ -10097,6 +11544,8 @@ exports.canAnimateLetters = canAnimateLetters;
 exports.finalizeWordSyllables = finalizeWordSyllables;
 exports.buildCharTimeline = buildCharTimeline;
 exports.computeWordWaveParams = computeWordWaveParams;
+exports.normalizeWordTimings = normalizeWordTimings;
+exports.computeWrappedRowRatios = computeWrappedRowRatios;
 
     },
 
@@ -10590,6 +12039,11 @@ const Settings = exports.Settings = {
     letterByLetter: true,
     interludeDots: true,
     bgVocalsDuet: true,
+    newPlayerMode: false,
+    showLegacyPlayer: false,
+    sidebarLyrics: true,
+    sidebarLyricsBg: true,
+    pipLyrics: true,
     moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off
     beatReactive: "normal", // normal | intense | off
     lyricsProvider: "auto", // auto | spotify | lrclib | genius | applemusic

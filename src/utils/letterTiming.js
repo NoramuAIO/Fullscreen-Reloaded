@@ -273,3 +273,124 @@ export function computeWordWaveParams(visible, progressMs, wStart, wEnd, options
     glowEnv,
   };
 }
+
+/**
+ * Repairs word-synced timelines where some words have missing, identical,
+ * or overlapping endMs values so words flow sequentially instead of glowing simultaneously.
+ */
+export function normalizeWordTimings(wordsArr, startBaseMs, spanDurMs) {
+  if (!Array.isArray(wordsArr) || !wordsArr.length) return [];
+
+  const lineStart = Number(startBaseMs) || 0;
+  const lineSpan = Math.max(200, Number(spanDurMs) || 2400);
+  const lineEnd = lineStart + lineSpan;
+
+  const weights = wordsArr.map((w) => {
+    const clean = (typeof w === "string" ? w : w?.text || "").trim();
+    return Math.pow(Math.max(1.8, clean.length), 0.78);
+  });
+
+  const normalized = wordsArr.map((rawW) => {
+    const wObj =
+      rawW && typeof rawW === "object"
+        ? rawW
+        : { text: rawW != null ? String(rawW) : "" };
+    return wObj;
+  });
+
+  // 1. Fill missing startMs & redistribute contiguous runs sharing identical startMs
+  let i = 0;
+  while (i < normalized.length) {
+    const curStart = normalized[i].startMs;
+    if (curStart == null || !Number.isFinite(Number(curStart))) {
+      let j = i;
+      while (j < normalized.length && (normalized[j].startMs == null || !Number.isFinite(Number(normalized[j].startMs)))) {
+        j++;
+      }
+      const prevEnd = i > 0 ? normalized[i - 1].endMs ?? normalized[i - 1].startMs ?? lineStart : lineStart;
+      const nextStart = j < normalized.length ? Number(normalized[j].startMs) : lineEnd;
+      const groupStart = Math.max(lineStart, Number(prevEnd) || lineStart);
+      const groupSpan = Math.max(80 * (j - i), nextStart - groupStart);
+      let totalW = 0;
+      for (let k = i; k < j; k++) totalW += weights[k];
+      totalW = totalW || 1;
+      let cursor = groupStart;
+      for (let k = i; k < j; k++) {
+        const slice = (weights[k] / totalW) * groupSpan;
+        normalized[k].startMs = cursor;
+        normalized[k].endMs = Math.max(cursor + 60, cursor + slice);
+        cursor += slice;
+      }
+      i = j;
+      continue;
+    }
+
+    // Check if multiple consecutive words share the exact same startMs (untimed chunk / forgotten sync)
+    const baseStart = Number(curStart);
+    let j = i + 1;
+    while (j < normalized.length && normalized[j].startMs != null && Math.abs(Number(normalized[j].startMs) - baseStart) <= 1) {
+      j++;
+    }
+    if (j - i > 1) {
+      const nextStart = j < normalized.length && normalized[j].startMs != null ? Number(normalized[j].startMs) : null;
+      const lastRawEnd = normalized[j - 1].endMs != null ? Number(normalized[j - 1].endMs) : null;
+      const groupEnd =
+        nextStart != null && nextStart > baseStart
+          ? nextStart
+          : lastRawEnd != null && lastRawEnd > baseStart
+          ? lastRawEnd
+          : Math.max(baseStart + 180 * (j - i), lineEnd);
+      const groupSpan = Math.max(80 * (j - i), groupEnd - baseStart);
+      let totalW = 0;
+      for (let k = i; k < j; k++) totalW += weights[k];
+      totalW = totalW || 1;
+      let cursor = baseStart;
+      for (let k = i; k < j; k++) {
+        const slice = (weights[k] / totalW) * groupSpan;
+        normalized[k].startMs = cursor;
+        normalized[k].endMs = Math.max(cursor + 60, cursor + slice);
+        cursor += slice;
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+
+  // 2. Ensure every word has a valid non-overlapping endMs <= nextWord.startMs
+  for (let k = 0; k < normalized.length; k++) {
+    const w = normalized[k];
+    const nextW = normalized[k + 1];
+    const nextStart = nextW && Number.isFinite(Number(nextW.startMs)) ? Number(nextW.startMs) : null;
+    const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+    const estSlice = (weights[k] / totalW) * lineSpan;
+
+    if (w.endMs == null || !Number.isFinite(Number(w.endMs)) || Number(w.endMs) <= Number(w.startMs)) {
+      w.endMs =
+        nextStart != null && nextStart > Number(w.startMs)
+          ? nextStart
+          : Number(w.startMs) + Math.max(160, estSlice);
+    } else if (nextStart != null && nextStart > Number(w.startMs) && Number(w.endMs) > nextStart) {
+      w.endMs = nextStart;
+    }
+  }
+
+  return normalized;
+}
+
+/**
+ * Computes sequential [startRatio, endRatio] ranges in [0, 1] for wrapped visual rows
+ * of a line-synced sentence, weighted by character length so Row 1 finishes before Row 2 begins.
+ */
+export function computeWrappedRowRatios(rowTexts) {
+  if (!Array.isArray(rowTexts) || !rowTexts.length) return [];
+  const weights = rowTexts.map((txt) => Math.max(1, String(txt || "").trim().length));
+  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  let cursor = 0;
+  return rowTexts.map((text, idx) => {
+    const startRatio = cursor / total;
+    cursor += weights[idx];
+    const endRatio = idx === rowTexts.length - 1 ? 1 : cursor / total;
+    return { text, startRatio, endRatio };
+  });
+}

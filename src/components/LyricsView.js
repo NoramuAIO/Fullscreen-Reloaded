@@ -17,6 +17,8 @@ import {
   canAnimateLetters,
   clamp01,
   computeWordWaveParams,
+  computeWrappedRowRatios,
+  normalizeWordTimings,
 } from "../utils/letterTiming.js";
 
 export const LyricsView = {
@@ -35,6 +37,7 @@ export const LyricsView = {
   syncType: "none",
   providerSource: "",
   hasLyrics: true,
+  _isLoading: false,
 
   userScrolling: false,
   userScrollTimer: null,
@@ -103,6 +106,9 @@ export const LyricsView = {
 
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObserver = new ResizeObserver(() => {
+        if (this.syncType === "synced" && this.lines.length) {
+          this._measureSyncedRows();
+        }
         if (!this.userScrolling && (this.syncType === "synced" || this.syncType === "word-synced")) {
           this.applyCascadePosition(true);
         }
@@ -124,7 +130,7 @@ export const LyricsView = {
   },
 
   showProviderBadge(durationMs = 3000) {
-    if (!this.providerBadge || !this.providerSource || !this.hasLyrics) return;
+    if (this._isLoading || !this.providerBadge || !this.providerSource || !this.hasLyrics) return;
     if (this.providerPrefixEl) {
       this.providerPrefixEl.textContent = `${t("providedBy")}:`;
     }
@@ -201,12 +207,20 @@ export const LyricsView = {
     this._shownStartBadgeForUri = null;
     const myRequest = ++this.requestId;
 
+    // Immediately clear stale previous-track provider/sync state before awaiting resolve
+    this._isLoading = true;
+    this.providerSource = "";
+    this.syncType = "none";
+    this.lines = [];
+    this.lineEls = [];
+    this.activeIndex = -1;
     this.hasLyrics = true;
     if (this.providerBadge) this.providerBadge.classList.remove("fr-show");
     if (this.instrPanel) this.instrPanel.classList.remove("fr-show");
     if (app?.applyLayoutSettings) app.applyLayoutSettings();
 
-    this.scrollEl.classList.remove("fr-ready", "fr-user-scrolling");
+    this.scrollEl.innerHTML = "";
+    this.scrollEl.classList.remove("fr-ready", "fr-user-scrolling", "fr-unsynced", "fr-mode-word", "fr-mode-line", "fr-letter-mode");
     this.scrollEl.scrollTop = 0;
     this._cascadeY = 0;
     this._manualOffsetY = 0;
@@ -216,13 +230,7 @@ export const LyricsView = {
 
     const data = await LyricsService.resolve(track);
     if (myRequest !== this.requestId || !this.scrollEl || SpotiKitBridge.isStopped()) return;
-
-    this.scrollEl.innerHTML = "";
-    this.scrollEl.classList.remove("fr-unsynced", "fr-mode-word", "fr-mode-line");
-    this.lines = [];
-    this.lineEls = [];
-    this.activeIndex = -1;
-    this.providerSource = "";
+    this._isLoading = false;
 
     if (!data || !data.lines || !data.lines.length) {
       this.hasLyrics = false;
@@ -389,10 +397,13 @@ export const LyricsView = {
           isInline: true,
         };
       } else if (this.syncType === "synced") {
-        // Line-synced mode (NOT word-by-word): render the entire sentence as ONE unified element
-        const sentenceEl = el("span", "fr-lyric-sentence", fullText.trim());
+        // Line-synced mode: store clean raw text so _measureSyncedRows() can split wrapped visual lines
+        const cleanSentence = fullText.trim();
+        const sentenceEl = el("span", "fr-lyric-sentence", cleanSentence);
         lineEl.appendChild(sentenceEl);
         line._sentenceEl = sentenceEl;
+        line._sentenceText = cleanSentence;
+        line._sentenceRows = null;
 
         if (enableBgDuet && line.bgVocal?.text) {
           const bgWrap = el("div", "fr-bg-vocal-sub");
@@ -404,36 +415,10 @@ export const LyricsView = {
       } else {
         // Word-synced or unsynced mode: render individual word spans
         const buildWordSpans = (wordsArr, containerEl, startBaseMs, spanDurMs, isBg = false) => {
-          const weights = wordsArr.map((w) => {
-            const clean = (typeof w === "string" ? w : w.text || "").trim();
-            return Math.pow(Math.max(1.8, clean.length), 0.78);
-          });
-          const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
-          let cursorMs = 0;
+          const normalizedWords = normalizeWordTimings(wordsArr, startBaseMs, spanDurMs);
 
-          return wordsArr.map((rawW, wIdx) => {
-            const wObj =
-              rawW && typeof rawW === "object"
-                ? rawW
-                : { text: rawW != null ? String(rawW) : "" };
+          return normalizedWords.map((wObj, wIdx) => {
             const wordText = wObj.text != null ? String(wObj.text) : "";
-
-            const sliceMs = (weights[wIdx] / totalWeight) * spanDurMs;
-            const synthStart = startBaseMs + cursorMs;
-            const synthEnd = startBaseMs + cursorMs + sliceMs;
-            cursorMs += sliceMs;
-
-            if (wObj.startMs == null) {
-              wObj.startMs = synthStart;
-              wObj.endMs = Math.max(synthStart + 80, synthEnd);
-            } else if (wObj.endMs == null || wObj.endMs <= wObj.startMs) {
-              const nextW = wordsArr[wIdx + 1];
-              const fallbackEnd =
-                nextW && typeof nextW === "object" && nextW.startMs > wObj.startMs
-                  ? nextW.startMs
-                  : wObj.startMs + Math.max(180, sliceMs);
-              wObj.endMs = fallbackEnd;
-            }
 
             let wordEl;
             wObj.chars = null;
@@ -516,8 +501,116 @@ export const LyricsView = {
     }
     this._revealRafId = requestAnimationFrame(() => {
       this._revealRafId = null;
+      if (this.syncType === "synced" && this.lines.length) {
+        this._measureSyncedRows();
+      }
       if (this.scrollEl) this.scrollEl.classList.add("fr-ready");
     });
+  },
+
+  /**
+   * Splits wrapped line-synced sentences into per-visual-row `.fr-s-row` spans
+   * so Row 1 fills left-to-right completely before wrapped Row 2 begins.
+   */
+  _measureSyncedRows() {
+    if (this.syncType !== "synced" || !this.lines.length) return;
+    for (let i = 0; i < this.lines.length; i++) {
+      const line = this.lines[i];
+      const sentenceEl = line?._sentenceEl;
+      const rawText = line?._sentenceText;
+      if (!sentenceEl || !rawText) continue;
+
+      const words = rawText.split(/\s+/).filter(Boolean);
+      if (words.length < 2) {
+        line._sentenceRows = null;
+        continue;
+      }
+
+      // Temporarily render inline word probes to detect exact visual line wraps
+      sentenceEl.classList.remove("fr-sentence-multirow");
+      sentenceEl.innerHTML = "";
+      const probeFrag = document.createDocumentFragment();
+      const probes = [];
+      for (let w = 0; w < words.length; w++) {
+        const span = document.createElement("span");
+        span.textContent = w < words.length - 1 ? words[w] + " " : words[w];
+        probeFrag.appendChild(span);
+        probes.push(span);
+      }
+      sentenceEl.appendChild(probeFrag);
+
+      const rowsText = [];
+      let currentTop = null;
+      let currentRowWords = [];
+      let hasLayoutMetrics = false;
+
+      for (let w = 0; w < probes.length; w++) {
+        const rect = typeof probes[w].getBoundingClientRect === "function"
+          ? probes[w].getBoundingClientRect()
+          : null;
+        const top = rect && rect.height > 0 ? rect.top : probes[w].offsetTop;
+        if ((rect && rect.height > 0) || probes[w].offsetHeight > 0) {
+          hasLayoutMetrics = true;
+        }
+        if (currentTop === null) {
+          currentTop = top;
+          currentRowWords.push(words[w]);
+        } else if (Math.abs(top - currentTop) > 4) {
+          rowsText.push(currentRowWords.join(" "));
+          currentRowWords = [words[w]];
+          currentTop = top;
+        } else {
+          currentRowWords.push(words[w]);
+        }
+      }
+      if (currentRowWords.length) {
+        rowsText.push(currentRowWords.join(" "));
+      }
+
+      if (!hasLayoutMetrics || rowsText.length <= 1) {
+        sentenceEl.textContent = rawText;
+        line._sentenceRows = null;
+        continue;
+      }
+
+      const ratios = computeWrappedRowRatios(rowsText);
+      sentenceEl.innerHTML = "";
+      sentenceEl.classList.add("fr-sentence-multirow");
+      const rowFrag = document.createDocumentFragment();
+      const rowEntries = ratios.map((r) => {
+        const rowEl = el("span", "fr-s-row", r.text);
+        rowFrag.appendChild(rowEl);
+        return {
+          el: rowEl,
+          startRatio: r.startRatio,
+          endRatio: r.endRatio,
+        };
+      });
+      sentenceEl.appendChild(rowFrag);
+      line._sentenceRows = rowEntries;
+    }
+  },
+
+  getActiveLineSnapshot() {
+    if (!this.hasLyrics || !this.lines.length) return null;
+    const idx = this.activeIndex;
+    const getLineText = (line) => {
+      if (!line) return "";
+      if (line._sentenceText) return line._sentenceText;
+      if (Array.isArray(line.words) && line.words.length) {
+        return line.words.map((w) => (typeof w === "string" ? w : w?.text || "")).join("").trim();
+      }
+      return String(line.text || "").trim();
+    };
+    const activeLine = idx >= 0 ? this.lines[idx] : null;
+    const nextLine = this.lines[idx + 1] || null;
+    return {
+      syncType: this.syncType,
+      activeIndex: idx,
+      activeText: getLineText(activeLine),
+      nextText: getLineText(nextLine),
+      isMusic: Boolean(activeLine?._isMusic),
+    };
   },
 
   _clearLineWordState(lineIdx, asPast = false) {
@@ -527,6 +620,11 @@ export const LyricsView = {
     if (line._sentenceEl) {
       line._sentenceEl.style.removeProperty("--bar-pct");
       line._sentenceEl.style.removeProperty("--bar-flow-y");
+    }
+    if (Array.isArray(line._sentenceRows)) {
+      for (let r = 0; r < line._sentenceRows.length; r++) {
+        line._sentenceRows[r].el?.style.removeProperty("--row-pct");
+      }
     }
     if (line._bgSentenceEl) {
       line._bgSentenceEl.style.removeProperty("--bar-pct");
@@ -707,11 +805,30 @@ export const LyricsView = {
         const lineStart = Number(activeLine.startMs) || 0;
         const barSpan = Math.max(600, Number(activeLine._barSpanMs) || 2500);
         const rawProgress = Math.max(0, Math.min(1, (progressMs - lineStart) / barSpan));
-        const sweptPct = wfMode === "off" ? 118 : rawProgress * 118;
         const flowY = dropPx * (1 - rawProgress);
 
-        sentenceEl.style.setProperty("--bar-pct", `${sweptPct.toFixed(1)}%`);
         sentenceEl.style.setProperty("--bar-flow-y", `${flowY.toFixed(2)}px`);
+
+        if (Array.isArray(activeLine._sentenceRows) && activeLine._sentenceRows.length > 1) {
+          for (let r = 0; r < activeLine._sentenceRows.length; r++) {
+            const row = activeLine._sentenceRows[r];
+            let rowPct;
+            if (wfMode === "off") {
+              rowPct = 118;
+            } else if (rawProgress <= row.startRatio) {
+              rowPct = 0;
+            } else if (rawProgress >= row.endRatio) {
+              rowPct = 118;
+            } else {
+              const span = Math.max(0.001, row.endRatio - row.startRatio);
+              rowPct = ((rawProgress - row.startRatio) / span) * 118;
+            }
+            row.el.style.setProperty("--row-pct", `${rowPct.toFixed(1)}%`);
+          }
+        } else {
+          const sweptPct = wfMode === "off" ? 118 : rawProgress * 118;
+          sentenceEl.style.setProperty("--bar-pct", `${sweptPct.toFixed(1)}%`);
+        }
       }
 
       const bgSentenceEl = activeLine?._bgSentenceEl;
@@ -970,6 +1087,7 @@ export const LyricsView = {
     this.syncType = "none";
     this.providerSource = "";
     this.hasLyrics = true;
+    this._isLoading = false;
     this.userScrolling = false;
     this._currentTrackUri = null;
     this._lastUnsyncedTime = null;

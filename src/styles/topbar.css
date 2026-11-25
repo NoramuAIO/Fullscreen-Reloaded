@@ -7,12 +7,17 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  background: rgba(30, 30, 35, 0.35);
-  backdrop-filter: blur(60px) saturate(2.5);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(22, 22, 30, 0.42) 100%);
+  backdrop-filter: blur(44px) saturate(2.2);
+  -webkit-backdrop-filter: blur(44px) saturate(2.2);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 999px;
   padding: 6px 8px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);
-  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+  transition: opacity 0.45s var(--fr-spring), transform 0.45s var(--fr-spring);
 }
 
 #fullscreen-reloaded-root.fr-idle .fr-topbar {

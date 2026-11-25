@@ -1,44 +1,30 @@
-/* ---------------- Settings panel (Liquid Glass) ---------------- */
+/* ---------------- Settings Panel (Apple Music iOS Liquid Sheet) ---------------- */
 .fr-settings-panel {
   position: absolute;
-  top: clamp(60px, 6vw, 84px);
+  top: clamp(64px, 6.2vw, 88px);
   right: clamp(18px, 2.4vw, 36px);
   z-index: 25;
-  width: min(360px, 92vw);
-  max-height: min(84vh, 700px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
-  background: rgba(24, 24, 30, 0.85);
-  backdrop-filter: blur(50px) saturate(2);
-  -webkit-backdrop-filter: blur(50px) saturate(2);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  width: min(500px, 94vw);
+  max-height: min(82vh, 690px);
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(32, 32, 42, 0.72) 0%, rgba(16, 16, 22, 0.84) 100%);
+  backdrop-filter: blur(52px) saturate(2.15);
+  -webkit-backdrop-filter: blur(52px) saturate(2.15);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 28px;
-  padding: 22px 24px;
+  padding: 18px 20px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);
+  gap: 14px;
+  box-shadow:
+    0 32px 72px rgba(0, 0, 0, 0.56),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.16);
   opacity: 0;
   pointer-events: none;
   transform: translateY(-10px) scale(0.96);
   transform-origin: top right;
-  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.fr-settings-panel::-webkit-scrollbar {
-  width: 5px;
-}
-.fr-settings-panel::-webkit-scrollbar-track {
-  background: transparent;
-}
-.fr-settings-panel::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 999px;
-}
-.fr-settings-panel::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+  transition: opacity 0.32s var(--fr-spring), transform 0.36s var(--fr-spring);
 }
 
 .fr-settings-panel.fr-show {
@@ -47,25 +33,117 @@
   transform: translateY(0) scale(1);
 }
 
-.fr-settings-section {
+.fr-settings-header {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.fr-settings-heading {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #ffffff;
+}
+
+.fr-settings-close {
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.fr-settings-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.fr-settings-tab {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.68);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 220ms var(--fr-spring), color 200ms ease, box-shadow 220ms ease;
+}
+
+.fr-settings-tab:hover {
+  color: #ffffff;
+}
+
+.fr-settings-tab.fr-tab-active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.fr-settings-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.fr-settings-body::-webkit-scrollbar {
+  width: 5px;
+}
+.fr-settings-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.fr-settings-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+}
+
+.fr-settings-pane {
+  display: none;
   flex-direction: column;
   gap: 12px;
 }
 
-.fr-settings-divider {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.08);
-  margin: 2px 0;
+.fr-settings-pane.fr-pane-active {
+  display: flex;
+}
+
+.fr-settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fr-settings-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 .fr-settings-title {
   font-size: 11px;
   font-weight: 800;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.48);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  margin: 0 0 2px 0;
+  letter-spacing: 0.09em;
+  padding: 0 6px;
 }
 
 .fr-settings-row {
@@ -73,13 +151,36 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 32px;
+  min-height: 34px;
+}
+
+.fr-settings-row.fr-hidden {
+  display: none;
+}
+
+.fr-settings-subrow {
+  padding-left: 12px;
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  margin-left: 2px;
+}
+
+.fr-settings-label-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fr-settings-desc {
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.52);
 }
 
 .fr-settings-row label {
-  font-size: 14px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.9);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
   user-select: none;
 }
 

@@ -235,6 +235,50 @@
   will-change: transform, background-image;
 }
 
+/* Wrapped multi-row line-synced sentence: sweep each visual row sequentially (Row 1 -> Row 2 -> ...) */
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence.fr-sentence-multirow {
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+  background-image: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  filter: none;
+}
+
+.fr-lyric-sentence.fr-sentence-multirow .fr-s-row {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.fr-lyric-line.fr-duet-right .fr-lyric-sentence.fr-sentence-multirow .fr-s-row {
+  margin-left: auto;
+}
+
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-active .fr-lyric-sentence.fr-sentence-multirow .fr-s-row {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    #ffffff 0%,
+    #ffffff calc(var(--row-pct, 0%) - 18%),
+    rgba(255, 255, 255, 0.68) calc(var(--row-pct, 0%) - 9%),
+    rgba(255, 255, 255, 0.32) calc(var(--row-pct, 0%)),
+    rgba(255, 255, 255, 0.32) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 14px rgba(255, 255, 255, 0.28));
+}
+
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence.fr-sentence-multirow .fr-s-row,
+.fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-future .fr-lyric-sentence.fr-sentence-multirow .fr-s-row {
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+  background-image: none;
+  filter: none;
+}
+
 .fr-lyrics-scroll.fr-mode-line .fr-lyric-line.fr-past .fr-lyric-sentence {
   color: inherit;
   -webkit-text-fill-color: currentColor;

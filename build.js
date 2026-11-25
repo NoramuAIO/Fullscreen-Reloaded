@@ -30,6 +30,7 @@ const CSS_FILES_ORDER = [
   "upnext.css",
   "idle.css",
   "creator.css",
+  "sidebar.css",
 ];
 
 function normalizeLf(text) {

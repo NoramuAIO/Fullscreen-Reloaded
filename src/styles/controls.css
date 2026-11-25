@@ -4,25 +4,30 @@
   bottom: clamp(24px, 3.2vw, 40px);
   left: 50%;
   transform: translateX(-50%);
-  width: min(92vw, 1000px);
-  background: rgba(30, 30, 35, 0.35);
-  backdrop-filter: blur(60px) saturate(2.5);
-  border: none;
-  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2), inset 0 -1px 1px rgba(0, 0, 0, 0.1);
+  width: min(92vw, 960px);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(22, 22, 30, 0.44) 100%);
+  backdrop-filter: blur(48px) saturate(2.2);
+  -webkit-backdrop-filter: blur(48px) saturate(2.2);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    0 24px 56px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14);
   border-radius: 999px;
-  padding: 12px 28px;
+  padding: 11px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 32px;
+  gap: 28px;
   z-index: 5;
-  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: opacity 0.45s var(--fr-spring), transform 0.45s var(--fr-spring);
 }
 
-#fullscreen-reloaded-root.fr-idle .fr-bottom-bar {
+#fullscreen-reloaded-root.fr-idle .fr-bottom-bar,
+#fullscreen-reloaded-root.fr-hide-legacy-player .fr-bottom-bar {
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 40px) scale(0.95);
+  transform: translate(-50%, 38px) scale(0.95);
 }
 
 .fr-controls-left,

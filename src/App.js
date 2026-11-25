@@ -14,6 +14,8 @@ import { UpNextCard } from "./components/UpNextCard.js";
 import { SettingsModal } from "./components/SettingsModal.js";
 import { TopBar } from "./components/TopBar.js";
 import { BottomDock } from "./components/BottomDock.js";
+import { CoverPlayer } from "./components/CoverPlayer.js";
+import { SidebarLyrics } from "./components/SidebarLyrics.js";
 import { LyricsView } from "./components/LyricsView.js";
 import { FullLyricsCreator } from "./components/FullLyricsCreator.js";
 import { destroyCustomSelects } from "./components/CustomSelect.js";
@@ -88,16 +90,37 @@ export const App = {
 
     this.artImg = document.createElement("img");
     this.artImg.className = "fr-art-img";
+    this.artImg.draggable = false;
     this.artImgAlt = document.createElement("img");
     this.artImgAlt.className = "fr-art-img";
+    this.artImgAlt.draggable = false;
 
-    this.artWrap.append(ringSvg, this.artImg, this.artImgAlt);
+    this.artWrap.append(ringSvg, this.artImg, this.artImgAlt, CoverPlayer.build(this));
 
     const meta = el("div", "fr-meta");
     this.metaWrap = meta;
-    this.titleEl = el("h1", "fr-title", "—");
+    this.titleEl = el("h1", "fr-title fr-meta-link", "—");
+    this.titleEl.title = t("openInSpotify");
+    this.titleEl.addEventListener("click", () => {
+      const track = this.currentTrack;
+      if (!track) return;
+      const targetUri = track.album?.uri || track.metadata?.album_uri || track.uri;
+      if (targetUri && SpotiKitBridge.navigateToUri(targetUri)) {
+        this.close();
+      }
+    });
+
     this.artistEl = el("p", "fr-artist", "—");
-    this.albumEl = el("p", "fr-album", "—");
+    this.albumEl = el("p", "fr-album fr-meta-link", "—");
+    this.albumEl.title = t("openInSpotify");
+    this.albumEl.addEventListener("click", () => {
+      const track = this.currentTrack;
+      if (!track) return;
+      const albumUri = track.album?.uri || track.metadata?.album_uri;
+      if (albumUri && SpotiKitBridge.navigateToUri(albumUri)) {
+        this.close();
+      }
+    });
     meta.append(this.titleEl, this.artistEl, this.albumEl);
 
     artColumn.append(this.artWrap, meta);
@@ -143,6 +166,7 @@ export const App = {
     LyricsView.destroy();
     FullLyricsCreator.destroy();
     BottomDock.destroy();
+    CoverPlayer.destroy();
     UpNextCard.destroy();
     SettingsModal.destroy();
     BackgroundManager.destroy();
@@ -247,6 +271,9 @@ export const App = {
     const signal = this._abortController.signal;
     this.registerIdleTracker(signal);
     this.registerHotkeys(signal);
+
+    // Mount Spotify right-sidebar lyrics card (if enabled in settings)
+    SidebarLyrics.init(this);
   },
 
   unmount() {
@@ -257,6 +284,7 @@ export const App = {
     this._trackGen++;
 
     this.close();
+    SidebarLyrics.destroy();
 
     clearTimeout(this.idleTimer);
     this.idleTimer = null;
@@ -420,15 +448,32 @@ export const App = {
     this.currentTrack = track;
 
     const meta = track.metadata || {};
-    const artists =
-      track.artists && track.artists.length
-        ? track.artists.map((a) => a.name || a.displayName || "").filter(Boolean).join(", ")
-        : meta.artist_name || track.name || t("unknownArtist");
+    const artistList = SpotiKitBridge.getTrackArtists(track);
 
     const updateMeta = () => {
       if (!this.titleEl || !this.artistEl || !this.albumEl) return;
       this.titleEl.textContent = meta.title || track.name || t("unknownTitle");
-      this.artistEl.textContent = artists;
+      this.artistEl.innerHTML = "";
+      if (artistList.length > 0) {
+        artistList.forEach((artist, idx) => {
+          if (idx > 0) {
+            this.artistEl.appendChild(document.createTextNode(", "));
+          }
+          const span = el("span", artist.uri ? "fr-artist-link" : "fr-artist-name", artist.name);
+          if (artist.uri) {
+            span.title = t("openInSpotify");
+            span.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (SpotiKitBridge.navigateToUri(artist.uri)) {
+                this.close();
+              }
+            });
+          }
+          this.artistEl.appendChild(span);
+        });
+      } else {
+        this.artistEl.textContent = meta.artist_name || track.name || t("unknownArtist");
+      }
       this.albumEl.textContent = meta.album_title || track.album?.name || "";
       this._applyMetaVisibility();
     };
@@ -458,7 +503,8 @@ export const App = {
 
     if (!isSameTrack) {
       UpNextCard.reset();
-      TopBar.updatePiPImage(image);
+      TopBar.updatePiPTrack(track, image);
+      SidebarLyrics.onTrackChange(track);
 
       // Start fetching lyrics & audio analysis immediately without waiting for background color extraction
       LyricsView.loadForTrack(track, this);
@@ -513,7 +559,11 @@ export const App = {
       const progress = BottomDock.tick();
       const duration = SpotiKitBridge.getDuration();
       if (typeof progress === "number") {
+        if (Settings.get("newPlayerMode")) {
+          CoverPlayer.tick(progress, duration);
+        }
         LyricsView.update(progress);
+        TopBar.updatePiPLyrics(LyricsView.getActiveLineSnapshot());
         UpNextCard.update(duration, progress);
 
         const moodFrame = AudioMoodEngine.sample(progress, SpotiKitBridge.isPlaying(), LyricsView);
@@ -563,7 +613,6 @@ export const App = {
     await this.onTrackChange();
     if (!this._mounted || !this.open || SpotiKitBridge.isStopped()) return;
 
-    LyricsView.showProviderBadge(3000);
     this.startTicking();
   },
 
@@ -614,6 +663,8 @@ export const App = {
         "showAlbum",
         "showAlbumArt",
         "showTitle",
+        "newPlayerMode",
+        "showLegacyPlayer",
       ].includes(key)
     ) {
       this.applyLayoutSettings();
@@ -634,12 +685,26 @@ export const App = {
     if (key === "letterByLetter") {
       LyricsView.setLetterByLetter();
     }
+    if (key === "sidebarLyrics") {
+      SidebarLyrics.syncEnabled();
+    }
+    if (key === "sidebarLyricsBg") {
+      SidebarLyrics.syncBackground();
+    }
+    if (key === "pipLyrics") {
+      TopBar.applyPiPLyricsVisibility();
+    }
   },
 
   applyLayoutSettings() {
     if (!this.root || !this.stage || !this.artWrap) return;
     const forceCenter = !Settings.get("showLyrics") || LyricsView.hasLyrics === false;
     this.stage.classList.toggle("fr-centered", forceCenter);
+
+    const newPlayerOn = Boolean(Settings.get("newPlayerMode"));
+    const showLegacy = Boolean(Settings.get("showLegacyPlayer"));
+    this.root.classList.toggle("fr-new-player", newPlayerOn);
+    this.root.classList.toggle("fr-hide-legacy-player", newPlayerOn && !showLegacy);
 
     this.artWrap.classList.toggle("fr-glow", !!Settings.get("albumArtGlow"));
     this.artWrap.classList.toggle("fr-no-shadow", !Settings.get("albumArtShadow"));
