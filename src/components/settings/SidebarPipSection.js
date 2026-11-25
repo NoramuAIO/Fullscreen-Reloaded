@@ -5,10 +5,49 @@ import { toggle } from "../../utils/dom.js";
 import { t } from "../../utils/i18n.js";
 import { Settings } from "../../utils/settings.js";
 import { createCustomSelect } from "../CustomSelect.js";
+import { createCustomColorPicker } from "../CustomColorPicker.js";
 import { createSettingCard, createSettingRow } from "./helpers.js";
 
 export function buildSidebarPipSection() {
   const sidebarEnabled = Settings.get("sidebarLyrics") !== false;
+  const panelBgMode = Settings.get("sidebarPanelBg") || "liquid-aurora";
+
+  const sidebarPanelBgColorPicker = createCustomColorPicker({
+    value: Settings.get("sidebarPanelBgColor") || "#1b1433",
+    onChange: (hex) => Settings.set("sidebarPanelBgColor", hex),
+  });
+  const sidebarPanelBgColorRow = createSettingRow(
+    t("sidebarPanelBgColor"),
+    sidebarPanelBgColorPicker,
+    null,
+    panelBgMode === "custom-color" ? "fr-settings-subrow" : "fr-settings-subrow fr-hidden"
+  );
+
+  const sidebarPanelBgSelect = createCustomSelect({
+    options: [
+      {
+        value: "liquid-aurora",
+        label: t("sidebarBgLiquidAurora"),
+        shortLabel: t("sidebarBgLiquidAurora"),
+        sublabel: t("sidebarBgLiquidAuroraSub"),
+        badge: t("badgeSmart"),
+      },
+      { value: "song-mesh", label: t("sidebarBgSongMesh"), shortLabel: t("sidebarBgSongMesh") },
+      { value: "frosted-art", label: t("sidebarBgFrostedArt"), shortLabel: t("sidebarBgFrostedArt") },
+      { value: "custom-color", label: t("sidebarBgCustomColor"), shortLabel: t("sidebarBgCustomColor") },
+      { value: "off", label: t("off"), shortLabel: t("off") },
+    ],
+    value: panelBgMode,
+    onChange: (val) => {
+      Settings.set("sidebarPanelBg", val);
+      sidebarPanelBgColorRow.classList.toggle("fr-hidden", val !== "custom-color");
+    },
+  });
+  const sidebarPanelBgRow = createSettingRow(
+    t("sidebarPanelBg"),
+    sidebarPanelBgSelect,
+    t("sidebarPanelBgDesc")
+  );
 
   const sidebarBgRow = createSettingRow(
     t("sidebarLyricsBg"),
@@ -52,7 +91,14 @@ export function buildSidebarPipSection() {
   const langRow = createSettingRow(t("language"), langSelect);
 
   return [
-    createSettingCard(t("tabSidebarPip"), [sidebarLyricsRow, sidebarBgRow, sidebarAnimRow, pipLyricsRow]),
+    createSettingCard(t("tabSidebarPip"), [
+      sidebarPanelBgRow,
+      sidebarPanelBgColorRow,
+      sidebarLyricsRow,
+      sidebarBgRow,
+      sidebarAnimRow,
+      pipLyricsRow,
+    ]),
     createSettingCard(t("language"), [langRow]),
   ];
 }

@@ -26,6 +26,8 @@ export const Settings = {
     sidebarLyrics: true,
     sidebarLyricsBg: true,
     sidebarLyricsAnim: true,
+    sidebarPanelBg: "liquid-aurora", // liquid-aurora | song-mesh | frosted-art | custom-color | off
+    sidebarPanelBgColor: "#1b1433",
     pipLyrics: true,
     dynamicThemeColors: true,
     moodMode: "auto", // auto | energetic | melancholic | latenight | dreamy | off

@@ -16,6 +16,7 @@ import { TopBar } from "./components/TopBar.js";
 import { BottomDock } from "./components/BottomDock.js";
 import { CoverPlayer } from "./components/CoverPlayer.js";
 import { SidebarLyrics } from "./components/SidebarLyrics.js";
+import { SidebarBackground } from "./components/SidebarBackground.js";
 import { LyricsView } from "./components/LyricsView.js";
 import { FullLyricsCreator } from "./components/FullLyricsCreator.js";
 import { destroyCustomSelects } from "./components/CustomSelect.js";
@@ -273,7 +274,8 @@ export const App = {
     this.registerIdleTracker(signal);
     this.registerHotkeys(signal);
 
-    // Mount Spotify right-sidebar lyrics card (if enabled in settings)
+    // Mount Spotify right-sidebar lyrics card & living Liquid Aurora background
+    SidebarBackground.init();
     SidebarLyrics.init(this);
   },
 
@@ -286,6 +288,7 @@ export const App = {
 
     this.close();
     SidebarLyrics.destroy();
+    SidebarBackground.destroy();
 
     clearTimeout(this.idleTimer);
     this.idleTimer = null;
@@ -514,6 +517,7 @@ export const App = {
     if (!isSameTrack) {
       UpNextCard.reset();
       TopBar.updatePiPTrack(track, image);
+      SidebarBackground.onTrackChange(track);
       SidebarLyrics.onTrackChange(track);
 
       // Start fetching lyrics & audio analysis immediately without waiting for background color extraction
@@ -553,6 +557,7 @@ export const App = {
       this._lastColors = colors;
       AmbientManager.updateColors(colors);
       AudioMoodEngine.updateColors(colors);
+      SidebarBackground.applyColors(colors);
       this.applyThemeColors();
       this.artWrap?.style.setProperty("--fr-art-glow", rgba(colors.accent, 0.65));
     } else if (LyricsView._currentTrackUri !== track.uri) {
@@ -704,6 +709,9 @@ export const App = {
     }
     if (key === "sidebarLyricsAnim") {
       SidebarLyrics.syncAnimation();
+    }
+    if (key === "sidebarPanelBg" || key === "sidebarPanelBgColor") {
+      SidebarBackground.sync();
     }
     if (key === "dynamicThemeColors") {
       this.applyThemeColors();

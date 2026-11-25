@@ -1188,6 +1188,74 @@ test("newPlayerConditionalSubToggle_Navigation_StaleBadge_Sidebar_PiPLyrics: ver
   }
 });
 
+test("sidebarPanelBackgroundModesAndCleanup: mounts Liquid Aurora in right sidebar, switches modes, and cleans up on off/unmount", async () => {
+  const env = createLifecycleEnv({
+    Player: {
+      currentTrack: {
+        uri: "spotify:track:sbg1",
+        name: "Aurora Song",
+        metadata: {
+          title: "Aurora Song",
+          artist_name: "Artist",
+          image_url: "https://i.scdn.co/image/aurora1",
+        },
+      },
+    },
+  });
+  try {
+    const [{ SpotiKitBridge }, { Settings }, { SidebarBackground }] = await Promise.all([
+      import(pathToFileURL(path.join(ROOT, "src/services/SpotiKitBridge.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/utils/settings.js")).href),
+      import(pathToFileURL(path.join(ROOT, "src/components/SidebarBackground.js")).href),
+    ]);
+    SpotiKitBridge.init(env.mock.ctx);
+    Settings.data = {};
+    Settings.load();
+
+    const rightSidebar = document.createElement("aside");
+    rightSidebar.className = "Root__right-sidebar";
+    const npv = document.createElement("div");
+    npv.className = "npv-sections";
+    rightSidebar.appendChild(npv);
+    document.body.appendChild(rightSidebar);
+
+    SidebarBackground.init();
+
+    const bgLayer = rightSidebar.querySelector("#fr-right-sidebar-bg");
+    assert.ok(bgLayer, "Liquid Aurora layer should mount inside .Root__right-sidebar");
+    assert.equal(bgLayer.querySelectorAll(".fr-sbg-orb").length, 3);
+    assert.equal(document.documentElement.classList.contains("fr-sidebar-panel-bg-active"), true);
+    assert.equal(document.documentElement.getAttribute("data-fr-sbg-mode"), "liquid-aurora");
+
+    // Apply extracted song colors
+    SidebarBackground.applyColors({
+      dominant: [120, 40, 180],
+      accent: [210, 140, 255],
+      dark: [24, 10, 38],
+    });
+    assert.equal(document.documentElement.style.getPropertyValue("--fr-sbg-dom"), "rgb(120, 40, 180)");
+    assert.equal(document.documentElement.style.getPropertyValue("--fr-sbg-acc"), "rgb(210, 140, 255)");
+
+    // Switch to custom-color mode
+    Settings.set("sidebarPanelBg", "custom-color");
+    Settings.set("sidebarPanelBgColor", "#224466");
+    SidebarBackground.sync();
+    assert.equal(document.documentElement.getAttribute("data-fr-sbg-mode"), "custom-color");
+    assert.equal(document.documentElement.style.getPropertyValue("--fr-sbg-custom"), "rgb(34, 68, 102)");
+
+    // Turn off -> removes layer and root attributes cleanly
+    Settings.set("sidebarPanelBg", "off");
+    SidebarBackground.sync();
+    assert.equal(rightSidebar.querySelector("#fr-right-sidebar-bg"), null);
+    assert.equal(document.documentElement.classList.contains("fr-sidebar-panel-bg-active"), false);
+    assert.equal(document.documentElement.getAttribute("data-fr-sbg-mode"), null);
+
+    SidebarBackground.destroy();
+  } finally {
+    env.teardown();
+  }
+});
+
 test("zeroLegacySpicetifyRefs: no literal Spicetify.<Letter> tokens exist across src or tests", () => {
   const dirs = [path.join(ROOT, "src"), path.join(ROOT, "tests")];
   const files = [path.join(ROOT, "build.js")];
