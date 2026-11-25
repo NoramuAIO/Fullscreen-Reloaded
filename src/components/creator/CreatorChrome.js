@@ -95,7 +95,7 @@ export const CreatorChrome = {
       `fr-creator-btn fr-creator-btn-ghost${this.libraryOpen ? " fr-active" : ""}`
     );
     libBtn.type = "button";
-    libBtn.innerHTML = `${Icons.library}<span>Local DB (${libCount})</span>`;
+    libBtn.innerHTML = `${Icons.library}<span>${t("creatorLocalDbBtn", { count: libCount })}</span>`;
     libBtn.addEventListener("click", () => {
       this.libraryOpen = !this.libraryOpen;
       this.moreMenuOpen = false;
@@ -110,7 +110,7 @@ export const CreatorChrome = {
     );
     moreBtn.type = "button";
     moreBtn.innerHTML = Icons.more;
-    moreBtn.title = "Import / Export";
+    moreBtn.title = t("creatorImportExport");
     moreBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.moreMenuOpen = !this.moreMenuOpen;
@@ -218,7 +218,7 @@ export const CreatorChrome = {
         el(
           "div",
           "fr-creator-empty-hint",
-          "Henüz Local DB'de kayıtlı şarkı sözü bulunmuyor."
+          t("creatorLibraryEmpty")
         )
       );
     } else {
@@ -230,12 +230,12 @@ export const CreatorChrome = {
           el(
             "div",
             "fr-creator-library-artist",
-            `${item.artist || "—"} · ${item.mode === "word" ? "Karaoke (Word)" : "Block (Line)"}`
+            `${item.artist || "—"} · ${item.mode === "word" ? t("creatorModeKaraoke") : t("creatorModeBlock")}`
           )
         );
 
         const acts = el("div", "fr-creator-library-actions");
-        const loadBtn = el("button", "fr-creator-mini-btn", "Editöre Yükle");
+        const loadBtn = el("button", "fr-creator-mini-btn", t("creatorLoadEditor"));
         loadBtn.type = "button";
         loadBtn.addEventListener("click", () => {
           const rec = getCustomSync(item.trackUri || item.trackId);
@@ -253,7 +253,7 @@ export const CreatorChrome = {
             this.rawTextCache = serializeDraftLinesToText(this.draft.lines || []);
             this.libraryOpen = false;
             this.render();
-            this.showToast(`Yüklendi: ${item.title}`);
+            this.showToast(t("creatorLoadedToast", { title: item.title }));
           }
         });
 
@@ -271,7 +271,7 @@ export const CreatorChrome = {
           }
         });
 
-        const delBtn = el("button", "fr-creator-mini-btn fr-danger", "Sil");
+        const delBtn = el("button", "fr-creator-mini-btn fr-danger", t("creatorDeleteBtn"));
         delBtn.type = "button";
         delBtn.addEventListener("click", () => {
           this.handleDeleteFromLocalDB(item.trackUri || item.trackId);

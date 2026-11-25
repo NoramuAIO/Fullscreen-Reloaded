@@ -1,7 +1,7 @@
 // ==========================================================================
 // Fullscreen Reloaded (SpotiKit ESM bundle)
 // A cinematic, modern fullscreen experience for Spotify.
-// Generated on: 2026-11-25T20:12:23.944Z
+// Generated on: 2026-11-25T20:20:19.755Z
 // ==========================================================================
 
 function __createRuntime() {
@@ -1652,7 +1652,7 @@ const CreatorChrome = exports.CreatorChrome = {
       `fr-creator-btn fr-creator-btn-ghost${this.libraryOpen ? " fr-active" : ""}`
     );
     libBtn.type = "button";
-    libBtn.innerHTML = `${Icons.library}<span>Local DB (${libCount})</span>`;
+    libBtn.innerHTML = `${Icons.library}<span>${t("creatorLocalDbBtn", { count: libCount })}</span>`;
     libBtn.addEventListener("click", () => {
       this.libraryOpen = !this.libraryOpen;
       this.moreMenuOpen = false;
@@ -1667,7 +1667,7 @@ const CreatorChrome = exports.CreatorChrome = {
     );
     moreBtn.type = "button";
     moreBtn.innerHTML = Icons.more;
-    moreBtn.title = "Import / Export";
+    moreBtn.title = t("creatorImportExport");
     moreBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.moreMenuOpen = !this.moreMenuOpen;
@@ -1775,7 +1775,7 @@ const CreatorChrome = exports.CreatorChrome = {
         el(
           "div",
           "fr-creator-empty-hint",
-          "Henüz Local DB'de kayıtlı şarkı sözü bulunmuyor."
+          t("creatorLibraryEmpty")
         )
       );
     } else {
@@ -1787,12 +1787,12 @@ const CreatorChrome = exports.CreatorChrome = {
           el(
             "div",
             "fr-creator-library-artist",
-            `${item.artist || "—"} · ${item.mode === "word" ? "Karaoke (Word)" : "Block (Line)"}`
+            `${item.artist || "—"} · ${item.mode === "word" ? t("creatorModeKaraoke") : t("creatorModeBlock")}`
           )
         );
 
         const acts = el("div", "fr-creator-library-actions");
-        const loadBtn = el("button", "fr-creator-mini-btn", "Editöre Yükle");
+        const loadBtn = el("button", "fr-creator-mini-btn", t("creatorLoadEditor"));
         loadBtn.type = "button";
         loadBtn.addEventListener("click", () => {
           const rec = getCustomSync(item.trackUri || item.trackId);
@@ -1810,7 +1810,7 @@ const CreatorChrome = exports.CreatorChrome = {
             this.rawTextCache = serializeDraftLinesToText(this.draft.lines || []);
             this.libraryOpen = false;
             this.render();
-            this.showToast(`Yüklendi: ${item.title}`);
+            this.showToast(t("creatorLoadedToast", { title: item.title }));
           }
         });
 
@@ -1828,7 +1828,7 @@ const CreatorChrome = exports.CreatorChrome = {
           }
         });
 
-        const delBtn = el("button", "fr-creator-mini-btn fr-danger", "Sil");
+        const delBtn = el("button", "fr-creator-mini-btn fr-danger", t("creatorDeleteBtn"));
         delBtn.type = "button";
         delBtn.addEventListener("click", () => {
           this.handleDeleteFromLocalDB(item.trackUri || item.trackId);
@@ -1865,6 +1865,7 @@ const CreatorChrome = exports.CreatorChrome = {
  */
 const {  el  } = require("./utils/dom.js");
 const {  Icons  } = require("./utils/icons.js");
+const {  t  } = require("./utils/i18n.js");
 const {  SpotiKitBridge  } = require("./services/SpotiKitBridge.js");
 const { 
   compileDraftToSpicyLyrics,
@@ -1887,7 +1888,7 @@ const CreatorPreviewStep = exports.CreatorPreviewStep = {
         el(
           "div",
           "fr-creator-empty-box",
-          "Önizleme için en az bir satırı zamanlayın veya 'Statik' modunu seçin."
+          t("creatorPreviewEmpty")
         )
       );
       container.appendChild(wrap);
@@ -2177,11 +2178,11 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
 
   async pullOnlineLyrics() {
     const info = this.getCurrentTrackInfo();
-    this.showToast("Online sözler çekiliyor...");
+    this.showToast(t("creatorPullingOnline"));
     try {
       const online = await LyricsService.resolveOnlineOnly(info.track);
       if (!online || !online.lines || !online.lines.length) {
-        this.showToast("Bu şarkı için online söz bulunamadı.");
+        this.showToast(t("creatorNoOnlineFound"));
         return;
       }
       const nextDraft = fullscreenLinesToDraft(online, info);
@@ -2190,9 +2191,14 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
       this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
       this.activeTarget = this.findFirstIncompleteTarget();
       this.render();
-      this.showToast(`${online.source || "Online"} sözleri yüklendi (${this.draft.lines.length} satır)`);
+      this.showToast(
+        t("creatorOnlineLoaded", {
+          source: online.source || "Online",
+          count: this.draft.lines.length,
+        })
+      );
     } catch (e) {
-      this.showToast("Online sözler alınırken hata oluştu.");
+      this.showToast(t("creatorOnlineError"));
     }
   },
 
@@ -2233,9 +2239,9 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
       this.draft.syncMode = "word";
       this.draft.mode = "word";
       this.render();
-      this.showToast(`${count} satırın kelime zamanları otomatik dağıtıldı!`);
+      this.showToast(t("creatorSpreadSuccess", { count }));
     } else {
-      this.showToast("Dağıtmak için önce en az bir satırın başlangıç zamanı olmalı.");
+      this.showToast(t("creatorSpreadNeedStart"));
     }
   },
 
@@ -2248,16 +2254,18 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
       this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
       this.activeTarget = this.findFirstIncompleteTarget();
       this.render();
-      this.showToast(`İçe aktarıldı: ${file.name}`);
+      this.showToast(t("creatorImportedToast", { name: file.name }));
     } catch (e) {
-      this.showToast(`İçe aktarma hatası: ${e.message || "Geçersiz dosya"}`);
+      this.showToast(
+        t("creatorImportError", { error: e.message || t("creatorInvalidFile") })
+      );
     }
   },
 
   handleSaveToLocalDB() {
     this.syncRawTextToDraft();
     if (!this.draft || !this.draft.lines.length) {
-      this.showToast("Kaydedilecek şarkı sözü satırı yok.");
+      this.showToast(t("creatorNothingToSave"));
       return;
     }
 
@@ -2268,7 +2276,7 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
         : (compiled.Content || []).length > 0;
 
     if (!hasOutput) {
-      this.showToast("En az bir satırı zamanlayın veya 'Statik (Düz)' modunu seçin.");
+      this.showToast(t("creatorNeedCueOrStatic"));
       return;
     }
 
@@ -2296,7 +2304,7 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
       LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
     }
     this.render();
-    this.showToast("Local DB'ye kaydedildi (Liquid Lyrics & Fullscreen Reloaded uyumlu)!");
+    this.showToast(t("creatorSavedToast"));
   },
 
   handleDeleteFromLocalDB(targetUriOrId) {
@@ -2308,7 +2316,7 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
       LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
     }
     this.render();
-    this.showToast("Local DB kaydı silindi.");
+    this.showToast(t("creatorDeletedToast"));
   },
 
   // ==========================================================================
@@ -2562,7 +2570,9 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
       this.draft.endMs = Math.max(0, this.draft.endMs + deltaMs);
     }
     this.renderSyncListOnly();
-    this.showToast(`Tüm zamanlar ${deltaMs > 0 ? `+${deltaMs}` : deltaMs}ms kaydırıldı`);
+    this.showToast(
+      t("creatorShiftedToast", { delta: deltaMs > 0 ? `+${deltaMs}` : deltaMs })
+    );
   },
 
   clearAllTimes() {
@@ -2588,7 +2598,7 @@ const CreatorSyncEngine = exports.CreatorSyncEngine = {
     this.draft.endMs = null;
     this.activeTarget = this.findFirstIncompleteTarget();
     this.renderSyncListOnly();
-    this.showToast("Tüm zaman damgaları sıfırlandı.");
+    this.showToast(t("creatorResetToast"));
   },
 
   scrollActiveTargetIntoView() {
@@ -2655,11 +2665,10 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
       const spreadBtn = el(
         "button",
         "fr-creator-mini-btn",
-        "Satır Zamanlarını Kelimelere Dağıt"
+        t("creatorSpreadBtn")
       );
       spreadBtn.type = "button";
-      spreadBtn.title =
-        "Satır başlangıç/bitiş zamanlarını kelimelere eşit olarak dağıtır";
+      spreadBtn.title = t("creatorSpreadTitle");
       spreadBtn.addEventListener("click", () => this.autoSpreadWordTimings());
       rightControls.appendChild(spreadBtn);
     }
@@ -2681,12 +2690,12 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     // Shortcuts hint bar
     const hintBar = el("div", "fr-creator-shortcuts-bar");
     hintBar.innerHTML = `
-      <span><kbd>Space</kbd> / <kbd>Sağ Alt</kbd> Zamanla</span>
-      <span><kbd>P</kbd> Oynat/Duraklat</span>
-      <span><kbd>Backspace</kbd> Geri Al</span>
+      <span><kbd>Space</kbd> / <kbd>${t("creatorHintRightAlt")}</kbd> ${t("creatorHintStamp")}</span>
+      <span><kbd>P</kbd> ${t("creatorHintPlayPause")}</span>
+      <span><kbd>Backspace</kbd> ${t("creatorHintUndo")}</span>
       <span><kbd>←</kbd><kbd>→</kbd> ±100ms (<kbd>Shift</kbd> ±300ms)</span>
-      <span><kbd>↑</kbd><kbd>↓</kbd> Hedef Seç</span>
-      <span><kbd>Del</kbd> Zamanı Sil</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> ${t("creatorHintSelect")}</span>
+      <span><kbd>Del</kbd> ${t("creatorHintClear")}</span>
     `;
 
     const listEl = el("div", "fr-creator-sync-list");
@@ -2697,10 +2706,9 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     const quickInput = document.createElement("input");
     quickInput.type = "text";
     quickInput.className = "fr-creator-sync-quickinput";
-    quickInput.placeholder =
-      "Senkron ekranından çıkmadan yeni cümle veya kelime ekleyin (v2: düet, #interlude)...";
+    quickInput.placeholder = t("creatorQuickAddPlaceholder");
 
-    const addAsLineBtn = el("button", "fr-creator-mini-btn", "+ Yeni Satır Olarak Ekle");
+    const addAsLineBtn = el("button", "fr-creator-mini-btn", t("creatorQuickAddBtn"));
     addAsLineBtn.type = "button";
     addAsLineBtn.addEventListener("click", () => {
       const val = quickInput.value.trim();
@@ -2738,7 +2746,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     const appendWordBtn = el(
       "button",
       "fr-creator-mini-btn",
-      "+ Seçili Satıra Kelime Ekle"
+      t("creatorQuickAddWordBtn")
     );
     appendWordBtn.type = "button";
     appendWordBtn.addEventListener("click", () => {
@@ -2784,7 +2792,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     // Update counter
     if (this.syncProgressEl) {
       const done = lines.filter((l) => isDraftLineComplete(l, syncMode)).length;
-      this.syncProgressEl.textContent = `${done} / ${lines.length} satır hazır`;
+      this.syncProgressEl.textContent = t("creatorLinesReady", { done, total: lines.length });
     }
 
     if (!lines.length) {
@@ -2792,7 +2800,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
         el(
           "div",
           "fr-creator-empty-box",
-          "Senkronize edilecek satır yok. 1. Aşamadan söz ekleyin veya aşağıdan yeni cümle yazın."
+          t("creatorSyncEmpty")
         )
       );
       return;
@@ -2803,7 +2811,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
         el(
           "div",
           "fr-creator-empty-box",
-          "Statik (Zamanlamasız) mod aktif. Doğrudan 'Local DB'ye Kaydet' butonuna basarak düz metin olarak kaydedebilir veya yukarıdan 'Blok' / 'Karaoke' moduna geçebilirsiniz."
+          t("creatorSyncStaticInfo")
         )
       );
       return;
@@ -2837,7 +2845,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     endRow.append(
       el("span", "fr-creator-line-num", "⚑"),
       el("span", "fr-creator-time-pill", formatCueTime(this.draft.endMs)),
-      el("span", "fr-creator-row-text", "Şarkı Sözü Bitişi (End of Lyrics)")
+      el("span", "fr-creator-row-text", t("creatorEndOfLyrics"))
     );
     listEl.appendChild(endRow);
   },
@@ -2866,7 +2874,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
 
     const textWrap = el("div", "fr-creator-row-text");
     if (line.kind === "interlude") {
-      textWrap.textContent = "♪ Enstrümantal Ara (• • •)";
+      textWrap.textContent = t("creatorInterludeLine");
     } else {
       textWrap.textContent = line.text || "—";
       if (line.backgrounds?.length) {
@@ -2889,7 +2897,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
         "v2"
       );
       duetBtn.type = "button";
-      duetBtn.title = "Düet (v2) hizalaması";
+      duetBtn.title = t("creatorDuetTitle");
       duetBtn.addEventListener("click", () => {
         line.isDuet = !line.isDuet;
         this.renderSyncListOnly();
@@ -2897,10 +2905,10 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
       actions.appendChild(duetBtn);
     }
 
-    // + Ara (Insert interlude directly under this line)
-    const addIntBtn = el("button", "fr-creator-mini-btn", "+ Ara");
+    // + Break (Insert interlude directly under this line)
+    const addIntBtn = el("button", "fr-creator-mini-btn", t("creatorAddBreakShort"));
     addIntBtn.type = "button";
-    addIntBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    addIntBtn.title = t("creatorAddBreakTitle");
     addIntBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const nowMs = Math.round(this.getAccurateProgressMs());
@@ -2923,7 +2931,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     playBtn.type = "button";
     playBtn.innerHTML = Icons.play;
     playBtn.disabled = line.start == null;
-    playBtn.title = "Bu satırdan oynat";
+    playBtn.title = t("creatorPlayFromLine");
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (line.start != null) this.seek(line.start, true);
@@ -2932,7 +2940,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     const clearBtn = el("button", "fr-creator-mini-icon-btn fr-danger", "×");
     clearBtn.type = "button";
     clearBtn.disabled = line.start == null;
-    clearBtn.title = "Zamanı temizle";
+    clearBtn.title = t("creatorClearTimeTitle");
     clearBtn.addEventListener("click", () => {
       line.start = null;
       line.end = null;
@@ -2942,7 +2950,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     if (line.kind === "interlude") {
       const delIntBtn = el("button", "fr-creator-mini-icon-btn fr-danger", "🗑");
       delIntBtn.type = "button";
-      delIntBtn.title = "Bu enstrümantal arayı sil";
+      delIntBtn.title = t("creatorDeleteBreakTitle");
       delIntBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         this.draft.lines.splice(lineIdx, 1);
@@ -2975,7 +2983,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     const head = el("div", "fr-creator-word-row-head");
     const leftMeta = el("div", "fr-creator-word-row-meta");
     leftMeta.style.cursor = "pointer";
-    leftMeta.title = "Bu satıra git ve oynat";
+    leftMeta.title = t("creatorGoAndPlayLine");
     leftMeta.append(
       el("span", "fr-creator-line-num", `#${lineIdx + 1}`),
       el(
@@ -2999,32 +3007,33 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     const duetBtn = el(
       "button",
       `fr-creator-mini-btn${line.isDuet ? " fr-active-duet" : ""}`,
-      "v2 Düet"
+      t("creatorDuetToggle")
     );
     duetBtn.type = "button";
+    duetBtn.title = t("creatorDuetTitle");
     duetBtn.addEventListener("click", () => {
       line.isDuet = !line.isDuet;
       this.renderSyncListOnly();
     });
 
-    const addWordInlineBtn = el("button", "fr-creator-mini-btn", "+ Kelime");
+    const addWordInlineBtn = el("button", "fr-creator-mini-btn", t("creatorAddWord"));
     addWordInlineBtn.type = "button";
-    addWordInlineBtn.title = "Bu satıra yeni kelime ekle";
+    addWordInlineBtn.title = t("creatorAddWordTitle");
     addWordInlineBtn.addEventListener("click", () => {
-      const w = prompt("Eklenecek kelimeyi yazın:", "");
+      const w = prompt(t("creatorPromptAddWord"), "");
       if (w && w.trim()) {
         const parts = w.trim().split(/\s+/).filter(Boolean);
         for (const p of parts) {
           line.tokens.push({ text: p, start: null, end: null });
         }
-        line.text = line.tokens.map((t) => t.text).join(" ");
+        line.text = line.tokens.map((tok) => tok.text).join(" ");
         this.renderSyncListOnly();
       }
     });
 
-    const addIntInlineBtn = el("button", "fr-creator-mini-btn", "+ Ara");
+    const addIntInlineBtn = el("button", "fr-creator-mini-btn", t("creatorAddBreakShort"));
     addIntInlineBtn.type = "button";
-    addIntInlineBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    addIntInlineBtn.title = t("creatorAddBreakTitle");
     addIntInlineBtn.addEventListener("click", () => {
       const nowMs = Math.round(this.getAccurateProgressMs());
       this.draft.lines.splice(lineIdx + 1, 0, createInterludeDraftLine(nowMs > 0 ? nowMs : null));
@@ -3044,7 +3053,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     playBtn.type = "button";
     playBtn.innerHTML = Icons.play;
     playBtn.disabled = firstStart == null;
-    playBtn.title = "Bu satırdan oynat";
+    playBtn.title = t("creatorPlayFromLine");
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (firstStart != null) this.seek(firstStart, true);
@@ -3052,7 +3061,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
 
     const clearLineBtn = el("button", "fr-creator-mini-icon-btn fr-danger", "×");
     clearLineBtn.type = "button";
-    clearLineBtn.title = "Satırdaki tüm kelime zamanlarını temizle";
+    clearLineBtn.title = t("creatorClearLineWordsTitle");
     clearLineBtn.addEventListener("click", () => {
       line.start = null;
       line.end = null;
@@ -3088,7 +3097,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
         `fr-creator-token${isTokActive ? " fr-active" : ""}${isTokDone ? " fr-done" : ""}`
       );
       chip.type = "button";
-      chip.title = "Tıkla: Bu kelimeye git ve hedef seç | Çift tıkla: Kelimeyi düzenle veya böl";
+      chip.title = t("creatorTokenChipTitle");
       chip.append(
         el("span", "fr-creator-token-word", tok.text),
         el("span", "fr-creator-token-time", formatCueTime(tok.start))
@@ -3107,10 +3116,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
 
       chip.addEventListener("dblclick", (e) => {
         e.stopPropagation();
-        const edited = prompt(
-          "Kelimeyi düzenleyin (boşluk bırakırsanız iki kelimeye bölünür, boş bırakırsanız silinir):",
-          tok.text
-        );
+        const edited = prompt(t("creatorPromptEditWord"), tok.text);
         if (edited === null) return;
         const clean = edited.trim();
         if (!clean) {
@@ -3129,7 +3135,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
         } else {
           tok.text = clean;
         }
-        line.text = line.tokens.map((t) => t.text).join(" ");
+        line.text = line.tokens.map((tokItem) => tokItem.text).join(" ");
         this.renderSyncListOnly();
       });
 
@@ -3151,7 +3157,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
       }`
     );
     endChip.type = "button";
-    endChip.title = "Satır bitiş zamanı (isteğe bağlı)";
+    endChip.title = t("creatorLineEndTitle");
     const flagIcon = el("span", "fr-creator-token-flag");
     flagIcon.innerHTML = Icons.flag;
     endChip.append(
@@ -3159,7 +3165,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
       el(
         "span",
         "fr-creator-token-time",
-        line.end != null ? formatCueTime(line.end) : "Bitiş"
+        line.end != null ? formatCueTime(line.end) : t("creatorEndLabel")
       )
     );
     endChip.addEventListener("click", (e) => {
@@ -3177,7 +3183,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
     if (Array.isArray(line.backgrounds) && line.backgrounds.length > 0) {
       line.backgrounds.forEach((bg, bgIdx) => {
         const bgRow = el("div", "fr-creator-tokens-wrap fr-creator-bg-tokens");
-        bgRow.appendChild(el("span", "fr-creator-bg-tag", "Arka Vokal"));
+        bgRow.appendChild(el("span", "fr-creator-bg-tag", t("creatorBgVocalTag")));
 
         bg.tokens.forEach((bt, btIdx) => {
           const bgTarget = { type: "bgToken", lineIdx, tokenIdx: btIdx, bgIdx };
@@ -3189,7 +3195,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
             }`
           );
           bgChip.type = "button";
-          bgChip.title = "Tıkla: Bu arka vokale git ve hedef seç";
+          bgChip.title = t("creatorBgChipTitle");
           bgChip.append(
             el("span", "fr-creator-token-word", bt.text),
             el("span", "fr-creator-token-time", formatCueTime(bt.start))
@@ -3228,7 +3234,7 @@ const CreatorSyncStep = exports.CreatorSyncStep = {
           el(
             "span",
             "fr-creator-token-time",
-            bg.end != null ? formatCueTime(bg.end) : "Bitiş"
+            bg.end != null ? formatCueTime(bg.end) : t("creatorEndLabel")
           )
         );
         bgEndChip.addEventListener("click", (e) => {
@@ -3313,19 +3319,19 @@ const CreatorTextStep = exports.CreatorTextStep = {
       const addLineBtn = el("button", "fr-creator-chip-btn", t("creatorAddSentence"));
       addLineBtn.type = "button";
       addLineBtn.addEventListener("click", () => {
-        this.draft.lines.push(createLyricDraftLine("Yeni söz satırı", false));
+        this.draft.lines.push(createLyricDraftLine(t("creatorDefaultLine"), false));
         this.renderStepContent(this.bodyEl);
       });
 
-      const addWordLineBtn = el("button", "fr-creator-chip-btn", "+ Tek Kelime Ekle");
+      const addWordLineBtn = el("button", "fr-creator-chip-btn", t("creatorAddSingleWord"));
       addWordLineBtn.type = "button";
       addWordLineBtn.addEventListener("click", () => {
         const last = this.draft.lines[this.draft.lines.length - 1];
         if (last && last.kind === "lyric") {
-          last.tokens.push({ text: "kelime", start: null, end: null });
+          last.tokens.push({ text: t("creatorDefaultWord"), start: null, end: null });
           last.text = last.tokens.map((tok) => tok.text).join(" ");
         } else {
-          this.draft.lines.push(createLyricDraftLine("kelime", false));
+          this.draft.lines.push(createLyricDraftLine(t("creatorDefaultWord"), false));
         }
         this.renderStepContent(this.bodyEl);
       });
@@ -3346,14 +3352,15 @@ const CreatorTextStep = exports.CreatorTextStep = {
         this.renderStepContent(this.bodyEl);
       });
 
-      const insBg = el("button", "fr-creator-chip-btn", "+ [Arka Vokal]");
+      const insBg = el("button", "fr-creator-chip-btn", t("creatorInsertBgBtn"));
       insBg.type = "button";
       insBg.addEventListener("click", () => {
-        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "[arka vokal]";
+        this.rawTextCache =
+          (this.rawTextCache ? this.rawTextCache + "\n" : "") + `[${t("creatorDefaultBgVocal")}]`;
         this.renderStepContent(this.bodyEl);
       });
 
-      const insDuet = el("button", "fr-creator-chip-btn", "+ v2: Düet Satırı");
+      const insDuet = el("button", "fr-creator-chip-btn", t("creatorInsertDuetBtn"));
       insDuet.type = "button";
       insDuet.addEventListener("click", () => {
         this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "v2: ";
@@ -3380,13 +3387,7 @@ const CreatorTextStep = exports.CreatorTextStep = {
       const builderList = el("div", "fr-creator-builder-list");
       if (!this.draft.lines.length) {
         const emptyBox = el("div", "fr-creator-empty-box");
-        emptyBox.append(
-          el(
-            "p",
-            null,
-            "Henüz satır yok. Yukarıdan '+ Cümle Ekle'ye tıklayın, 'Aktif Sözleri Çek' ile şarkının mevcut sözlerini getirin veya 'Toplu Metin' sekmesinden yapıştırın."
-          )
-        );
+        emptyBox.append(el("p", null, t("creatorEmptyBuilderHint")));
         builderList.appendChild(emptyBox);
       } else {
         this.draft.lines.forEach((line, idx) => {
@@ -3426,13 +3427,13 @@ const CreatorTextStep = exports.CreatorTextStep = {
 
     if (line.kind === "interlude") {
       top.appendChild(
-        el("span", "fr-creator-interlude-title", "♪ Enstrümantal Ara (#interlude • • •)")
+        el("span", "fr-creator-interlude-title", t("creatorInterludeTitle"))
       );
     } else {
       const sentenceInput = document.createElement("input");
       sentenceInput.type = "text";
       sentenceInput.className = "fr-creator-line-input";
-      sentenceInput.placeholder = "Cümle veya söz satırı yazın...";
+      sentenceInput.placeholder = t("creatorLinePlaceholder");
       sentenceInput.value = line.text || "";
       sentenceInput.addEventListener("change", () => {
         const clean = sentenceInput.value.trim();
@@ -3450,7 +3451,7 @@ const CreatorTextStep = exports.CreatorTextStep = {
       const playLineBtn = el("button", "fr-creator-mini-icon-btn");
       playLineBtn.type = "button";
       playLineBtn.innerHTML = Icons.play;
-      playLineBtn.title = `Bu satırdan oynat (${formatCueTime(lineStartMs)})`;
+      playLineBtn.title = t("creatorPlayFromLineAt", { time: formatCueTime(lineStartMs) });
       playLineBtn.addEventListener("click", () => this.seek(lineStartMs, true));
       controls.appendChild(playLineBtn);
     }
@@ -3463,7 +3464,7 @@ const CreatorTextStep = exports.CreatorTextStep = {
         t("creatorDuetToggle")
       );
       duetBtn.type = "button";
-      duetBtn.title = "Sağ hizalı Düet şarkıcı (OppositeAligned / v2)";
+      duetBtn.title = t("creatorDuetTitle");
       duetBtn.addEventListener("click", () => {
         line.isDuet = !line.isDuet;
         this.renderStepContent(this.bodyEl);
@@ -3473,8 +3474,8 @@ const CreatorTextStep = exports.CreatorTextStep = {
       const addWordBtn = el("button", "fr-creator-mini-btn", t("creatorAddWord"));
       addWordBtn.type = "button";
       addWordBtn.addEventListener("click", () => {
-        line.tokens.push({ text: "kelime", start: null, end: null });
-        line.text = line.tokens.map((t) => t.text).join(" ");
+        line.tokens.push({ text: t("creatorDefaultWord"), start: null, end: null });
+        line.text = line.tokens.map((tok) => tok.text).join(" ");
         this.renderStepContent(this.bodyEl);
       });
 
@@ -3483,7 +3484,7 @@ const CreatorTextStep = exports.CreatorTextStep = {
       addBgBtn.type = "button";
       addBgBtn.addEventListener("click", () => {
         line.backgrounds = line.backgrounds || [];
-        line.backgrounds.push(createBackgroundDraftEntry("arka vokal"));
+        line.backgrounds.push(createBackgroundDraftEntry(t("creatorDefaultBgVocal")));
         this.renderStepContent(this.bodyEl);
       });
 
@@ -3491,18 +3492,18 @@ const CreatorTextStep = exports.CreatorTextStep = {
     }
 
     // Insert lyric line below
-    const insBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına Satır");
+    const insBelowBtn = el("button", "fr-creator-mini-btn", t("creatorInsertBelowBtn"));
     insBelowBtn.type = "button";
-    insBelowBtn.title = "Bu satırın hemen altına yeni söz satırı ekle";
+    insBelowBtn.title = t("creatorInsertBelowTitle");
     insBelowBtn.addEventListener("click", () => {
       this.draft.lines.splice(lineIdx + 1, 0, createLyricDraftLine("", false));
       this.renderStepContent(this.bodyEl);
     });
 
     // Insert interlude below
-    const insIntBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına İnterlude");
+    const insIntBelowBtn = el("button", "fr-creator-mini-btn", t("creatorInsertBreakBelowBtn"));
     insIntBelowBtn.type = "button";
-    insIntBelowBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    insIntBelowBtn.title = t("creatorAddBreakTitle");
     insIntBelowBtn.addEventListener("click", () => {
       this.draft.lines.splice(lineIdx + 1, 0, createInterludeDraftLine());
       this.renderStepContent(this.bodyEl);
@@ -3578,10 +3579,10 @@ const CreatorTextStep = exports.CreatorTextStep = {
 
         const delWordBtn = el("button", "fr-creator-word-pill-del", "×");
         delWordBtn.type = "button";
-        delWordBtn.title = "Kelimeyi sil";
+        delWordBtn.title = t("creatorDeleteWordTitle");
         delWordBtn.addEventListener("click", () => {
           line.tokens.splice(tokIdx, 1);
-          line.text = line.tokens.map((t) => t.text).join(" ");
+          line.text = line.tokens.map((tok) => tok.text).join(" ");
           this.renderStepContent(this.bodyEl);
         });
 
@@ -3596,12 +3597,12 @@ const CreatorTextStep = exports.CreatorTextStep = {
       const bgContainer = el("div", "fr-creator-bg-list");
       line.backgrounds.forEach((bg, bgIdx) => {
         const bgRow = el("div", "fr-creator-bg-edit-row");
-        const bgTag = el("span", "fr-creator-bg-badge", "[Arka Vokal]");
+        const bgTag = el("span", "fr-creator-bg-badge", t("creatorBgBadge"));
         const bgInput = document.createElement("input");
         bgInput.type = "text";
         bgInput.className = "fr-creator-bg-input";
         bgInput.value = bg.text || "";
-        bgInput.placeholder = "Arka vokal sözleri...";
+        bgInput.placeholder = t("creatorBgPlaceholder");
         bgInput.addEventListener("change", () => {
           const cleanBg = bgInput.value.trim();
           if (!cleanBg) {
@@ -11136,6 +11137,78 @@ const Locales = exports.Locales = {
     creatorCreditPlaceholder: "Credit (optional) — e.g. Synced by Mustafa",
     creatorTextPlaceholder:
       "Paste or type lyrics here, one line per row.\n\n• Type #interlude for an instrumental break (• • •)\n• Type [background vocal] on the line below a lyric to attach sub-vocals\n• Prefix a line with v2: for right-aligned Duet singer",
+    creatorImportExport: "Import / Export",
+    creatorLibraryEmpty: "No saved lyrics in Local DB yet.",
+    creatorLoadEditor: "Load to Editor",
+    creatorLoadedToast: "Loaded: {title}",
+    creatorDeleteBtn: "Delete",
+    creatorPullingOnline: "Fetching online lyrics...",
+    creatorNoOnlineFound: "No online lyrics found for this track.",
+    creatorOnlineLoaded: "{source} lyrics loaded ({count} lines)",
+    creatorOnlineError: "Failed to fetch online lyrics.",
+    creatorSpreadSuccess: "Auto-spread word timings for {count} lines!",
+    creatorSpreadNeedStart: "At least one line needs a start timestamp before spreading.",
+    creatorImportedToast: "Imported: {name}",
+    creatorImportError: "Import error: {error}",
+    creatorInvalidFile: "Invalid file",
+    creatorNothingToSave: "No lyric lines to save.",
+    creatorNeedCueOrStatic: "Timestamp at least one line or switch to 'Static' mode.",
+    creatorSavedToast: "Saved to Local DB (Liquid Lyrics & Fullscreen Reloaded compatible)!",
+    creatorDeletedToast: "Local DB entry deleted.",
+    creatorShiftedToast: "Shifted all timings by {delta}ms",
+    creatorResetToast: "All timestamps cleared.",
+    creatorPreviewEmpty: "Timestamp at least one line or select 'Static' mode to preview.",
+    creatorSpreadBtn: "Spread Line Timings to Words",
+    creatorSpreadTitle: "Distribute line start/end timestamps evenly across words",
+    creatorHintStamp: "Stamp",
+    creatorHintRightAlt: "Right Alt",
+    creatorHintPlayPause: "Play/Pause",
+    creatorHintUndo: "Undo",
+    creatorHintSelect: "Select Target",
+    creatorHintClear: "Clear Time",
+    creatorQuickAddPlaceholder: "Add a new line or word without leaving Sync (v2: duet, #interlude)...",
+    creatorQuickAddBtn: "+ Add as New Line",
+    creatorLinesReady: "{done} / {total} lines ready",
+    creatorEndOfLyrics: "End of Lyrics",
+    creatorInterludeLine: "♪ Instrumental Interlude (• • •)",
+    creatorInterludeTitle: "♪ Instrumental Interlude (#interlude • • •)",
+    creatorDuetTitle: "Duet (v2) right alignment",
+    creatorAddBreakShort: "+ Break",
+    creatorAddBreakTitle: "Insert an instrumental break (• • •) right below this line",
+    creatorPlayFromLine: "Play from this line",
+    creatorPlayFromLineAt: "Play from this line ({time})",
+    creatorClearTimeTitle: "Clear timestamp",
+    creatorDeleteBreakTitle: "Delete this instrumental break",
+    creatorGoAndPlayLine: "Jump to this line and play",
+    creatorAddWordTitle: "Add a new word to this line",
+    creatorClearLineWordsTitle: "Clear all word timestamps in this line",
+    creatorTokenChipTitle: "Click: Seek & select target | Double-click: Edit or split word",
+    creatorLineEndTitle: "Line end timestamp (optional)",
+    creatorBgVocalTag: "Bg Vocal",
+    creatorBgChipTitle: "Click: Seek & select this background vocal",
+    creatorAddSingleWord: "+ Add Single Word",
+    creatorInsertBgBtn: "+ [Bg Vocal]",
+    creatorInsertDuetBtn: "+ v2: Duet Line",
+    creatorEmptyBuilderHint:
+      "No lines yet. Click '+ Add Line' above, use 'Pull Active Lyrics' to load current lyrics, or paste in the 'Raw Text' tab.",
+    creatorLinePlaceholder: "Type a lyric line...",
+    creatorInsertBelowBtn: "+ Line Below",
+    creatorInsertBelowTitle: "Insert a new lyric line right below this one",
+    creatorInsertBreakBelowBtn: "+ Interlude Below",
+    creatorDeleteWordTitle: "Delete word",
+    creatorBgBadge: "[Bg Vocal]",
+    creatorBgPlaceholder: "Background vocal lyrics...",
+    creatorLocalDbBtn: "Local DB ({count})",
+    creatorQuickAddWordBtn: "+ Add Word to Selected Line",
+    creatorSyncEmpty: "No lines to synchronize. Add lyrics in Step 1 or type a new line below.",
+    creatorSyncStaticInfo:
+      "Static (Unsynced) mode is active. Click 'Save to Local DB' to save as plain text, or switch to 'Block' / 'Karaoke' mode above.",
+    creatorPromptAddWord: "Enter word to add:",
+    creatorPromptEditWord: "Edit word (add a space to split into two words, leave empty to delete):",
+    creatorEndLabel: "End",
+    creatorDefaultLine: "New lyric line",
+    creatorDefaultWord: "word",
+    creatorDefaultBgVocal: "bg vocal",
     appleConnectError: "Could not reach Apple Music, please try again.",
     appleConnected: "Apple Music connected.",
     appleConnectFailed: "Apple Music connection failed.",
@@ -11280,6 +11353,78 @@ const Locales = exports.Locales = {
     creatorCreditPlaceholder: "Hazırlayan notu (isteğe bağlı) — örn. Synced by Mustafa",
     creatorTextPlaceholder:
       "Şarkı sözlerini her satıra bir cümle gelecek şekilde yazın veya yapıştırın.\n\n• Enstrümantal ara için #interlude yazın\n• Arka vokal eklemek için cümlenin hemen alt satırına [arka vokal] yazın\n• Sağ hizalı Düet şarkıcı için satır başına v2: ekleyin",
+    creatorImportExport: "İçe / Dışa Aktar",
+    creatorLibraryEmpty: "Henüz Local DB'de kayıtlı şarkı sözü bulunmuyor.",
+    creatorLoadEditor: "Editöre Yükle",
+    creatorLoadedToast: "Yüklendi: {title}",
+    creatorDeleteBtn: "Sil",
+    creatorPullingOnline: "Online sözler çekiliyor...",
+    creatorNoOnlineFound: "Bu şarkı için online söz bulunamadı.",
+    creatorOnlineLoaded: "{source} sözleri yüklendi ({count} satır)",
+    creatorOnlineError: "Online sözler alınırken hata oluştu.",
+    creatorSpreadSuccess: "{count} satırın kelime zamanları otomatik dağıtıldı!",
+    creatorSpreadNeedStart: "Dağıtmak için önce en az bir satırın başlangıç zamanı olmalı.",
+    creatorImportedToast: "İçe aktarıldı: {name}",
+    creatorImportError: "İçe aktarma hatası: {error}",
+    creatorInvalidFile: "Geçersiz dosya",
+    creatorNothingToSave: "Kaydedilecek şarkı sözü satırı yok.",
+    creatorNeedCueOrStatic: "En az bir satırı zamanlayın veya 'Statik (Düz)' modunu seçin.",
+    creatorSavedToast: "Local DB'ye kaydedildi (Liquid Lyrics & Fullscreen Reloaded uyumlu)!",
+    creatorDeletedToast: "Local DB kaydı silindi.",
+    creatorShiftedToast: "Tüm zamanlar {delta}ms kaydırıldı",
+    creatorResetToast: "Tüm zaman damgaları sıfırlandı.",
+    creatorPreviewEmpty: "Önizleme için en az bir satırı zamanlayın veya 'Statik' modunu seçin.",
+    creatorSpreadBtn: "Satır Zamanlarını Kelimelere Dağıt",
+    creatorSpreadTitle: "Satır başlangıç/bitiş zamanlarını kelimelere eşit olarak dağıtır",
+    creatorHintStamp: "Zamanla",
+    creatorHintRightAlt: "Sağ Alt",
+    creatorHintPlayPause: "Oynat/Duraklat",
+    creatorHintUndo: "Geri Al",
+    creatorHintSelect: "Hedef Seç",
+    creatorHintClear: "Zamanı Sil",
+    creatorQuickAddPlaceholder: "Senkron ekranından çıkmadan yeni cümle veya kelime ekleyin (v2: düet, #interlude)...",
+    creatorQuickAddBtn: "+ Yeni Satır Olarak Ekle",
+    creatorLinesReady: "{done} / {total} satır hazır",
+    creatorEndOfLyrics: "Şarkı Sözü Bitişi",
+    creatorInterludeLine: "♪ Enstrümantal Ara (• • •)",
+    creatorInterludeTitle: "♪ Enstrümantal Ara (#interlude • • •)",
+    creatorDuetTitle: "Sağ hizalı Düet şarkıcı (OppositeAligned / v2)",
+    creatorAddBreakShort: "+ Ara",
+    creatorAddBreakTitle: "Bu satırın hemen altına enstrümantal ara (• • •) ekle",
+    creatorPlayFromLine: "Bu satırdan oynat",
+    creatorPlayFromLineAt: "Bu satırdan oynat ({time})",
+    creatorClearTimeTitle: "Zamanı temizle",
+    creatorDeleteBreakTitle: "Bu enstrümantal arayı sil",
+    creatorGoAndPlayLine: "Bu satıra git ve oynat",
+    creatorAddWordTitle: "Bu satıra yeni kelime ekle",
+    creatorClearLineWordsTitle: "Satırdaki tüm kelime zamanlarını temizle",
+    creatorTokenChipTitle: "Tıkla: Bu kelimeye git ve hedef seç | Çift tıkla: Kelimeyi düzenle veya böl",
+    creatorLineEndTitle: "Satır bitiş zamanı (isteğe bağlı)",
+    creatorBgVocalTag: "Arka Vokal",
+    creatorBgChipTitle: "Tıkla: Bu arka vokale git ve hedef seç",
+    creatorAddSingleWord: "+ Tek Kelime Ekle",
+    creatorInsertBgBtn: "+ [Arka Vokal]",
+    creatorInsertDuetBtn: "+ v2: Düet Satırı",
+    creatorEmptyBuilderHint:
+      "Henüz satır yok. Yukarıdan '+ Cümle Ekle'ye tıklayın, 'Aktif Sözleri Çek' ile şarkının mevcut sözlerini getirin veya 'Toplu Metin' sekmesinden yapıştırın.",
+    creatorLinePlaceholder: "Cümle veya söz satırı yazın...",
+    creatorInsertBelowBtn: "+ Altına Satır",
+    creatorInsertBelowTitle: "Bu satırın hemen altına yeni söz satırı ekle",
+    creatorInsertBreakBelowBtn: "+ Altına İnterlude",
+    creatorDeleteWordTitle: "Kelimeyi sil",
+    creatorBgBadge: "[Arka Vokal]",
+    creatorBgPlaceholder: "Arka vokal sözleri...",
+    creatorLocalDbBtn: "Local DB ({count})",
+    creatorQuickAddWordBtn: "+ Seçili Satıra Kelime Ekle",
+    creatorSyncEmpty: "Senkronize edilecek satır yok. 1. Aşamadan söz ekleyin veya aşağıdan yeni cümle yazın.",
+    creatorSyncStaticInfo:
+      "Statik (Zamanlamasız) mod aktif. Doğrudan 'Local DB'ye Kaydet' butonuna basarak düz metin olarak kaydedebilir veya yukarıdan 'Blok' / 'Karaoke' moduna geçebilirsiniz.",
+    creatorPromptAddWord: "Eklenecek kelimeyi yazın:",
+    creatorPromptEditWord: "Kelimeyi düzenleyin (boşluk bırakırsanız iki kelimeye bölünür, boş bırakırsanız silinir):",
+    creatorEndLabel: "Bitiş",
+    creatorDefaultLine: "Yeni söz satırı",
+    creatorDefaultWord: "kelime",
+    creatorDefaultBgVocal: "arka vokal",
     appleConnectError: "Apple Music'e ulaşılamadı, tekrar deneyin.",
     appleConnected: "Apple Music bağlandı.",
     appleConnectFailed: "Apple Music bağlantısı başarısız oldu.",
@@ -11313,14 +11458,20 @@ const Locales = exports.Locales = {
   },
 };
 
-function t(key) {
+function t(key, params) {
   let lang = Settings.get("language") || "auto";
   if (lang === "auto") {
     const spLocale = SpotiKitBridge.getLocale() || "en";
     lang = spLocale.split("-")[0].toLowerCase();
   }
   const dict = Locales[lang] || Locales.en;
-  return dict[key] || Locales.en[key] || key;
+  let str = dict[key] || Locales.en[key] || key;
+  if (params && typeof params === "object") {
+    for (const [k, v] of Object.entries(params)) {
+      str = str.replaceAll(`{${k}}`, String(v));
+    }
+  }
+  return str;
 }
 
 // Exported functions

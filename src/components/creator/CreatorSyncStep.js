@@ -49,11 +49,10 @@ export const CreatorSyncStep = {
       const spreadBtn = el(
         "button",
         "fr-creator-mini-btn",
-        "Satır Zamanlarını Kelimelere Dağıt"
+        t("creatorSpreadBtn")
       );
       spreadBtn.type = "button";
-      spreadBtn.title =
-        "Satır başlangıç/bitiş zamanlarını kelimelere eşit olarak dağıtır";
+      spreadBtn.title = t("creatorSpreadTitle");
       spreadBtn.addEventListener("click", () => this.autoSpreadWordTimings());
       rightControls.appendChild(spreadBtn);
     }
@@ -75,12 +74,12 @@ export const CreatorSyncStep = {
     // Shortcuts hint bar
     const hintBar = el("div", "fr-creator-shortcuts-bar");
     hintBar.innerHTML = `
-      <span><kbd>Space</kbd> / <kbd>Sağ Alt</kbd> Zamanla</span>
-      <span><kbd>P</kbd> Oynat/Duraklat</span>
-      <span><kbd>Backspace</kbd> Geri Al</span>
+      <span><kbd>Space</kbd> / <kbd>${t("creatorHintRightAlt")}</kbd> ${t("creatorHintStamp")}</span>
+      <span><kbd>P</kbd> ${t("creatorHintPlayPause")}</span>
+      <span><kbd>Backspace</kbd> ${t("creatorHintUndo")}</span>
       <span><kbd>←</kbd><kbd>→</kbd> ±100ms (<kbd>Shift</kbd> ±300ms)</span>
-      <span><kbd>↑</kbd><kbd>↓</kbd> Hedef Seç</span>
-      <span><kbd>Del</kbd> Zamanı Sil</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> ${t("creatorHintSelect")}</span>
+      <span><kbd>Del</kbd> ${t("creatorHintClear")}</span>
     `;
 
     const listEl = el("div", "fr-creator-sync-list");
@@ -91,10 +90,9 @@ export const CreatorSyncStep = {
     const quickInput = document.createElement("input");
     quickInput.type = "text";
     quickInput.className = "fr-creator-sync-quickinput";
-    quickInput.placeholder =
-      "Senkron ekranından çıkmadan yeni cümle veya kelime ekleyin (v2: düet, #interlude)...";
+    quickInput.placeholder = t("creatorQuickAddPlaceholder");
 
-    const addAsLineBtn = el("button", "fr-creator-mini-btn", "+ Yeni Satır Olarak Ekle");
+    const addAsLineBtn = el("button", "fr-creator-mini-btn", t("creatorQuickAddBtn"));
     addAsLineBtn.type = "button";
     addAsLineBtn.addEventListener("click", () => {
       const val = quickInput.value.trim();
@@ -132,7 +130,7 @@ export const CreatorSyncStep = {
     const appendWordBtn = el(
       "button",
       "fr-creator-mini-btn",
-      "+ Seçili Satıra Kelime Ekle"
+      t("creatorQuickAddWordBtn")
     );
     appendWordBtn.type = "button";
     appendWordBtn.addEventListener("click", () => {
@@ -178,7 +176,7 @@ export const CreatorSyncStep = {
     // Update counter
     if (this.syncProgressEl) {
       const done = lines.filter((l) => isDraftLineComplete(l, syncMode)).length;
-      this.syncProgressEl.textContent = `${done} / ${lines.length} satır hazır`;
+      this.syncProgressEl.textContent = t("creatorLinesReady", { done, total: lines.length });
     }
 
     if (!lines.length) {
@@ -186,7 +184,7 @@ export const CreatorSyncStep = {
         el(
           "div",
           "fr-creator-empty-box",
-          "Senkronize edilecek satır yok. 1. Aşamadan söz ekleyin veya aşağıdan yeni cümle yazın."
+          t("creatorSyncEmpty")
         )
       );
       return;
@@ -197,7 +195,7 @@ export const CreatorSyncStep = {
         el(
           "div",
           "fr-creator-empty-box",
-          "Statik (Zamanlamasız) mod aktif. Doğrudan 'Local DB'ye Kaydet' butonuna basarak düz metin olarak kaydedebilir veya yukarıdan 'Blok' / 'Karaoke' moduna geçebilirsiniz."
+          t("creatorSyncStaticInfo")
         )
       );
       return;
@@ -231,7 +229,7 @@ export const CreatorSyncStep = {
     endRow.append(
       el("span", "fr-creator-line-num", "⚑"),
       el("span", "fr-creator-time-pill", formatCueTime(this.draft.endMs)),
-      el("span", "fr-creator-row-text", "Şarkı Sözü Bitişi (End of Lyrics)")
+      el("span", "fr-creator-row-text", t("creatorEndOfLyrics"))
     );
     listEl.appendChild(endRow);
   },
@@ -260,7 +258,7 @@ export const CreatorSyncStep = {
 
     const textWrap = el("div", "fr-creator-row-text");
     if (line.kind === "interlude") {
-      textWrap.textContent = "♪ Enstrümantal Ara (• • •)";
+      textWrap.textContent = t("creatorInterludeLine");
     } else {
       textWrap.textContent = line.text || "—";
       if (line.backgrounds?.length) {
@@ -283,7 +281,7 @@ export const CreatorSyncStep = {
         "v2"
       );
       duetBtn.type = "button";
-      duetBtn.title = "Düet (v2) hizalaması";
+      duetBtn.title = t("creatorDuetTitle");
       duetBtn.addEventListener("click", () => {
         line.isDuet = !line.isDuet;
         this.renderSyncListOnly();
@@ -291,10 +289,10 @@ export const CreatorSyncStep = {
       actions.appendChild(duetBtn);
     }
 
-    // + Ara (Insert interlude directly under this line)
-    const addIntBtn = el("button", "fr-creator-mini-btn", "+ Ara");
+    // + Break (Insert interlude directly under this line)
+    const addIntBtn = el("button", "fr-creator-mini-btn", t("creatorAddBreakShort"));
     addIntBtn.type = "button";
-    addIntBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    addIntBtn.title = t("creatorAddBreakTitle");
     addIntBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const nowMs = Math.round(this.getAccurateProgressMs());
@@ -317,7 +315,7 @@ export const CreatorSyncStep = {
     playBtn.type = "button";
     playBtn.innerHTML = Icons.play;
     playBtn.disabled = line.start == null;
-    playBtn.title = "Bu satırdan oynat";
+    playBtn.title = t("creatorPlayFromLine");
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (line.start != null) this.seek(line.start, true);
@@ -326,7 +324,7 @@ export const CreatorSyncStep = {
     const clearBtn = el("button", "fr-creator-mini-icon-btn fr-danger", "×");
     clearBtn.type = "button";
     clearBtn.disabled = line.start == null;
-    clearBtn.title = "Zamanı temizle";
+    clearBtn.title = t("creatorClearTimeTitle");
     clearBtn.addEventListener("click", () => {
       line.start = null;
       line.end = null;
@@ -336,7 +334,7 @@ export const CreatorSyncStep = {
     if (line.kind === "interlude") {
       const delIntBtn = el("button", "fr-creator-mini-icon-btn fr-danger", "🗑");
       delIntBtn.type = "button";
-      delIntBtn.title = "Bu enstrümantal arayı sil";
+      delIntBtn.title = t("creatorDeleteBreakTitle");
       delIntBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         this.draft.lines.splice(lineIdx, 1);
@@ -369,7 +367,7 @@ export const CreatorSyncStep = {
     const head = el("div", "fr-creator-word-row-head");
     const leftMeta = el("div", "fr-creator-word-row-meta");
     leftMeta.style.cursor = "pointer";
-    leftMeta.title = "Bu satıra git ve oynat";
+    leftMeta.title = t("creatorGoAndPlayLine");
     leftMeta.append(
       el("span", "fr-creator-line-num", `#${lineIdx + 1}`),
       el(
@@ -393,32 +391,33 @@ export const CreatorSyncStep = {
     const duetBtn = el(
       "button",
       `fr-creator-mini-btn${line.isDuet ? " fr-active-duet" : ""}`,
-      "v2 Düet"
+      t("creatorDuetToggle")
     );
     duetBtn.type = "button";
+    duetBtn.title = t("creatorDuetTitle");
     duetBtn.addEventListener("click", () => {
       line.isDuet = !line.isDuet;
       this.renderSyncListOnly();
     });
 
-    const addWordInlineBtn = el("button", "fr-creator-mini-btn", "+ Kelime");
+    const addWordInlineBtn = el("button", "fr-creator-mini-btn", t("creatorAddWord"));
     addWordInlineBtn.type = "button";
-    addWordInlineBtn.title = "Bu satıra yeni kelime ekle";
+    addWordInlineBtn.title = t("creatorAddWordTitle");
     addWordInlineBtn.addEventListener("click", () => {
-      const w = prompt("Eklenecek kelimeyi yazın:", "");
+      const w = prompt(t("creatorPromptAddWord"), "");
       if (w && w.trim()) {
         const parts = w.trim().split(/\s+/).filter(Boolean);
         for (const p of parts) {
           line.tokens.push({ text: p, start: null, end: null });
         }
-        line.text = line.tokens.map((t) => t.text).join(" ");
+        line.text = line.tokens.map((tok) => tok.text).join(" ");
         this.renderSyncListOnly();
       }
     });
 
-    const addIntInlineBtn = el("button", "fr-creator-mini-btn", "+ Ara");
+    const addIntInlineBtn = el("button", "fr-creator-mini-btn", t("creatorAddBreakShort"));
     addIntInlineBtn.type = "button";
-    addIntInlineBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    addIntInlineBtn.title = t("creatorAddBreakTitle");
     addIntInlineBtn.addEventListener("click", () => {
       const nowMs = Math.round(this.getAccurateProgressMs());
       this.draft.lines.splice(lineIdx + 1, 0, createInterludeDraftLine(nowMs > 0 ? nowMs : null));
@@ -438,7 +437,7 @@ export const CreatorSyncStep = {
     playBtn.type = "button";
     playBtn.innerHTML = Icons.play;
     playBtn.disabled = firstStart == null;
-    playBtn.title = "Bu satırdan oynat";
+    playBtn.title = t("creatorPlayFromLine");
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (firstStart != null) this.seek(firstStart, true);
@@ -446,7 +445,7 @@ export const CreatorSyncStep = {
 
     const clearLineBtn = el("button", "fr-creator-mini-icon-btn fr-danger", "×");
     clearLineBtn.type = "button";
-    clearLineBtn.title = "Satırdaki tüm kelime zamanlarını temizle";
+    clearLineBtn.title = t("creatorClearLineWordsTitle");
     clearLineBtn.addEventListener("click", () => {
       line.start = null;
       line.end = null;
@@ -482,7 +481,7 @@ export const CreatorSyncStep = {
         `fr-creator-token${isTokActive ? " fr-active" : ""}${isTokDone ? " fr-done" : ""}`
       );
       chip.type = "button";
-      chip.title = "Tıkla: Bu kelimeye git ve hedef seç | Çift tıkla: Kelimeyi düzenle veya böl";
+      chip.title = t("creatorTokenChipTitle");
       chip.append(
         el("span", "fr-creator-token-word", tok.text),
         el("span", "fr-creator-token-time", formatCueTime(tok.start))
@@ -501,10 +500,7 @@ export const CreatorSyncStep = {
 
       chip.addEventListener("dblclick", (e) => {
         e.stopPropagation();
-        const edited = prompt(
-          "Kelimeyi düzenleyin (boşluk bırakırsanız iki kelimeye bölünür, boş bırakırsanız silinir):",
-          tok.text
-        );
+        const edited = prompt(t("creatorPromptEditWord"), tok.text);
         if (edited === null) return;
         const clean = edited.trim();
         if (!clean) {
@@ -523,7 +519,7 @@ export const CreatorSyncStep = {
         } else {
           tok.text = clean;
         }
-        line.text = line.tokens.map((t) => t.text).join(" ");
+        line.text = line.tokens.map((tokItem) => tokItem.text).join(" ");
         this.renderSyncListOnly();
       });
 
@@ -545,7 +541,7 @@ export const CreatorSyncStep = {
       }`
     );
     endChip.type = "button";
-    endChip.title = "Satır bitiş zamanı (isteğe bağlı)";
+    endChip.title = t("creatorLineEndTitle");
     const flagIcon = el("span", "fr-creator-token-flag");
     flagIcon.innerHTML = Icons.flag;
     endChip.append(
@@ -553,7 +549,7 @@ export const CreatorSyncStep = {
       el(
         "span",
         "fr-creator-token-time",
-        line.end != null ? formatCueTime(line.end) : "Bitiş"
+        line.end != null ? formatCueTime(line.end) : t("creatorEndLabel")
       )
     );
     endChip.addEventListener("click", (e) => {
@@ -571,7 +567,7 @@ export const CreatorSyncStep = {
     if (Array.isArray(line.backgrounds) && line.backgrounds.length > 0) {
       line.backgrounds.forEach((bg, bgIdx) => {
         const bgRow = el("div", "fr-creator-tokens-wrap fr-creator-bg-tokens");
-        bgRow.appendChild(el("span", "fr-creator-bg-tag", "Arka Vokal"));
+        bgRow.appendChild(el("span", "fr-creator-bg-tag", t("creatorBgVocalTag")));
 
         bg.tokens.forEach((bt, btIdx) => {
           const bgTarget = { type: "bgToken", lineIdx, tokenIdx: btIdx, bgIdx };
@@ -583,7 +579,7 @@ export const CreatorSyncStep = {
             }`
           );
           bgChip.type = "button";
-          bgChip.title = "Tıkla: Bu arka vokale git ve hedef seç";
+          bgChip.title = t("creatorBgChipTitle");
           bgChip.append(
             el("span", "fr-creator-token-word", bt.text),
             el("span", "fr-creator-token-time", formatCueTime(bt.start))
@@ -622,7 +618,7 @@ export const CreatorSyncStep = {
           el(
             "span",
             "fr-creator-token-time",
-            bg.end != null ? formatCueTime(bg.end) : "Bitiş"
+            bg.end != null ? formatCueTime(bg.end) : t("creatorEndLabel")
           )
         );
         bgEndChip.addEventListener("click", (e) => {

@@ -59,19 +59,19 @@ export const CreatorTextStep = {
       const addLineBtn = el("button", "fr-creator-chip-btn", t("creatorAddSentence"));
       addLineBtn.type = "button";
       addLineBtn.addEventListener("click", () => {
-        this.draft.lines.push(createLyricDraftLine("Yeni söz satırı", false));
+        this.draft.lines.push(createLyricDraftLine(t("creatorDefaultLine"), false));
         this.renderStepContent(this.bodyEl);
       });
 
-      const addWordLineBtn = el("button", "fr-creator-chip-btn", "+ Tek Kelime Ekle");
+      const addWordLineBtn = el("button", "fr-creator-chip-btn", t("creatorAddSingleWord"));
       addWordLineBtn.type = "button";
       addWordLineBtn.addEventListener("click", () => {
         const last = this.draft.lines[this.draft.lines.length - 1];
         if (last && last.kind === "lyric") {
-          last.tokens.push({ text: "kelime", start: null, end: null });
+          last.tokens.push({ text: t("creatorDefaultWord"), start: null, end: null });
           last.text = last.tokens.map((tok) => tok.text).join(" ");
         } else {
-          this.draft.lines.push(createLyricDraftLine("kelime", false));
+          this.draft.lines.push(createLyricDraftLine(t("creatorDefaultWord"), false));
         }
         this.renderStepContent(this.bodyEl);
       });
@@ -92,14 +92,15 @@ export const CreatorTextStep = {
         this.renderStepContent(this.bodyEl);
       });
 
-      const insBg = el("button", "fr-creator-chip-btn", "+ [Arka Vokal]");
+      const insBg = el("button", "fr-creator-chip-btn", t("creatorInsertBgBtn"));
       insBg.type = "button";
       insBg.addEventListener("click", () => {
-        this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "[arka vokal]";
+        this.rawTextCache =
+          (this.rawTextCache ? this.rawTextCache + "\n" : "") + `[${t("creatorDefaultBgVocal")}]`;
         this.renderStepContent(this.bodyEl);
       });
 
-      const insDuet = el("button", "fr-creator-chip-btn", "+ v2: Düet Satırı");
+      const insDuet = el("button", "fr-creator-chip-btn", t("creatorInsertDuetBtn"));
       insDuet.type = "button";
       insDuet.addEventListener("click", () => {
         this.rawTextCache = (this.rawTextCache ? this.rawTextCache + "\n" : "") + "v2: ";
@@ -126,13 +127,7 @@ export const CreatorTextStep = {
       const builderList = el("div", "fr-creator-builder-list");
       if (!this.draft.lines.length) {
         const emptyBox = el("div", "fr-creator-empty-box");
-        emptyBox.append(
-          el(
-            "p",
-            null,
-            "Henüz satır yok. Yukarıdan '+ Cümle Ekle'ye tıklayın, 'Aktif Sözleri Çek' ile şarkının mevcut sözlerini getirin veya 'Toplu Metin' sekmesinden yapıştırın."
-          )
-        );
+        emptyBox.append(el("p", null, t("creatorEmptyBuilderHint")));
         builderList.appendChild(emptyBox);
       } else {
         this.draft.lines.forEach((line, idx) => {
@@ -172,13 +167,13 @@ export const CreatorTextStep = {
 
     if (line.kind === "interlude") {
       top.appendChild(
-        el("span", "fr-creator-interlude-title", "♪ Enstrümantal Ara (#interlude • • •)")
+        el("span", "fr-creator-interlude-title", t("creatorInterludeTitle"))
       );
     } else {
       const sentenceInput = document.createElement("input");
       sentenceInput.type = "text";
       sentenceInput.className = "fr-creator-line-input";
-      sentenceInput.placeholder = "Cümle veya söz satırı yazın...";
+      sentenceInput.placeholder = t("creatorLinePlaceholder");
       sentenceInput.value = line.text || "";
       sentenceInput.addEventListener("change", () => {
         const clean = sentenceInput.value.trim();
@@ -196,7 +191,7 @@ export const CreatorTextStep = {
       const playLineBtn = el("button", "fr-creator-mini-icon-btn");
       playLineBtn.type = "button";
       playLineBtn.innerHTML = Icons.play;
-      playLineBtn.title = `Bu satırdan oynat (${formatCueTime(lineStartMs)})`;
+      playLineBtn.title = t("creatorPlayFromLineAt", { time: formatCueTime(lineStartMs) });
       playLineBtn.addEventListener("click", () => this.seek(lineStartMs, true));
       controls.appendChild(playLineBtn);
     }
@@ -209,7 +204,7 @@ export const CreatorTextStep = {
         t("creatorDuetToggle")
       );
       duetBtn.type = "button";
-      duetBtn.title = "Sağ hizalı Düet şarkıcı (OppositeAligned / v2)";
+      duetBtn.title = t("creatorDuetTitle");
       duetBtn.addEventListener("click", () => {
         line.isDuet = !line.isDuet;
         this.renderStepContent(this.bodyEl);
@@ -219,8 +214,8 @@ export const CreatorTextStep = {
       const addWordBtn = el("button", "fr-creator-mini-btn", t("creatorAddWord"));
       addWordBtn.type = "button";
       addWordBtn.addEventListener("click", () => {
-        line.tokens.push({ text: "kelime", start: null, end: null });
-        line.text = line.tokens.map((t) => t.text).join(" ");
+        line.tokens.push({ text: t("creatorDefaultWord"), start: null, end: null });
+        line.text = line.tokens.map((tok) => tok.text).join(" ");
         this.renderStepContent(this.bodyEl);
       });
 
@@ -229,7 +224,7 @@ export const CreatorTextStep = {
       addBgBtn.type = "button";
       addBgBtn.addEventListener("click", () => {
         line.backgrounds = line.backgrounds || [];
-        line.backgrounds.push(createBackgroundDraftEntry("arka vokal"));
+        line.backgrounds.push(createBackgroundDraftEntry(t("creatorDefaultBgVocal")));
         this.renderStepContent(this.bodyEl);
       });
 
@@ -237,18 +232,18 @@ export const CreatorTextStep = {
     }
 
     // Insert lyric line below
-    const insBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına Satır");
+    const insBelowBtn = el("button", "fr-creator-mini-btn", t("creatorInsertBelowBtn"));
     insBelowBtn.type = "button";
-    insBelowBtn.title = "Bu satırın hemen altına yeni söz satırı ekle";
+    insBelowBtn.title = t("creatorInsertBelowTitle");
     insBelowBtn.addEventListener("click", () => {
       this.draft.lines.splice(lineIdx + 1, 0, createLyricDraftLine("", false));
       this.renderStepContent(this.bodyEl);
     });
 
     // Insert interlude below
-    const insIntBelowBtn = el("button", "fr-creator-mini-btn", "+ Altına İnterlude");
+    const insIntBelowBtn = el("button", "fr-creator-mini-btn", t("creatorInsertBreakBelowBtn"));
     insIntBelowBtn.type = "button";
-    insIntBelowBtn.title = "Bu satırın hemen altına enstrümantal ara (• • •) ekle";
+    insIntBelowBtn.title = t("creatorAddBreakTitle");
     insIntBelowBtn.addEventListener("click", () => {
       this.draft.lines.splice(lineIdx + 1, 0, createInterludeDraftLine());
       this.renderStepContent(this.bodyEl);
@@ -324,10 +319,10 @@ export const CreatorTextStep = {
 
         const delWordBtn = el("button", "fr-creator-word-pill-del", "×");
         delWordBtn.type = "button";
-        delWordBtn.title = "Kelimeyi sil";
+        delWordBtn.title = t("creatorDeleteWordTitle");
         delWordBtn.addEventListener("click", () => {
           line.tokens.splice(tokIdx, 1);
-          line.text = line.tokens.map((t) => t.text).join(" ");
+          line.text = line.tokens.map((tok) => tok.text).join(" ");
           this.renderStepContent(this.bodyEl);
         });
 
@@ -342,12 +337,12 @@ export const CreatorTextStep = {
       const bgContainer = el("div", "fr-creator-bg-list");
       line.backgrounds.forEach((bg, bgIdx) => {
         const bgRow = el("div", "fr-creator-bg-edit-row");
-        const bgTag = el("span", "fr-creator-bg-badge", "[Arka Vokal]");
+        const bgTag = el("span", "fr-creator-bg-badge", t("creatorBgBadge"));
         const bgInput = document.createElement("input");
         bgInput.type = "text";
         bgInput.className = "fr-creator-bg-input";
         bgInput.value = bg.text || "";
-        bgInput.placeholder = "Arka vokal sözleri...";
+        bgInput.placeholder = t("creatorBgPlaceholder");
         bgInput.addEventListener("change", () => {
           const cleanBg = bgInput.value.trim();
           if (!cleanBg) {

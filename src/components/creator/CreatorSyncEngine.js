@@ -24,11 +24,11 @@ export const CreatorSyncEngine = {
 
   async pullOnlineLyrics() {
     const info = this.getCurrentTrackInfo();
-    this.showToast("Online sözler çekiliyor...");
+    this.showToast(t("creatorPullingOnline"));
     try {
       const online = await LyricsService.resolveOnlineOnly(info.track);
       if (!online || !online.lines || !online.lines.length) {
-        this.showToast("Bu şarkı için online söz bulunamadı.");
+        this.showToast(t("creatorNoOnlineFound"));
         return;
       }
       const nextDraft = fullscreenLinesToDraft(online, info);
@@ -37,9 +37,14 @@ export const CreatorSyncEngine = {
       this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
       this.activeTarget = this.findFirstIncompleteTarget();
       this.render();
-      this.showToast(`${online.source || "Online"} sözleri yüklendi (${this.draft.lines.length} satır)`);
+      this.showToast(
+        t("creatorOnlineLoaded", {
+          source: online.source || "Online",
+          count: this.draft.lines.length,
+        })
+      );
     } catch (e) {
-      this.showToast("Online sözler alınırken hata oluştu.");
+      this.showToast(t("creatorOnlineError"));
     }
   },
 
@@ -80,9 +85,9 @@ export const CreatorSyncEngine = {
       this.draft.syncMode = "word";
       this.draft.mode = "word";
       this.render();
-      this.showToast(`${count} satırın kelime zamanları otomatik dağıtıldı!`);
+      this.showToast(t("creatorSpreadSuccess", { count }));
     } else {
-      this.showToast("Dağıtmak için önce en az bir satırın başlangıç zamanı olmalı.");
+      this.showToast(t("creatorSpreadNeedStart"));
     }
   },
 
@@ -95,16 +100,18 @@ export const CreatorSyncEngine = {
       this.rawTextCache = serializeDraftLinesToText(this.draft.lines);
       this.activeTarget = this.findFirstIncompleteTarget();
       this.render();
-      this.showToast(`İçe aktarıldı: ${file.name}`);
+      this.showToast(t("creatorImportedToast", { name: file.name }));
     } catch (e) {
-      this.showToast(`İçe aktarma hatası: ${e.message || "Geçersiz dosya"}`);
+      this.showToast(
+        t("creatorImportError", { error: e.message || t("creatorInvalidFile") })
+      );
     }
   },
 
   handleSaveToLocalDB() {
     this.syncRawTextToDraft();
     if (!this.draft || !this.draft.lines.length) {
-      this.showToast("Kaydedilecek şarkı sözü satırı yok.");
+      this.showToast(t("creatorNothingToSave"));
       return;
     }
 
@@ -115,7 +122,7 @@ export const CreatorSyncEngine = {
         : (compiled.Content || []).length > 0;
 
     if (!hasOutput) {
-      this.showToast("En az bir satırı zamanlayın veya 'Statik (Düz)' modunu seçin.");
+      this.showToast(t("creatorNeedCueOrStatic"));
       return;
     }
 
@@ -143,7 +150,7 @@ export const CreatorSyncEngine = {
       LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
     }
     this.render();
-    this.showToast("Local DB'ye kaydedildi (Liquid Lyrics & Fullscreen Reloaded uyumlu)!");
+    this.showToast(t("creatorSavedToast"));
   },
 
   handleDeleteFromLocalDB(targetUriOrId) {
@@ -155,7 +162,7 @@ export const CreatorSyncEngine = {
       LyricsView.loadForTrack(this.app.currentTrack, this.app, true);
     }
     this.render();
-    this.showToast("Local DB kaydı silindi.");
+    this.showToast(t("creatorDeletedToast"));
   },
 
   // ==========================================================================
@@ -409,7 +416,9 @@ export const CreatorSyncEngine = {
       this.draft.endMs = Math.max(0, this.draft.endMs + deltaMs);
     }
     this.renderSyncListOnly();
-    this.showToast(`Tüm zamanlar ${deltaMs > 0 ? `+${deltaMs}` : deltaMs}ms kaydırıldı`);
+    this.showToast(
+      t("creatorShiftedToast", { delta: deltaMs > 0 ? `+${deltaMs}` : deltaMs })
+    );
   },
 
   clearAllTimes() {
@@ -435,7 +444,7 @@ export const CreatorSyncEngine = {
     this.draft.endMs = null;
     this.activeTarget = this.findFirstIncompleteTarget();
     this.renderSyncListOnly();
-    this.showToast("Tüm zaman damgaları sıfırlandı.");
+    this.showToast(t("creatorResetToast"));
   },
 
   scrollActiveTargetIntoView() {

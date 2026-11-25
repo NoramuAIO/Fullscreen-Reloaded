@@ -1,6 +1,7 @@
 // tests/storage-i18n.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { installDomStub, createSpotiKitMock } from "./helpers/domStub.mjs";
@@ -267,6 +268,49 @@ test("appleMusicAuth: caches apple-dev-token in SpotiKit.Storage scope and notif
       message: Locales.en.appleConnectFailed,
       options: { type: "error" },
     });
+  } finally {
+    env.teardown();
+  }
+});
+
+test("i18nCreatorParity: EN and TR locales have identical key sets, interpolate params, and Creator UI has no hardcoded Turkish", async () => {
+  const env = setupEnv({ Locale: { language: "en-US" } });
+  try {
+    const { SpotiKitBridge, Settings, Locales, t } = await loadModules();
+    SpotiKitBridge.init(env.mock.ctx);
+    Settings.data = {};
+    Settings.load();
+
+    const enKeys = Object.keys(Locales.en).sort();
+    const trKeys = Object.keys(Locales.tr).sort();
+    assert.deepEqual(enKeys, trKeys, "Locales.en and Locales.tr must have identical keys");
+
+    Settings.set("language", "en");
+    assert.equal(t("creatorLinesReady", { done: 3, total: 10 }), "3 / 10 lines ready");
+    assert.equal(t("creatorLoadedToast", { title: "Demo" }), "Loaded: Demo");
+    assert.equal(t("creatorShiftedToast", { delta: "+100" }), "Shifted all timings by +100ms");
+
+    Settings.set("language", "tr");
+    assert.equal(t("creatorLinesReady", { done: 3, total: 10 }), "3 / 10 satır hazır");
+    assert.equal(t("creatorLoadedToast", { title: "Demo" }), "Yüklendi: Demo");
+    assert.equal(t("creatorShiftedToast", { delta: "-100" }), "Tüm zamanlar -100ms kaydırıldı");
+
+    // Ensure no hardcoded Turkish strings remain in FullLyricsCreator or src/components/creator/*.js
+    const creatorFiles = [
+      path.join(ROOT, "src/components/FullLyricsCreator.js"),
+      ...fs
+        .readdirSync(path.join(ROOT, "src/components/creator"))
+        .filter((f) => f.endsWith(".js"))
+        .map((f) => path.join(ROOT, "src/components/creator", f)),
+    ];
+    for (const filePath of creatorFiles) {
+      const src = fs.readFileSync(filePath, "utf8");
+      assert.doesNotMatch(
+        src,
+        /[ğüşöçıİĞÜŞÖÇ]/,
+        `Found hardcoded Turkish character in ${path.basename(filePath)}`
+      );
+    }
   } finally {
     env.teardown();
   }

@@ -3,6 +3,7 @@
  */
 import { el } from "../../utils/dom.js";
 import { Icons } from "../../utils/icons.js";
+import { t } from "../../utils/i18n.js";
 import { SpotiKitBridge } from "../../services/SpotiKitBridge.js";
 import {
   compileDraftToSpicyLyrics,
@@ -25,7 +26,7 @@ export const CreatorPreviewStep = {
         el(
           "div",
           "fr-creator-empty-box",
-          "Önizleme için en az bir satırı zamanlayın veya 'Statik' modunu seçin."
+          t("creatorPreviewEmpty")
         )
       );
       container.appendChild(wrap);
