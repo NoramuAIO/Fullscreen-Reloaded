@@ -3,7 +3,9 @@
  * - Adapts dynamically to the playing track's album art and extracted color palette.
  * - Supports 5 modes: `liquid-aurora` (default), `song-mesh`, `frosted-art`, `custom-color`, and `off`.
  * - Dual-layer artwork crossfade + 3 organic drifting color orbs + subtle glass specular rim.
- * - Cleans up all injected DOM nodes, observers, timers, and CSS variables on disable or stop.
+ * - Mounts cleanly inside Spotify's rounded right-sidebar panel and strips opaque Spotify wrappers/gradients
+ *   (including hashed React modules, `--background-base`, and `::before`/`::after` overlays).
+ * - Restores all modified inline styles, classes, DOM nodes, observers, and timers on disable or stop.
  */
 import { el } from "../utils/dom.js";
 import { Settings } from "../utils/settings.js";
@@ -15,12 +17,26 @@ const BG_ID = "fr-right-sidebar-bg";
 const ACTIVE_CLASS = "fr-sidebar-panel-bg-active";
 const HOST_CLASS = "fr-sbg-host";
 const CLEAR_BG_CLASS = "fr-sbg-clear-bg";
+const STICKY_HDR_CLASS = "fr-sbg-sticky-hdr";
 const MODE_ATTR = "data-fr-sbg-mode";
-const HOST_SELECTORS = [
-  ".right-sidebar",
-  '[data-testid="right-sidebar"]',
+
+const OUTER_HOST_SELECTORS = [
+  "#Desktop_PanelContainer_Id",
   ".Root__right-sidebar",
+  '[data-testid="right-sidebar"]',
+  ".right-sidebar",
 ];
+
+const KNOWN_BG_OVERLAY_SELECTOR = [
+  ".main-nowPlayingView-background",
+  ".main-nowPlayingView-gradient",
+  ".main-nowPlayingView-content",
+  ".main-nowPlayingView-container",
+  ".main-nowPlayingView-nowPlayingWidgets",
+  ".main-nowPlayingView-contextItemInfo",
+  ".main-nowPlayingView-coverArtContainer",
+  ".npv-cover-art-section",
+].join(",");
 
 function hexToRgbTuple(hex) {
   const clean = String(hex || "").trim().replace(/^#/, "");
@@ -32,12 +48,22 @@ function hexToRgbTuple(hex) {
   ];
 }
 
+function parseColorAlpha(colorStr) {
+  if (!colorStr || colorStr === "transparent") return 0;
+  const rgbaMatch = colorStr.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)/i);
+  if (rgbaMatch) return parseFloat(rgbaMatch[1]) || 0;
+  if (/^rgb\(/i.test(colorStr)) return 1;
+  return 0.5;
+}
+
 export const SidebarBackground = {
   layerEl: null,
   artA: null,
   artB: null,
   _hostEl: null,
   _clearedEls: new Set(),
+  _stickyEls: new Set(),
+  _restoredStyles: new Map(),
   _activeIsA: true,
   _currentImgUrl: "",
   _lastColors: null,
@@ -112,7 +138,7 @@ export const SidebarBackground = {
     ];
     const ds = document.documentElement.style;
     ds.setProperty("--fr-sbg-custom", rgb([r, g, b]));
-    ds.setProperty("--fr-sbg-custom-soft", rgba(bright, 0.52));
+    ds.setProperty("--fr-sbg-custom-soft", rgba(bright, 0.56));
     ds.setProperty("--fr-sbg-custom-deep", rgb(deep));
   },
 
@@ -127,9 +153,9 @@ export const SidebarBackground = {
 
     const ds = document.documentElement.style;
     ds.setProperty("--fr-sbg-dom", rgb(dom));
-    ds.setProperty("--fr-sbg-dom-soft", rgba(dom, 0.72));
+    ds.setProperty("--fr-sbg-dom-soft", rgba(dom, 0.78));
     ds.setProperty("--fr-sbg-acc", rgb(acc));
-    ds.setProperty("--fr-sbg-acc-soft", rgba(acc, 0.58));
+    ds.setProperty("--fr-sbg-acc-soft", rgba(acc, 0.62));
     ds.setProperty("--fr-sbg-dark", rgb(dark));
   },
 
@@ -175,31 +201,185 @@ export const SidebarBackground = {
 
   _findHost() {
     if (typeof document === "undefined") return null;
-    for (const sel of HOST_SELECTORS) {
+
+    let outer = null;
+    for (const sel of OUTER_HOST_SELECTORS) {
       const node = document.querySelector(sel);
-      if (node) return node;
+      if (node) {
+        outer = node;
+        break;
+      }
     }
-    const npv = document.querySelector(".npv-sections");
-    return npv?.parentElement || null;
+    if (!outer) {
+      const npv = document.querySelector(".npv-sections");
+      return npv?.parentElement || null;
+    }
+
+    // Prefer the rounded panel element inside outer (.Root__right-sidebar / #Desktop_PanelContainer_Id)
+    // so Liquid Aurora clips flush inside the panel's rounded border and never bleeds into the outer gutter.
+    const canInspectStyle = typeof window !== "undefined" && typeof window.getComputedStyle === "function";
+    const candidates = [
+      outer.id === "Desktop_PanelContainer_Id" ? outer : outer.querySelector?.("#Desktop_PanelContainer_Id"),
+      outer.querySelector?.('aside[aria-label*="Now playing" i]'),
+      outer.querySelector?.("aside"),
+      outer.querySelector?.(".right-sidebar"),
+      outer,
+    ].filter(Boolean);
+
+    if (canInspectStyle) {
+      const outerStyle = window.getComputedStyle(outer);
+      const outerRadius = parseFloat(outerStyle.borderTopLeftRadius || "0") || 0;
+      if (outerRadius > 0) {
+        return outer;
+      }
+      const outerRect = outer.getBoundingClientRect?.() || { width: 0, height: 0 };
+      for (const cand of candidates) {
+        if (cand === outer) continue;
+        const rect = cand.getBoundingClientRect?.() || { width: 0, height: 0 };
+        const cs = window.getComputedStyle(cand);
+        const radius = parseFloat(cs.borderTopLeftRadius || "0") || 0;
+        const fillsHeight = outerRect.height <= 0 || rect.height >= outerRect.height * 0.8;
+        if (radius > 0 && fillsHeight && rect.width > 80) {
+          return cand;
+        }
+      }
+    }
+
+    // Fallback preference: #Desktop_PanelContainer_Id or .right-sidebar inside outer if non-empty
+    const innerPanel =
+      (outer.id !== "Desktop_PanelContainer_Id" && outer.querySelector?.("#Desktop_PanelContainer_Id")) ||
+      outer.querySelector?.("aside.NowPlayingView") ||
+      outer.querySelector?.('aside[aria-label*="Now playing" i]');
+    return innerPanel || outer;
+  },
+
+  _saveAndClearElement(node) {
+    if (!node || !node.classList || node.id === BG_ID || node.id === "fr-sidebar-lyrics-card") return;
+    if (!node.classList.contains(CLEAR_BG_CLASS)) {
+      node.classList.add(CLEAR_BG_CLASS);
+      this._clearedEls.add(node);
+    }
+    if (node.style && !this._restoredStyles.has(node)) {
+      const getVal = (p) =>
+        typeof node.style.getPropertyValue === "function" ? node.style.getPropertyValue(p) || "" : "";
+      const getPrio = (p) =>
+        typeof node.style.getPropertyPriority === "function"
+          ? node.style.getPropertyPriority(p) || ""
+          : "";
+      this._restoredStyles.set(node, {
+        bg: getVal("background"),
+        bgPrio: getPrio("background"),
+        bgColor: getVal("background-color"),
+        bgColorPrio: getPrio("background-color"),
+        bgImg: getVal("background-image"),
+        bgImgPrio: getPrio("background-image"),
+      });
+      if (typeof node.style.setProperty === "function") {
+        node.style.setProperty("background", "transparent", "important");
+        node.style.setProperty("background-color", "transparent", "important");
+        node.style.setProperty("background-image", "none", "important");
+      }
+    }
   },
 
   _markTransparentWrappers(host) {
     if (!host) return;
-    const targets = [
-      host.querySelector?.(".npv-sections"),
-      host.querySelector?.('[data-testid="NPV_Panel_OpenDiv"]'),
-      host.querySelector?.(".main-buddyFeed-container"),
-      host.querySelector?.(".os-viewport"),
-    ].filter(Boolean);
 
-    for (const node of targets) {
-      let cur = node;
+    // 1. Walk ancestor chain up from known Now Playing containers to host (inclusive of host inner children)
+    const anchorSelectors = [
+      ".npv-sections",
+      '[data-testid="NPV_Panel_OpenDiv"]',
+      ".main-nowPlayingView-content",
+      ".main-nowPlayingView-container",
+      ".main-buddyFeed-container",
+      ".os-viewport",
+      ".os-content",
+      "aside",
+    ];
+    for (const sel of anchorSelectors) {
+      const found = host.querySelector?.(sel);
+      if (!found) continue;
+      let cur = found;
       while (cur && cur !== host) {
-        if (cur.classList && !cur.classList.contains(CLEAR_BG_CLASS)) {
-          cur.classList.add(CLEAR_BG_CLASS);
-          this._clearedEls.add(cur);
-        }
+        this._saveAndClearElement(cur);
         cur = cur.parentElement;
+      }
+    }
+
+    // 2. Also clear direct children of host (e.g. wrapper around aside or sibling overlay containers)
+    if (host.children) {
+      for (const child of host.children) {
+        if (child && child !== this.layerEl) {
+          this._saveAndClearElement(child);
+        }
+      }
+    }
+
+    // 3. Explicit known Spotify gradient/overlay classes inside host
+    if (typeof host.querySelectorAll === "function") {
+      const overlays = host.querySelectorAll(KNOWN_BG_OVERLAY_SELECTOR);
+      for (const ov of overlays) {
+        this._saveAndClearElement(ov);
+      }
+    }
+
+    // 4. Runtime computed-style sweep: catch hashed CSS classes, sibling gradient backdrops, and sticky headers
+    if (
+      typeof window !== "undefined" &&
+      typeof window.getComputedStyle === "function" &&
+      typeof host.querySelectorAll === "function"
+    ) {
+      const hostRect = host.getBoundingClientRect?.() || { width: 0, height: 0, top: 0 };
+      if (hostRect.width <= 0 || hostRect.height <= 0) return;
+
+      const blocks = host.querySelectorAll("div, aside, section, header, nav");
+      let inspected = 0;
+      for (const node of blocks) {
+        if (inspected++ > 120) break;
+        if (!node || node === this.layerEl || node.closest?.(`#${BG_ID}`)) continue;
+        if (node.closest?.("#fr-sidebar-lyrics-card") || node.id === "fr-sidebar-lyrics-card") continue;
+        if (
+          node.closest?.(".main-nowPlayingView-section") ||
+          node.closest?.(".npv-section") ||
+          node.classList?.contains("main-nowPlayingView-section") ||
+          node.classList?.contains("npv-section")
+        ) {
+          continue;
+        }
+        if (node.closest?.('[role="button"], button, a')) continue;
+
+        const rect = node.getBoundingClientRect?.();
+        if (!rect || rect.width < hostRect.width * 0.72 || rect.height < 32) continue;
+
+        const cs = window.getComputedStyle(node);
+        const bgImg = cs.backgroundImage || "";
+        // Never strip actual image textures (e.g. album cover or canvas background)
+        if (bgImg.includes("url(")) continue;
+
+        const alpha = parseColorAlpha(cs.backgroundColor);
+        const hasGradient = bgImg.includes("gradient(");
+
+        // Sticky or top header bar inside the sidebar (e.g. playlist name + close/expand buttons)
+        const isTopBar =
+          (cs.position === "sticky" || rect.top <= hostRect.top + 10) &&
+          rect.height <= 88 &&
+          rect.height >= 36 &&
+          rect.width >= hostRect.width * 0.85;
+
+        if (isTopBar && (alpha > 0.25 || hasGradient) && node.parentElement) {
+          if (!node.classList?.contains(STICKY_HDR_CLASS)) {
+            node.classList?.add(STICKY_HDR_CLASS);
+            this._stickyEls.add(node);
+          }
+          continue;
+        }
+
+        const isFullOrTallPanel = rect.height >= hostRect.height * 0.45 && rect.width >= hostRect.width * 0.85;
+        const isAbsoluteBackdrop = cs.position === "absolute" && rect.height >= 48 && rect.width >= hostRect.width * 0.7;
+
+        if ((isFullOrTallPanel || isAbsoluteBackdrop) && (alpha > 0.15 || hasGradient)) {
+          this._saveAndClearElement(node);
+        }
       }
     }
   },
@@ -213,6 +393,21 @@ export const SidebarBackground = {
       node?.classList?.remove(CLEAR_BG_CLASS);
     }
     this._clearedEls.clear();
+    for (const node of this._stickyEls) {
+      node?.classList?.remove(STICKY_HDR_CLASS);
+    }
+    this._stickyEls.clear();
+    for (const [node, prev] of this._restoredStyles.entries()) {
+      if (!node?.style) continue;
+      const restoreProp = (prop, val, prio) => {
+        if (val) node.style.setProperty(prop, val, prio || "");
+        else node.style.removeProperty(prop);
+      };
+      restoreProp("background", prev.bg, prev.bgPrio);
+      restoreProp("background-color", prev.bgColor, prev.bgColorPrio);
+      restoreProp("background-image", prev.bgImg, prev.bgImgPrio);
+    }
+    this._restoredStyles.clear();
   },
 
   _ensureAttached() {
@@ -225,15 +420,19 @@ export const SidebarBackground = {
     }
     this._hostEl = host;
     host.classList?.add(HOST_CLASS);
-    this._markTransparentWrappers(host);
 
-    if (this.layerEl.parentElement === host) return true;
-    try {
-      host.insertBefore(this.layerEl, host.firstChild || null);
-      return true;
-    } catch (_) {
-      return false;
+    let inserted = this.layerEl.parentElement === host;
+    if (!inserted) {
+      try {
+        host.insertBefore(this.layerEl, host.firstChild || null);
+        inserted = true;
+      } catch (_) {
+        inserted = false;
+      }
     }
+
+    this._markTransparentWrappers(host);
+    return inserted;
   },
 
   _startObserving() {
@@ -243,7 +442,7 @@ export const SidebarBackground = {
         this._attachTimer = setTimeout(() => {
           this._attachTimer = null;
           this._ensureAttached();
-        }, 350);
+        }, 250);
       });
       this._observer.observe(document.body, { childList: true, subtree: true });
     }
@@ -251,7 +450,7 @@ export const SidebarBackground = {
       this._retryInterval = setInterval(() => {
         if (!this._mounted || SpotiKitBridge.isStopped()) return;
         this._ensureAttached();
-      }, 1800);
+      }, 1500);
     }
   },
 

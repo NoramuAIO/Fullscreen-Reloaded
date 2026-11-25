@@ -1243,12 +1243,39 @@ test("sidebarPanelBackgroundModesAndCleanup: mounts Liquid Aurora in right sideb
     assert.equal(document.documentElement.getAttribute("data-fr-sbg-mode"), "custom-color");
     assert.equal(document.documentElement.style.getPropertyValue("--fr-sbg-custom"), "rgb(34, 68, 102)");
 
-    // Turn off -> removes layer and root attributes cleanly
+    // Nested Desktop_PanelContainer_Id + encore-dark-theme + opaque sibling wrapper gets cleared and restored on off
+    Settings.set("sidebarPanelBg", "liquid-aurora");
+    SidebarBackground.sync();
+    const panelContainer = document.createElement("div");
+    panelContainer.id = "Desktop_PanelContainer_Id";
+    const npvOpenDiv = document.createElement("div");
+    npvOpenDiv.setAttribute("data-testid", "NPV_Panel_OpenDiv");
+    npvOpenDiv.style.setProperty("background-color", "rgb(18, 18, 18)");
+    const siblingFade = document.createElement("div");
+    siblingFade.className = "main-nowPlayingView-gradient";
+    siblingFade.style.setProperty("background-image", "linear-gradient(#222, #121212)");
+    const npvInner = document.createElement("div");
+    npvInner.className = "npv-sections";
+    npvOpenDiv.appendChild(npvInner);
+    panelContainer.append(siblingFade, npvOpenDiv);
+    rightSidebar.appendChild(panelContainer);
+
+    SidebarBackground._ensureAttached();
+    assert.equal(panelContainer.querySelector("#fr-right-sidebar-bg"), bgLayer);
+    assert.equal(npvOpenDiv.classList.contains("fr-sbg-clear-bg"), true);
+    assert.equal(npvOpenDiv.style.getPropertyValue("background-color"), "transparent");
+    assert.equal(siblingFade.classList.contains("fr-sbg-clear-bg"), true);
+    assert.equal(siblingFade.style.getPropertyValue("background-image"), "none");
+
+    // Turn off -> removes layer, root attributes, and restores original inline styles cleanly
     Settings.set("sidebarPanelBg", "off");
     SidebarBackground.sync();
     assert.equal(rightSidebar.querySelector("#fr-right-sidebar-bg"), null);
     assert.equal(document.documentElement.classList.contains("fr-sidebar-panel-bg-active"), false);
     assert.equal(document.documentElement.getAttribute("data-fr-sbg-mode"), null);
+    assert.equal(npvOpenDiv.classList.contains("fr-sbg-clear-bg"), false);
+    assert.equal(npvOpenDiv.style.getPropertyValue("background-color"), "rgb(18, 18, 18)");
+    assert.equal(siblingFade.style.getPropertyValue("background-image"), "linear-gradient(#222, #121212)");
 
     SidebarBackground.destroy();
   } finally {
