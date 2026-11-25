@@ -21,7 +21,11 @@ const PIP_STYLES = `
     position: relative; width: 100%; height: 100%;
     display: flex; flex-direction: column; justify-content: space-between;
     padding: 16px 18px 18px; overflow: hidden;
+    -webkit-app-region: drag;
+    app-region: drag;
+    cursor: grab;
   }
+  .fr-pip-shell:active { cursor: grabbing; }
   .fr-pip-bg {
     position: absolute; inset: -22%; background-size: cover; background-position: center;
     filter: blur(46px) saturate(1.85) brightness(0.46);
@@ -51,11 +55,15 @@ const PIP_STYLES = `
   }
   .fr-pip-mini-ctrl {
     display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
   }
   .fr-pip-ctrl-btn {
     width: 28px; height: 28px; border-radius: 50%; border: none;
     background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.9);
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
     transition: background 180ms ease, transform 160ms ease;
   }
   .fr-pip-ctrl-btn:hover { background: rgba(255,255,255,0.22); transform: scale(1.06); }
