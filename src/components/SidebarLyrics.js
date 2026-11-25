@@ -277,13 +277,15 @@ export const SidebarLyrics = {
     this._loading = false;
 
     if (!data || !Array.isArray(data.lines) || !data.lines.length) {
+      this.cardEl?.classList.add("fr-sb-empty");
       if (this.statusEl) {
         this.statusEl.textContent = t("sidebarNoLyrics");
-        this.statusEl.classList.add("fr-show");
+        this.statusEl.classList.remove("fr-show");
       }
       return;
     }
 
+    this.cardEl?.classList.remove("fr-sb-empty");
     if (this.statusEl) this.statusEl.classList.remove("fr-show");
     this._syncType = data.type || "synced";
     this._lines = data.lines.map((l) => ({ ...l }));

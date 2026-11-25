@@ -1115,6 +1115,34 @@ test("newPlayerConditionalSubToggle_Navigation_StaleBadge_Sidebar_PiPLyrics: ver
     assert.equal(sbCard.classList.contains("fr-sb-has-bg"), false);
     Settings.set("sidebarLyricsAnim", false);
     assert.equal(sbCard.classList.contains("fr-sb-animated"), false);
+
+    // 3a. Sidebar Lyrics hides card when a track has no lyrics, and restores when lyrics exist
+    LyricsService.resolve = async (tr) => {
+      if (tr?.uri === "spotify:track:empty1") return null;
+      return {
+        type: "synced",
+        source: "Apple Music",
+        lines: [{ startMs: 1000, endMs: 3000, text: "Restored line" }],
+      };
+    };
+    await SidebarLyrics.onTrackChange({ uri: "spotify:track:empty1", metadata: { title: "Instrumental" } });
+    assert.equal(sbCard.classList.contains("fr-sb-empty"), true);
+    await SidebarLyrics.onTrackChange({ uri: "spotify:track:haslyrics1", metadata: { title: "Vocal" } });
+    assert.equal(sbCard.classList.contains("fr-sb-empty"), false);
+
+    // Restore resolver for remaining test steps
+    LyricsService.resolve = async (tr) => {
+      if (tr?.uri === "spotify:track:t2") return secondTrackPromise;
+      return {
+        type: "synced",
+        source: "Apple Music",
+        lines: [
+          { startMs: 1000, endMs: 3000, text: "First active line" },
+          { startMs: 3000, endMs: 5000, text: "Upcoming next line" },
+        ],
+      };
+    };
+
     Settings.set("sidebarLyrics", false);
     assert.equal(document.getElementById("fr-sidebar-lyrics-card"), null);
     assert.equal(document.documentElement.classList.contains("fr-hide-native-npv-lyrics"), false);
